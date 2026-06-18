@@ -1,51 +1,139 @@
-from src.utils.utils import calculate_flops, calculate_memory
 from src.hardware.hardware import Hardware
 from src.model.model import Model
 from src.request.request import Request
+from src.utils.utils import calculate_flops, calculate_memory
+
+
+class UploadRequest:
+    request: Request
+    remaining_upload_time_ms: int
+
+    def __init__(self, request: Request, remaining_upload_time_ms: int):
+        self.request = request
+        self.remaining_upload_time_ms = remaining_upload_time_ms
 
 
 class PrefillInstance:
     hardware: Hardware
     queue: list[Request]
+    upload_queue: list[tuple[UploadRequest, int]]
     model: Model
 
     def __init__(self, hardware: Hardware, model: Model):
         self.hardware = hardware
         self.queue = []
+        self.upload_queue = []
         self.model = model
 
     def add_request(self, request: Request):
         self.queue.append(request)
 
+    def upload_kv_time_ms(self, request: Request) -> int:
+        kv_size = self.model.kv_size_per_token * request.isl
+        time_ms: int = int((float(kv_size) / self.hardware.spec.network_bw) * 1000)
+        print(
+            f"Calculated KV upload time for request with id: {request.id} : {time_ms} ms"
+        )
+        return time_ms + 1  #
+
+    def time_to_next_completion(self) -> int:
+        if not self.queue:
+            if not self.upload_queue:
+                return -1
+            return self.upload_queue[0][0].remaining_upload_time_ms
+        request = self.queue[0]
+        print(
+            f"Calculating time to next completion for request with id: {request.id}: remaining_prefill_time_ms: {request.remaining_prefill_time_ms}"
+        )
+        return (
+            request.remaining_prefill_time_ms
+            if request.remaining_prefill_time_ms > 0
+            else self.calculate_prefill_time(request)
+        )
+
     def process_queue(self, time_ms: int) -> list[Request]:
+        def get_request_requiring_prefill(requests: list[Request]) -> Request | None:
+            for req in requests:
+                if req.remaining_tokens_prefill != 0:
+                    return req
+            return None
+
+        assert time_ms >= 0, "Time to process queue should be non-negative"
         total_time_ms = time_ms
-        processed_requests: list[Request] = []
+        self.upload_queue = [
+            (upload_request, total_time_ms)
+            for upload_request, _ in self.upload_queue
+            if upload_request.remaining_upload_time_ms > 0
+        ]
+
         while self.queue and time_ms > 0:
-            request = self.queue[0]
+            request = get_request_requiring_prefill(self.queue)
+            if not request:
+                print(
+                    "No requests require prefill, breaking out of loop",
+                    [req.remaining_tokens_prefill for req in self.queue],
+                )
+                break
             prefill_time = self.calculate_prefill_time(request)
             if request.remaining_prefill_time_ms != -1:
                 prefill_time = request.remaining_prefill_time_ms
-            else:
-                request.prefilled_tokens += request.remaining_tokens_prefill
             time_ms -= prefill_time
-            if time_ms > 0:
+            if time_ms >= 0:
                 request.remaining_prefill_time_ms = 0
                 request.prefill_time_ms += total_time_ms - time_ms
-                processed_requests.append(self.queue.pop(0))
+                request.prefilled_tokens += request.remaining_tokens_prefill
+                print(
+                    f"Finished prefill for request with id: {request.id} after {request.prefill_time_ms / 1000} seconds + process queue"
+                )
+                self.queue.remove(request)
+                self.upload_queue.append((
+                    UploadRequest(request, self.upload_kv_time_ms(request)),
+                    time_ms,
+                ))
             else:
+                # not finished in this time step, update remaining prefill time
                 request.remaining_prefill_time_ms = -time_ms
 
+        finished_requests: list[Request] = []
+        time_ms = total_time_ms
+        while self.upload_queue and time_ms > 0:
+            upload_request, upload_start = self.upload_queue[0]
+
+            if time_ms > upload_start:
+                break
+            upload_time = min(
+                upload_start, upload_request.remaining_upload_time_ms, time_ms
+            )
+            total_time = upload_start - time_ms + upload_time
+
+            upload_request.request.kv_upload_time_ms += total_time
+            upload_request.remaining_upload_time_ms -= upload_time
+            time_ms -= upload_time
+            assert upload_request.remaining_upload_time_ms >= 0, (
+                "Remaining upload time should not be negative"
+            )
+            if upload_request.remaining_upload_time_ms == 0:
+                upload_request.request.kv_uploaded = True
+                finished_requests.append(upload_request.request)
+                self.upload_queue.pop(0)
+
+        for upload_request, upload_start in self.upload_queue:
+            upload_request.request.kv_upload_time_ms += upload_start
+
         for req in self.queue:
-            req.prefill_time_ms += time_ms
-        return processed_requests
+            req.prefill_time_ms += total_time_ms
+        return finished_requests
 
     def calculate_prefill_time(self, request: Request) -> int:
         flops = calculate_flops(self.model, [request], "prefill")
         memory = calculate_memory(self.model, [request], "prefill")
 
         time_ms: int = int(
-            float(flops) / self.hardware.flops * 1000
-            + float(memory) / self.hardware.memoryGB_BW * 1000
+            float(flops) / self.hardware.spec.flops * 1000
+            + float(memory) / self.hardware.spec.ram_bw * 1000
+        )
+        print(
+            f"Calculated prefill time for request with id: {request.id} : {time_ms} ms"
         )
         return time_ms
 
@@ -57,5 +145,16 @@ class PrefillInstance:
             request.prefilled_tokens += request.remaining_tokens_prefill
             request.prefill_time_ms += total_ms + req_time_ms
             total_ms += req_time_ms
-
+            print(
+                f"Finishing request prefill with id: {request.id} after {request.prefill_time_ms / 1000} seconds + finish queue"
+            )
         return total_ms, self.queue
+
+    def log(self):
+        print(
+            f"Prefill instance state: {len(self.queue)} requests in queue, {len(self.upload_queue)} requests in upload queue"
+        )
+        for request in self.queue:
+            print(
+                f"Request id: {request.id}, prefilled tokens: {request.prefilled_tokens}, remaining tokens prefill: {request.remaining_tokens_prefill}, prefill time ms: {request.prefill_time_ms}, remaining prefill time ms: {request.remaining_prefill_time_ms}"
+            )

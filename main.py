@@ -1,9 +1,15 @@
 from dataclasses import dataclass
 
-from src.simulations.simulation_distributed import DistributedScenario, simulate_run_distributed
+from src.hardware.hardware import Hardware
+from src.instances.decode import DecodeInstance
+from src.instances.prefill import PrefillInstance
 from src.model.model import Model
+from src.node.node import Node
 from src.request.request import TokenDistribution
-
+from src.simulations.simulation_distributed import (
+    DistributedScenario,
+    simulate_run_distributed,
+)
 
 
 @dataclass
@@ -19,14 +25,46 @@ class Result:
     decode_instances: int
 
 
-
 if __name__ == "__main__":
+    hardware = Hardware("DGX SPARK")
     simulate_run_distributed(
         DistributedScenario(
             name="test",
             total_requests=2,
-            num_prefill_instances=2,
-            num_decode_instances=2,
+            nodes=[
+                Node(
+                    prefill_instances=[
+                        PrefillInstance(
+                            hardware=Hardware("DGX SPARK"), model=Model("Qwen/Qwen3-8B")
+                        )
+                        for _ in range(2)
+                    ],
+                    decode_instances=[
+                        DecodeInstance(
+                            hardware=Hardware("DGX SPARK"),
+                            max_batch_size=10,
+                            model=Model("Qwen/Qwen3-8B"),
+                        )
+                        for _ in range(2)
+                    ],
+                ),
+                Node(
+                    prefill_instances=[
+                        PrefillInstance(
+                            hardware=Hardware("DGX SPARK"), model=Model("Qwen/Qwen3-8B")
+                        )
+                        for _ in range(2)
+                    ],
+                    decode_instances=[
+                        DecodeInstance(
+                            hardware=Hardware("DGX SPARK"),
+                            max_batch_size=10,
+                            model=Model("Qwen/Qwen3-8B"),
+                        )
+                        for _ in range(2)
+                    ],
+                ),
+            ],
             req_s=10,
             batch_size=10,
             token_dist=TokenDistribution(
@@ -34,8 +72,7 @@ if __name__ == "__main__":
                 max_input_tokens=100,
                 min_output_tokens=10,
                 max_output_tokens=100,
-                cache_percentage=0.5
-            )
+                cache_percentage=0.5,
+            ),
         ),
-        Model("Qwen/Qwen3-8B")
     )

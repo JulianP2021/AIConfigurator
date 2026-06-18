@@ -1,0 +1,35 @@
+target-version = "py314"
+line-length = 88
+indent-width = 4
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "ARG", # flake8-unused-arguments
+    "RET", # flake8-return
+    "RSE", # flake8-raise
+    "PIE", # flake8-pie
+    "PTH", # flake8-use-pathlib
+    "PT",  # flake8-pytest-style
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501",  # line too long, handled by formatter
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[format]
+preview = true
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

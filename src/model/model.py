@@ -3,13 +3,14 @@ from typing import Any, cast
 # Third Party
 from transformers import AutoConfig, PretrainedConfig
 
+
 class Model:
     name: str
     config: dict[str, Any]
 
     def __init__(self, name: str):
         self.name = name
-        self.config = fetchArchitecture(self.name)
+        self.config = fetch_architecture(self.name)
         print(f"Model {self.name} config: {self.config}")
 
     @property
@@ -17,50 +18,80 @@ class Model:
         dtype = self.config.get("dtype", "float32")
         if dtype == "float16" or dtype == "bfloat16":
             return 2.0
-        elif dtype == "float32":
+        if dtype == "float32":
             return 4.0
-        else:
-            raise ValueError(f"Unsupported data type: {dtype}")
+        raise ValueError(f"Unsupported data type: {dtype}")
 
     @property
-    def KV_SIZE_PER_TOKEN(self) -> int:
-        return self.calculateKVSize(dtype=self.config.get("dtype", "float32"))
-
-    def calculateKVSize(self, dtype: str) -> int:
-        if (dtype == 'float32'):
+    def kv_size_per_token(self) -> int:
+        # KV Calculation based on lmcache kv calculator:
+        dtype = self.config.get("dtype", "float32")
+        if dtype == "float32":
             dtype_size = 4
-        elif (dtype == 'float16' or dtype == 'bfloat16'):
+        elif dtype == "float16" or dtype == "bfloat16":
             dtype_size = 2
         else:
             dtype_size = 1
 
-        isDeepSeekModel = self.name.startswith("deepseek-ai/DeepSeek-V3") or self.name == "deepseek-ai/DeepSeek-R1";
+        is_deep_seek_model = (
+            self.name.startswith("deepseek-ai/DeepSeek-V3")
+            or self.name == "deepseek-ai/DeepSeek-R1"
+        )
+        is_qwen3_model = self.name.lower().startswith("qwen/qwen3-")
 
-        isQwen3Model = self.name.lower().startswith("qwen/qwen3-")
+        is_glm4_model = self.name.startswith("zai-org/GLM-4.")
 
-        isGLM4Model = self.name.startswith("zai-org/GLM-4.")
+        is_hunyuan_dense_model = (
+            self.name.lower().startswith("tencent/hunyuan-")
+            and self.name.lower() != "tencent/hunyuan-large"
+        )
 
-        isHunyuanDenseModel = self.name.lower().startswith("tencent/hunyuan-") and self.name.lower() != "tencent/hunyuan-large"
+        is_hunyuan_large_model = self.name.lower() == "tencent/hunyuan-large"
 
-        isHunyuanLargeModel = self.name.lower() == "tencent/hunyuan-large"
-
-        isGQAWithHeadDimModel = isQwen3Model or isGLM4Model or isHunyuanDenseModel;
+        is_gqa_with_head_dim_model = (
+            is_qwen3_model or is_glm4_model or is_hunyuan_dense_model
+        )
         tokens = 1
         total_elements = 0
-        if (isDeepSeekModel):
-            total_elements = self.config["num_hidden_layers"] * tokens * (self.config["kv_lora_rank"] + self.config["qk_rope_head_dim"]);
-        elif (isHunyuanLargeModel) :
+        if is_deep_seek_model:
+            total_elements = (
+                self.config["num_hidden_layers"]
+                * tokens
+                * (self.config["kv_lora_rank"] + self.config["qk_rope_head_dim"])
+            )
+        elif is_hunyuan_large_model:
             cla_share_factor = self.config["cla_share_factor"]
             effective_layers = self.config["num_hidden_layers"] / cla_share_factor
-            total_elements = 2 * effective_layers * tokens * self.config["num_key_value_heads"] * self.config["head_size"]
-        elif (isGQAWithHeadDimModel):
-            total_elements = 2 * self.config["num_hidden_layers"] * tokens * self.config["num_key_value_heads"] * self.config["head_dim"]
+            total_elements = (
+                2
+                * effective_layers
+                * tokens
+                * self.config["num_key_value_heads"]
+                * self.config["head_size"]
+            )
+        elif is_gqa_with_head_dim_model:
+            total_elements = (
+                2
+                * self.config["num_hidden_layers"]
+                * tokens
+                * self.config["num_key_value_heads"]
+                * self.config["head_dim"]
+            )
         else:
-            total_elements = 2 * self.config["num_hidden_layers"] * tokens * self.config["num_key_value_heads"] * self.config["head_size"]
+            total_elements = (
+                2
+                * self.config["num_hidden_layers"]
+                * tokens
+                * self.config["num_key_value_heads"]
+                * self.config["head_size"]
+            )
 
-        total_bytes = total_elements * dtype_size
-        return total_bytes
+        return total_elements * dtype_size
 
-def fetchArchitecture(modelName: str) -> dict[str, Any]:
-    config = cast(PretrainedConfig, cast(Any, AutoConfig).from_pretrained(modelName, local_files_only = True))
+
+def fetch_architecture(model_name: str) -> dict[str, Any]:
+    config = cast(
+        PretrainedConfig,
+        cast(Any, AutoConfig).from_pretrained(model_name, local_files_only=True),
+    )
     return config.to_dict()
