@@ -1,17 +1,18 @@
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import GPUHardwareSpec
+from src.logger import debug_print
 from src.model.model import Model
 from src.request.request import Request
 from src.utils.utils import calculate_flops, calculate_memory
 
 
 class DecodeInstance:
-    hardware: Hardware
+    hardware: GPUHardwareSpec
     queue: list[Request]
     download_queue: list[Request]
     max_batch_size: int
     model: Model
 
-    def __init__(self, hardware: Hardware, max_batch_size: int, model: Model):
+    def __init__(self, hardware: GPUHardwareSpec, max_batch_size: int, model: Model):
         self.hardware = hardware
         self.queue = []
         self.download_queue = []
@@ -21,20 +22,23 @@ class DecodeInstance:
     def add_request(self, request: Request):
         self.queue.append(request)
 
-    def download_kv_time_ms(self, request: Request) -> int:
-        kv_size = self.model.kv_size_per_token * request.isl
-        time_ms: int = int((float(kv_size) / self.hardware.spec.network_bw) * 1000)
-        return time_ms
+    def download_kv_time_ms(self, _request: Request) -> int:
+        # kv_size = self.model.kv_size_per_token * request.isl
+        # time_ms: int = int((float(kv_size) / self.hardware.spec.network_bw) * 1000)
+
+        return 100  # example value, replace with actual calculation
 
     def process_queue(self, time_ms: int) -> list[Request]:
         processed_requests: list[Request] = []
         total_time_ms = time_ms
-        batch = self.queue[: self.max_batch_size]
-        while batch and time_ms > 0:
+
+        while time_ms > 0 and self.queue:
+            batch = self.queue[: self.max_batch_size]
             decode_time = self.calculate_decode_time(batch)
+            if decode_time > time_ms:
+                # Not enough time to complete a single decode step
+                break
             time_ms -= decode_time
-            if time_ms < decode_time:
-                return processed_requests
             for request in batch:
                 request.decoded_tokens += 1
             for request in batch:
@@ -43,7 +47,7 @@ class DecodeInstance:
                     self.queue.remove(request)
                     processed_requests.append(request)
         for req in self.queue:
-            req.decode_time_ms += total_time_ms
+            req.decode_time_ms += total_time_ms - time_ms
         return processed_requests
 
     def calculate_decode_time(self, batch: list[Request]) -> int:
@@ -51,13 +55,10 @@ class DecodeInstance:
         memory = calculate_memory(self.model, batch, "decode")
 
         time_ms: int = int(
-            (
-                float(flops) / self.hardware.spec.flops
-                + float(memory) / self.hardware.spec.ram_bw
-            )
+            (float(flops) / self.hardware.flops + float(memory) / self.hardware.gpu_bw)
             * 1000
         )
-        print(
+        debug_print(
             f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req in batch]} of size {len(batch)}: {time_ms} ms"
         )
         return time_ms
@@ -73,7 +74,7 @@ class DecodeInstance:
                 request.decoded_tokens += 1
                 if request.decoded_tokens >= request.osl:
                     request.decode_time_ms += total_ms
-                    print(
+                    debug_print(
                         f"Finishing request decode with id: {request.id} after {total_ms / 1000} seconds + finish queue"
                     )
                     self.queue.remove(request)
@@ -81,10 +82,10 @@ class DecodeInstance:
         return total_ms, finished_requests
 
     def log(self):
-        print(
+        debug_print(
             f"Decode instance state: {len(self.queue)} requests in queue, {len(self.download_queue)} requests in download queue"
         )
         for request in self.queue:
-            print(
+            debug_print(
                 f"Request id: {request.id}, decoded tokens: {request.decoded_tokens}, remaining tokens decode: {request.osl - request.decoded_tokens}, decode time ms: {request.decode_time_ms}"
             )

@@ -1,4 +1,5 @@
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import GPUHardwareSpec
+from src.logger import debug_print
 from src.model.model import Model
 from src.request.request import Request
 from src.utils.utils import calculate_flops, calculate_memory
@@ -14,12 +15,12 @@ class UploadRequest:
 
 
 class PrefillInstance:
-    hardware: Hardware
+    hardware: GPUHardwareSpec
     queue: list[Request]
     upload_queue: list[tuple[UploadRequest, int]]
     model: Model
 
-    def __init__(self, hardware: Hardware, model: Model):
+    def __init__(self, hardware: GPUHardwareSpec, model: Model):
         self.hardware = hardware
         self.queue = []
         self.upload_queue = []
@@ -28,13 +29,15 @@ class PrefillInstance:
     def add_request(self, request: Request):
         self.queue.append(request)
 
-    def upload_kv_time_ms(self, request: Request) -> int:
-        kv_size = self.model.kv_size_per_token * request.isl
-        time_ms: int = int((float(kv_size) / self.hardware.spec.network_bw) * 1000)
-        print(
-            f"Calculated KV upload time for request with id: {request.id} : {time_ms} ms"
-        )
-        return time_ms + 1  #
+    def upload_kv_time_ms(self, _request: Request) -> int:
+        # kv_size = self.model.kv_size_per_token * request.isl
+        # time_ms: int = int((float(kv_size) / self.hardware.spec.network_bw) * 1000)
+        # debug_print((
+        #     f"Calculated KV upload time for request with id: {request.id} : {time_ms} ms"
+        # )
+
+        # return time_ms + 1
+        return 1
 
     def time_to_next_completion(self) -> int:
         if not self.queue:
@@ -42,7 +45,7 @@ class PrefillInstance:
                 return -1
             return self.upload_queue[0][0].remaining_upload_time_ms
         request = self.queue[0]
-        print(
+        debug_print(
             f"Calculating time to next completion for request with id: {request.id}: remaining_prefill_time_ms: {request.remaining_prefill_time_ms}"
         )
         return (
@@ -69,9 +72,8 @@ class PrefillInstance:
         while self.queue and time_ms > 0:
             request = get_request_requiring_prefill(self.queue)
             if not request:
-                print(
-                    "No requests require prefill, breaking out of loop",
-                    [req.remaining_tokens_prefill for req in self.queue],
+                debug_print(
+                    f"No requests require prefill, breaking out of loop {[req.remaining_tokens_prefill for req in self.queue]}",
                 )
                 break
             prefill_time = self.calculate_prefill_time(request)
@@ -82,7 +84,7 @@ class PrefillInstance:
                 request.remaining_prefill_time_ms = 0
                 request.prefill_time_ms += total_time_ms - time_ms
                 request.prefilled_tokens += request.remaining_tokens_prefill
-                print(
+                debug_print(
                     f"Finished prefill for request with id: {request.id} after {request.prefill_time_ms / 1000} seconds + process queue"
                 )
                 self.queue.remove(request)
@@ -129,10 +131,10 @@ class PrefillInstance:
         memory = calculate_memory(self.model, [request], "prefill")
 
         time_ms: int = int(
-            float(flops) / self.hardware.spec.flops * 1000
-            + float(memory) / self.hardware.spec.ram_bw * 1000
+            float(flops) / self.hardware.flops * 1000
+            + float(memory) / self.hardware.gpu_bw * 1000
         )
-        print(
+        debug_print(
             f"Calculated prefill time for request with id: {request.id} : {time_ms} ms"
         )
         return time_ms
@@ -145,16 +147,16 @@ class PrefillInstance:
             request.prefilled_tokens += request.remaining_tokens_prefill
             request.prefill_time_ms += total_ms + req_time_ms
             total_ms += req_time_ms
-            print(
+            debug_print(
                 f"Finishing request prefill with id: {request.id} after {request.prefill_time_ms / 1000} seconds + finish queue"
             )
         return total_ms, self.queue
 
     def log(self):
-        print(
+        debug_print(
             f"Prefill instance state: {len(self.queue)} requests in queue, {len(self.upload_queue)} requests in upload queue"
         )
         for request in self.queue:
-            print(
+            debug_print(
                 f"Request id: {request.id}, prefilled tokens: {request.prefilled_tokens}, remaining tokens prefill: {request.remaining_tokens_prefill}, prefill time ms: {request.prefill_time_ms}, remaining prefill time ms: {request.remaining_prefill_time_ms}"
             )

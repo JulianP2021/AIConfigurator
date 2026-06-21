@@ -1,78 +1,53 @@
-from dataclasses import dataclass
+import sys
 
 from src.hardware.hardware import Hardware
-from src.instances.decode import DecodeInstance
-from src.instances.prefill import PrefillInstance
-from src.model.model import Model
+from src.logger import set_debug
 from src.node.node import Node
-from src.request.request import TokenDistribution
+from src.request.request import RequestScenario, TokenDistribution
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
 )
 
-
-@dataclass
-class Result:
-    prefill_cache_s: float
-    prefill_computation_s: float
-    prefill_s: float
-    decode_s: float
-    total_s: float
-    prefill_req_s: float
-    decode_req_s: float
-    req_s: float
-    decode_instances: int
-
-
 if __name__ == "__main__":
-    hardware = Hardware("DGX SPARK")
-    simulate_run_distributed(
+    # Toggle debug logging via --debug CLI flag
+    if "--debug" in sys.argv:
+        set_debug(True)
+
+    result = simulate_run_distributed(
         DistributedScenario(
             name="test",
-            total_requests=2,
             nodes=[
                 Node(
-                    prefill_instances=[
-                        PrefillInstance(
-                            hardware=Hardware("DGX SPARK"), model=Model("Qwen/Qwen3-8B")
-                        )
-                        for _ in range(2)
-                    ],
-                    decode_instances=[
-                        DecodeInstance(
-                            hardware=Hardware("DGX SPARK"),
-                            max_batch_size=10,
-                            model=Model("Qwen/Qwen3-8B"),
-                        )
-                        for _ in range(2)
-                    ],
+                    hardware=Hardware.from_name("DGX SPARK"),
+                    model_name="Qwen/Qwen3-8B",
+                    batch_size=10,
+                    prefill_instances=1,
+                    decode_instances=0,
                 ),
                 Node(
-                    prefill_instances=[
-                        PrefillInstance(
-                            hardware=Hardware("DGX SPARK"), model=Model("Qwen/Qwen3-8B")
-                        )
-                        for _ in range(2)
-                    ],
-                    decode_instances=[
-                        DecodeInstance(
-                            hardware=Hardware("DGX SPARK"),
-                            max_batch_size=10,
-                            model=Model("Qwen/Qwen3-8B"),
-                        )
-                        for _ in range(2)
-                    ],
+                    hardware=Hardware.from_name("DGX SPARK"),
+                    model_name="Qwen/Qwen3-8B",
+                    batch_size=10,
+                    prefill_instances=0,
+                    decode_instances=1,
                 ),
             ],
-            req_s=10,
-            batch_size=10,
-            token_dist=TokenDistribution(
-                min_input_tokens=10,
-                max_input_tokens=100,
-                min_output_tokens=10,
-                max_output_tokens=100,
-                cache_percentage=0.5,
+            requests=RequestScenario(
+                total_requests=100,
+                min_users=10000,
+                max_users=100000000,
+                req_s=2,
+                token_distribution=TokenDistribution(
+                    min_input_tokens=10,
+                    max_input_tokens=10,
+                    min_output_tokens=100,
+                    max_output_tokens=100,
+                    cache_percentage=0.5,
+                ),
             ),
         ),
     )
+
+    # result is a SimulationResult can be serialized or compared here
+    print("Result dict:", result.to_dict())

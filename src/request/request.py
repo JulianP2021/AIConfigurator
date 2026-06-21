@@ -19,13 +19,15 @@ class Request:
     kv_upload_time_ms: int = 0
     kv_uploaded: bool = False
     id: int
+    user_id: int
 
-    def __init__(self, isl: int, osl: int, cached: int):
+    def __init__(self, isl: int, osl: int, cached: int, user_id: int = -1):
         global request_id_counter
         self.isl = isl
         self.osl = osl
         self.prefilled_tokens = cached
         self.id = request_id_counter
+        self.user_id = user_id
         request_id_counter += 1
 
         assert self.isl >= 0, "ISL must be non-negative"
@@ -57,18 +59,74 @@ class TokenDistribution:
 
 
 @dataclass
+class RequestScenario:
+    token_distribution: TokenDistribution
+    total_requests: int
+    min_users: int
+    max_users: int
+    req_s: float
+
+
+@dataclass
 class RequestGenerator:
     req_rate: float
 
     def time_till_next_request(self) -> float:
         return random.expovariate(self.req_rate)
 
-    def generate_request(self, token_distribution: TokenDistribution) -> Request:
-        input_tokens = random.randint(
-            token_distribution.min_input_tokens, token_distribution.max_input_tokens
+    def _get_random_user_id(
+        self,
+        request_scenario: RequestScenario,
+        current_requests: list[Request],
+        finished_requests: list[Request],
+    ) -> int:
+        current_users = {r.user_id for r in current_requests}
+        finished_users = {r.user_id for r in finished_requests}.difference(
+            current_users
         )
+
+        if len(finished_users) < request_scenario.min_users:
+            user_id = max(finished_users) + 1 if finished_users else 0
+        else:
+            if len(finished_users) < request_scenario.max_users:
+                if random.random() < 0.5:
+                    user_id = max(finished_users) + 1
+                else:
+                    user_id = random.choice(list(finished_users))
+            else:
+                user_id = random.choice(list(finished_users))
+        return user_id
+
+    def generate_request(
+        self,
+        request_scenario: RequestScenario,
+        current_requests: list[Request],
+        finished_requests: list[Request],
+    ) -> Request:
+        user_id = self._get_random_user_id(
+            request_scenario, current_requests, finished_requests
+        )
+        past_requests = [r for r in current_requests if r.user_id == user_id]
+        min_input_tokens = max(
+            request_scenario.token_distribution.min_input_tokens,
+            max((r.isl + r.osl for r in past_requests), default=0),
+        )
+
+        input_tokens = min_input_tokens + random.randint(
+            request_scenario.token_distribution.min_input_tokens,
+            request_scenario.token_distribution.max_input_tokens,
+        )
+
         output_tokens = random.randint(
-            token_distribution.min_output_tokens, token_distribution.max_output_tokens
+            request_scenario.token_distribution.min_output_tokens,
+            request_scenario.token_distribution.max_output_tokens,
         )
-        cached_tokens = int(input_tokens * token_distribution.cache_percentage)
-        return Request(isl=input_tokens, osl=output_tokens, cached=cached_tokens)
+
+        cached = min(
+            min_input_tokens,
+            int(input_tokens * request_scenario.token_distribution.cache_percentage),
+        )
+
+        return Request(
+            isl=input_tokens, osl=output_tokens, cached=cached, user_id=user_id
+        )

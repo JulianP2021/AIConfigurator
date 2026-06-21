@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
+from src.logger import debug_print
 from src.request.request import Request
 
 
@@ -43,18 +44,18 @@ class Router:
                 "Time to next completion should be non-negative"
             )
             for instance in self.prefill_instances:
-                print(
+                debug_print(
                     f"Processing prefill instance with queue length {len(instance.queue)}, upload queue length {len(instance.upload_queue)}"
                 )
                 prefilled_requests_instance = instance.process_queue(
                     time_to_next_completion
                 )
                 prefilled_requests.extend(prefilled_requests_instance)
-                print(
+                debug_print(
                     f"Finished processing prefill instance, {len(prefilled_requests_instance)} requests finished, total time passed: {total_time_ms / 1000} seconds"
                 )
             for instance in self.decode_instnces:
-                print(
+                debug_print(
                     f"Processing decode instance with queue length {len(instance.queue)}, download queue length {len(instance.download_queue)}"
                 )
                 decoded_requests = instance.process_queue(time_to_next_completion)
@@ -68,8 +69,8 @@ class Router:
                 for instance in self.prefill_instances
                 if instance.queue or instance.upload_queue
             ]
-            print(
-                f"Times: {times}, self.prefill_instances: {[len(instance.queue) for instance in self.prefill_instances]}, upload_queues: {[len(instance.upload_queue) for instance in self.prefill_instances], self.queue}"
+            debug_print(
+                f"Times: {times}, self.prefill_instances: {[len(instance.queue) for instance in self.prefill_instances]}, upload_queues: {[len(instance.upload_queue) for instance in self.prefill_instances]}, self.queue: {len(self.queue)}"
             )
             self.route_requests()
 
@@ -96,10 +97,10 @@ class Router:
         return total_time_ms, finished_requests
 
     def log(self):
-        print(f"Router state: {len(self.queue)} requests in router queue")
+        debug_print(f"Router state: {len(self.queue)} requests in router queue")
         for i, instance in enumerate(self.prefill_instances):
-            print(f"Prefill instance {i} queue length: {len(instance.queue)}")
+            debug_print(f"Prefill instance {i} queue length: {len(instance.queue)}")
             instance.log()
         for i, instance in enumerate(self.decode_instnces):
-            print(f"Decode instance {i} queue length: {len(instance.queue)}")
+            debug_print(f"Decode instance {i} queue length: {len(instance.queue)}")
             instance.log()
