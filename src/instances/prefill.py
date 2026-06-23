@@ -48,13 +48,16 @@ class PrefillInstance:
         debug_print(
             f"Calculating time to next completion for request with id: {request.id}: remaining_prefill_time_ms: {request.remaining_prefill_time_ms}"
         )
-        return (
+        return max(
             request.remaining_prefill_time_ms
             if request.remaining_prefill_time_ms > 0
-            else self.calculate_prefill_time(request)
+            else self.calculate_prefill_time(request),
+            1,
         )
 
     def process_queue(self, time_ms: int) -> list[Request]:
+        assert len(self.queue) < 10, "Too many requests in prefill queue"
+
         def get_request_requiring_prefill(requests: list[Request]) -> Request | None:
             for req in requests:
                 if req.remaining_tokens_prefill != 0:

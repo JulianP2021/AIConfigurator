@@ -214,18 +214,130 @@ def fetch_hardware(gpu_name: str) -> "Hardware":  # noqa: F821, UP037
     Fields that are not provided by vast.ai (RAM, NVMe, network) are
     defaulted to ``0`` so the caller can fill them in afterwards.
     """
-    from .hardware import Hardware
+    from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
     scraped = lookup(gpu_name)
-    return Hardware(
-        name=scraped["name"],
+    gpu_spec = GPUHardwareSpec(
         flops=scraped["flops"],
         gpu_mem=scraped["gpu_mem"],
         gpu_bw=scraped["gpu_bw"],
+    )
+    spec = HardwareSpec(
+        gpu_hardware=gpu_spec,
+        num_gpus=1,
         ram_mem=0,
         ram_bw=0,
         nvme_mem=0,
         nvme_bw=0,
         network_bw=0,
+        network_inet_up=0,
+        network_inet_down=0,
         price_usd_per_hour=scraped["price_usd_per_hour"],
+        price_inet_up=0.0,
+        price_inet_down=0.0,
     )
+    return Hardware(name=scraped["name"], spec=spec)
+
+
+# ---------------------------------------------------------------------------
+# Machine / node scraper backed by ``_machine_db.json``
+# ---------------------------------------------------------------------------
+
+_MACHINE_DB_PATH = pathlib.Path(__file__).parent / "_machine_db.json"
+
+
+def _make_machine_name(offer: dict[str, Any]) -> str:
+    gpu_name = offer.get("gpu_name", "Unknown")
+    num_gpus = offer.get("num_gpus", 0)
+    # Create a short hash of the offer so every unique listing is kept.
+    offer_hash = hash(json.dumps(offer, sort_keys=True, default=str)) & 0xFFFF_FFFF
+    return f"{gpu_name} x{num_gpus} #{offer_hash:08x}"
+
+
+def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
+    num_gpus = offer.get("num_gpus", 1)
+    if num_gpus <= 0:
+        num_gpus = 1
+
+    return {
+        "name": _make_machine_name(offer),
+        "gpu_name": offer.get("gpu_name", ""),
+        "num_gpus": num_gpus,
+        "flops": offer.get("total_flops", 0),
+        "gpu_mem": offer.get("gpu_ram", 0),
+        "gpu_bw": offer.get("gpu_mem_bw", 0),
+        "ram_mem": offer.get("cpu_ram", 0),
+        "ram_bw": 0,
+        "nvme_mem": offer.get("disk_space", 0),
+        "nvme_bw": offer.get("disk_bw", 0),
+        "network_bw": offer.get("bw_nvlink", 0),
+        "network_inet_up": offer.get("inet_up", 0),
+        "network_inet_down": offer.get("inet_down", 0),
+        "price_usd_per_hour": offer.get("dph_total", 0.0),
+        "price_inet_up": offer.get("inet_up_cost", 0.0),
+        "price_inet_down": offer.get("inet_down_cost", 0.0),
+    }
+
+
+def refresh_machines_file() -> None:
+    """Fetch all live Vast.ai offers and write machine configs to ``_machine_db.json``."""
+    resp = requests.get(_MARKET_API, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    offers = data.get("offers", [])
+
+    db: dict[str, dict[str, Any]] = {}
+    for offer in offers:
+        machine = _extract_machine(offer)
+        key = machine["name"]
+        if key not in db:
+            db[key] = machine
+
+    _MACHINE_DB_PATH.write_text(json.dumps(db, indent=2), encoding="utf-8")
+
+
+def _load_machine_db() -> dict[str, dict[str, Any]]:
+    if not _MACHINE_DB_PATH.exists():
+        msg = (
+            f"Machine database not found at {_MACHINE_DB_PATH}. "
+            "Run refresh_machines_file() first."
+        )
+        raise RuntimeError(msg)
+    return json.loads(_MACHINE_DB_PATH.read_text(encoding="utf-8"))
+
+
+def lookup_machine(machine_name: str) -> dict[str, Any]:
+    """Return cached machine config from ``_machine_db.json``."""
+    db = _load_machine_db()
+    try:
+        return db[machine_name]
+    except KeyError:
+        msg = f"Machine {machine_name!r} not in database. Run refresh_machines_file()."
+        raise KeyError(msg) from None
+
+
+def fetch_machine_hardware(machine_name: str) -> "Hardware":  # noqa: F821, UP037
+    """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache."""
+    from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
+
+    scraped = lookup_machine(machine_name)
+    gpu_spec = GPUHardwareSpec(
+        flops=scraped["flops"] // max(scraped["num_gpus"], 1),
+        gpu_mem=scraped["gpu_mem"],
+        gpu_bw=scraped["gpu_bw"],
+    )
+    spec = HardwareSpec(
+        gpu_hardware=gpu_spec,
+        num_gpus=scraped["num_gpus"],
+        ram_mem=scraped["ram_mem"],
+        ram_bw=scraped["ram_bw"],
+        nvme_mem=scraped["nvme_mem"],
+        nvme_bw=scraped["nvme_bw"],
+        network_bw=scraped["network_bw"],
+        network_inet_up=scraped["network_inet_up"],
+        network_inet_down=scraped["network_inet_down"],
+        price_usd_per_hour=scraped["price_usd_per_hour"],
+        price_inet_up=scraped["price_inet_up"],
+        price_inet_down=scraped["price_inet_down"],
+    )
+    return Hardware(name=scraped["name"], spec=spec)

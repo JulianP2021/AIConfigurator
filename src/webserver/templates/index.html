@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurator Simulator – Compare Configurations</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79b8ff;
+            --success: #3fb950;
+            --danger: #f85149;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.5;
+        }
+        h1 { text-align: center; margin-bottom: 0.25rem; font-weight: 600; }
+        .subtitle { text-align: center; color: var(--text-secondary); margin-bottom: 2rem; font-size: 0.95rem; }
+        .container { max-width: 1100px; margin: 0 auto; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+        label {
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.35rem;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 0.55rem 0.7rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+        textarea { font-family: monospace; min-height: 120px; }
+        .btn {
+            display: inline-block;
+            padding: 0.65rem 1.5rem;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-block { width: 100%; margin-top: 1rem; }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+        }
+        .btn-outline:hover { background: var(--accent); color: #fff; }
+        .btn-danger {
+            background: transparent;
+            border: 1px solid var(--danger);
+            color: var(--danger);
+        }
+        .btn-danger:hover { background: var(--danger); color: #fff; }
+        .btn-success {
+            background: transparent;
+            border: 1px solid var(--success);
+            color: var(--success);
+        }
+        .btn-success:hover { background: var(--success); color: #fff; }
+        .config-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
+            gap: 0.75rem;
+            align-items: end;
+            padding: 0.75rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 0.5rem;
+        }
+        .config-row .field { min-width: 0; }
+        .config-header {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
+            gap: 0.75rem;
+            padding: 0 0.75rem 0.4rem;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+        .toolbar {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+        .toast {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .toast.show { opacity: 1; }
+        .toast.ok { background: var(--success); color: #fff; }
+        .toast.err { background: var(--danger); color: #fff; }
+        #importBox { display: none; margin-top: 1rem; }
+        @media (max-width: 800px) {
+            .config-row, .config-header { grid-template-columns: 1fr 1fr 1fr auto; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Configurator Simulator</h1>
+        <p class="subtitle">Compare multiple hardware / topology / batch-size configurations on cost-vs-latency plots.</p>
+
+        <div class="card">
+            <h2>Global Parameters</h2>
+            <div class="form-grid">
+                <div>
+                    <label for="model">Model</label>
+                    <input type="text" id="model" name="model" value="Qwen/Qwen3-8B" form="simForm" required>
+                </div>
+                <div>
+                    <label for="isl">ISL (tokens)</label>
+                    <input type="number" id="isl" name="isl" value="1000" min="1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="osl">OSL (tokens)</label>
+                    <input type="number" id="osl" name="osl" value="100" min="1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="requests">Total Requests</label>
+                    <input type="number" id="requests" name="requests" value="10" min="1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="req_rate">Request Rate (req/s)</label>
+                    <input type="number" id="req_rate" name="req_rate" value="2.0" step="0.1" min="0.1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="cache_pct">Cache Percentage</label>
+                    <input type="number" id="cache_pct" name="cache_pct" value="0.0" step="0.1" min="0" max="1" form="simForm" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Configurations to Compare</h2>
+            <div class="toolbar">
+                <button type="button" class="btn btn-success" onclick="exportConfig()">Export JSON</button>
+                <button type="button" class="btn btn-outline" onclick="toggleImport()">Import / Inject JSON</button>
+                <button type="button" class="btn btn-outline" onclick="saveToStorage()">Save to Browser</button>
+                <button type="button" class="btn btn-outline" onclick="loadFromStorage()">Load from Browser</button>
+                <button type="button" class="btn btn-danger" onclick="clearStorage()">Clear Saved</button>
+            </div>
+            <div id="importBox">
+                <label>Paste JSON config here</label>
+                <textarea id="importArea" placeholder="Paste JSON here…"></textarea>
+                <button type="button" class="btn btn-block" onclick="importConfig()" style="margin-top:0.5rem;">Apply JSON</button>
+            </div>
+            <div class="config-header">
+                <div>Hardware</div>
+                <div>Prefill Nodes</div>
+                <div>Decode Nodes</div>
+                <div>Batch Size</div>
+                <div>Label</div>
+                <div></div>
+            </div>
+            <div id="configList">
+                <div class="config-row" data-idx="0">
+                    <div class="field">
+                        <select name="cfg_hardware" form="simForm">
+                            <option value="DGX SPARK" selected>DGX SPARK</option>
+                            <option value="B200">B200</option>
+                            <option value="H100SXM">H100SXM</option>
+                        </select>
+                    </div>
+                    <div class="field"><input type="number" name="cfg_prefill_nodes" value="1" min="0" form="simForm"></div>
+                    <div class="field"><input type="number" name="cfg_decode_nodes" value="1" min="0" form="simForm"></div>
+                    <div class="field"><input type="number" name="cfg_batch" value="10" min="1" form="simForm"></div>
+                    <div class="field"><input type="text" name="cfg_label" value="Config 1" placeholder="Label" form="simForm"></div>
+                    <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
+                </div>
+            </div>
+            <button type="button" class="btn btn-outline" onclick="addConfig()">+ Add Configuration</button>
+        </div>
+
+        <form id="simForm" action="/simulate" method="post" onsubmit="saveToStorage()">
+            <button type="submit" class="btn btn-block">Run Comparison</button>
+        </form>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const PRESETS = ['DGX SPARK', 'B200', 'H100SXM'];
+        const COLORS = ['#58a6ff', '#3fb950', '#f85149', '#d29922', '#a371f7', '#79c0ff', '#56d364', '#f0883e'];
+        const STORAGE_KEY = 'configurator_last_comparison';
+
+        function showToast(msg, ok) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + (ok ? 'ok' : 'err');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function getFormState() {
+            const form = document.getElementById('simForm');
+            const fd = new FormData(form);
+            const state = {
+                model: fd.get('model') || '',
+                isl: fd.get('isl') || '',
+                osl: fd.get('osl') || '',
+                requests: fd.get('requests') || '',
+                req_rate: fd.get('req_rate') || '',
+                cache_pct: fd.get('cache_pct') || '',
+                configs: []
+            };
+            // Collect configs by index
+            const hw = fd.getAll('cfg_hardware');
+            const pre = fd.getAll('cfg_prefill_nodes');
+            const dec = fd.getAll('cfg_decode_nodes');
+            const bat = fd.getAll('cfg_batch');
+            const lab = fd.getAll('cfg_label');
+            for (let i = 0; i < hw.length; i++) {
+                state.configs.push({
+                    hardware: hw[i] || 'DGX SPARK',
+                    prefill_nodes: pre[i] || '1',
+                    decode_nodes: dec[i] || '1',
+                    batch: bat[i] || '10',
+                    label: lab[i] || ('Config ' + (i + 1))
+                });
+            }
+            return state;
+        }
+
+        function setFormState(state) {
+            document.getElementById('model').value = state.model || 'Qwen/Qwen3-8B';
+            document.getElementById('isl').value = state.isl || '1000';
+            document.getElementById('osl').value = state.osl || '100';
+            document.getElementById('requests').value = state.requests || '10';
+            document.getElementById('req_rate').value = state.req_rate || '2.0';
+            document.getElementById('cache_pct').value = state.cache_pct || '0.0';
+
+            const list = document.getElementById('configList');
+            list.innerHTML = '';
+            const configs = state.configs || [];
+            if (configs.length === 0) {
+                configs.push({ hardware: 'DGX SPARK', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config 1' });
+            }
+            configs.forEach((cfg, idx) => addConfigRow(cfg, idx));
+        }
+
+        function addConfigRow(cfg, idx) {
+            const list = document.getElementById('configList');
+            const row = document.createElement('div');
+            row.className = 'config-row';
+            row.dataset.idx = idx;
+            const color = COLORS[idx % COLORS.length];
+            row.style.borderLeft = `4px solid ${color}`;
+            const hwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.hardware ? ' selected' : ''}>${p}</option>`).join('');
+            row.innerHTML = `
+                <div class="field"><select name="cfg_hardware" form="simForm">${hwOpts}</select></div>
+                <div class="field"><input type="number" name="cfg_prefill_nodes" value="${cfg.prefill_nodes || 1}" min="0" form="simForm"></div>
+                <div class="field"><input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || 1}" min="0" form="simForm"></div>
+                <div class="field"><input type="number" name="cfg_batch" value="${cfg.batch || 10}" min="1" form="simForm"></div>
+                <div class="field"><input type="text" name="cfg_label" value="${cfg.label || ('Config ' + (idx + 1))}" placeholder="Label" form="simForm"></div>
+                <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
+            `;
+            list.appendChild(row);
+        }
+
+        function addConfig() {
+            const list = document.getElementById('configList');
+            const idx = list.children.length;
+            addConfigRow({ hardware: 'DGX SPARK', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config ' + (idx + 1) }, idx);
+        }
+
+        function removeConfig(btn) {
+            const row = btn.closest('.config-row');
+            const list = document.getElementById('configList');
+            if (list.children.length <= 1) {
+                alert('At least one configuration is required.');
+                return;
+            }
+            row.remove();
+            Array.from(list.children).forEach((r, i) => {
+                r.dataset.idx = i;
+                r.style.borderLeft = `4px solid ${COLORS[i % COLORS.length]}`;
+            });
+        }
+
+        // ---- Export / Import / localStorage ----
+
+        function exportConfig() {
+            const state = getFormState();
+            const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'configurator_comparison.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('Exported comparison.json', true);
+        }
+
+        function toggleImport() {
+            const box = document.getElementById('importBox');
+            box.style.display = box.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function importConfig() {
+            const text = document.getElementById('importArea').value.trim();
+            if (!text) return;
+            try {
+                const state = JSON.parse(text);
+                setFormState(state);
+                showToast('Config injected', true);
+                document.getElementById('importBox').style.display = 'none';
+                saveToStorage();
+            } catch (e) {
+                showToast('Invalid JSON: ' + e.message, false);
+            }
+        }
+
+        function saveToStorage() {
+            const state = getFormState();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+            showToast('Saved to browser', true);
+        }
+
+        function loadFromStorage() {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) {
+                showToast('Nothing saved in browser', false);
+                return;
+            }
+            try {
+                const state = JSON.parse(raw);
+                setFormState(state);
+                showToast('Loaded from browser', true);
+            } catch (e) {
+                showToast('Failed to load: ' + e.message, false);
+            }
+        }
+
+        function clearStorage() {
+            localStorage.removeItem(STORAGE_KEY);
+            showToast('Cleared saved config', true);
+        }
+
+        // ---- Auto-restore on page load ----
+        window.addEventListener('DOMContentLoaded', () => {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+                try {
+                    const state = JSON.parse(raw);
+                    setFormState(state);
+                    showToast('Restored last comparison from browser', true);
+                } catch (e) {
+                    console.warn('Failed to restore from localStorage:', e);
+                }
+            }
+        });
+    </script>
+</body>
+</html>

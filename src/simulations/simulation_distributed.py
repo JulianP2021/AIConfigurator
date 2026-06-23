@@ -78,7 +78,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         current_requests.append(new_request)
         router.queue.append(new_request)
         debug_print(
-            f"Generated new request with id: {new_request.id} after {wall_time_ms / 1000} seconds"
+            f"Generated new request with id: {new_request.id} after {wall_time_ms / 1000} seconds, user_id: {new_request.user_id}, isl: {new_request.isl}, osl: {new_request.osl}, cached: {new_request.prefilled_tokens}"
         )
 
     router.route_requests()
@@ -100,7 +100,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     total_time_s = wall_time_ms / 1000.0
 
     # ---- Aggregate metrics -------------------------------------------------
-    total_tokens_generated = sum(req.osl for req in finished_requests)
+    total_tokens_generated = sum(req.isl + req.osl for req in finished_requests)
 
     # Per-request stats
     per_request_stats: list[dict[str, float]] = []
@@ -148,10 +148,12 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
 
     avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0.0
     avg_tpot = sum(tpot_list) / len(tpot_list) if tpot_list else 0.0
+    max_ttft_val = max(ttft_list) if ttft_list else 0.0
+    max_tpot_val = max(tpot_list) if tpot_list else 0.0
     avg_latency = sum(latency_list) / len(latency_list) if latency_list else 0.0
 
     request_rate = len(finished_requests) / total_time_s if total_time_s > 0 else 0.0
-    concurrency = total_decode_time_ms / wall_time_ms if wall_time_ms > 0 else 0.0
+    _concurrency = total_decode_time_ms / wall_time_ms if wall_time_ms > 0 else 0.0
 
     # Approximate tokens/s per gpu: total generated tokens / total gpu seconds
     total_gpu_seconds = total_time_s * sum(
@@ -163,9 +165,14 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     tokens_per_second_per_gpu = (
         total_tokens_generated / total_gpu_seconds if total_gpu_seconds > 0 else 0.0
     )
+    batch_size = max(
+        node.decode_instances[0].max_batch_size if node.decode_instances else 0
+        for node in scenario.nodes
+    )
+
     tokens_per_second_per_user = (
-        total_tokens_generated / (total_time_s * concurrency)
-        if total_time_s > 0 and concurrency > 0
+        total_tokens_generated / (total_time_s * batch_size)
+        if total_time_s > 0 and batch_size > 0
         else 0.0
     )
 
@@ -177,12 +184,17 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         1 if len(node.decode_instances) > 0 else 0 for node in scenario.nodes
     ])
 
-    prefill_gpus = sum([len(node.prefill_instances) for node in scenario.nodes])
-    decode_gpus = sum([len(node.decode_instances) for node in scenario.nodes])
+    prefill_gpus = max([len(node.prefill_instances) for node in scenario.nodes])
+    decode_gpus = max([len(node.decode_instances) for node in scenario.nodes])
 
     batch_size = max(
         node.decode_instances[0].max_batch_size if node.decode_instances else 0
         for node in scenario.nodes
+    )
+
+    # Pricing (hourly rate only)
+    total_price_per_hour = sum(
+        node.hardware.spec.price_usd_per_hour for node in scenario.nodes
     )
 
     result = SimulationResult(
@@ -196,12 +208,15 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         ttft=avg_ttft,
         tpot=avg_tpot,
         request_latency=avg_latency,
+        max_ttft=max_ttft_val,
+        max_tpot=max_tpot_val,
         tokens_per_second=tokens_per_second,
         tokens_per_second_per_gpu=tokens_per_second_per_gpu,
         tokens_per_second_per_user=tokens_per_second_per_user,
         request_rate=request_rate,
-        concurrency=concurrency,
+        concurrency=batch_size,
         memory_gb=0,
+        price_usd_per_hour=total_price_per_hour,
         per_request_stats=per_request_stats,
     )
 
@@ -219,7 +234,9 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     print(f"  Batch size:        {result.batch_size}")
     print(f"{'-' * 60}")
     print(f"  TTFT:              {result.ttft:.2f} ms")
+    print(f"  max TTFT:          {result.max_ttft:.2f} ms")
     print(f"  TPOT:              {result.tpot:.2f} ms")
+    print(f"  max TPOT:          {result.max_tpot:.2f} ms")
     print(f"  Request Latency:   {result.request_latency:.2f} ms")
     print(f"{'-' * 60}")
     print(f"  tokens/s:          {result.tokens_per_second:,.2f}")
@@ -229,6 +246,8 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     print(f"  concurrency:       {result.concurrency:.1f}")
     print(f"{'-' * 60}")
     print(f"  Memory (peak):     {result.memory_gb:.2f} GB")
+    print(f"{'-' * 60}")
+    print(f"  Price/hour:        ${result.price_usd_per_hour:.4f}")
     print(f"{'=' * 60}\n")
 
     return result

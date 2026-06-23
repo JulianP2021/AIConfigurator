@@ -32,6 +32,13 @@ class DecodeInstance:
         processed_requests: list[Request] = []
         total_time_ms = time_ms
 
+        kv_cache = 0
+        for req in self.queue:
+            kv_cache += self.model.kv_size_per_token * req.isl
+        assert kv_cache <= self.hardware.gpu_mem, (
+            "KV cache exceeds GPU memory, too many requests in decode queue"
+        )
+
         while time_ms > 0 and self.queue:
             batch = self.queue[: self.max_batch_size]
             decode_time = self.calculate_decode_time(batch)

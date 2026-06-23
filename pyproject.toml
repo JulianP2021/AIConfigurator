@@ -7,8 +7,13 @@ requires-python = ">=3.14"
 dependencies = [
     "aiconfigurator>=0.9.0",
     "beautifulsoup4>=4.15.0",
+    "fastapi>=0.138.0",
+    "jinja2>=3.1.6",
+    "matplotlib>=3.11.0",
+    "python-multipart>=0.0.32",
     "requests>=2.34.2",
     "transformers>=5.12.1",
+    "uvicorn>=0.49.0",
 ]
 
 [dependency-groups]
@@ -18,3 +23,4 @@ dev = [
 
 [tool.uv.sources]
 configurator = { workspace = true }
+

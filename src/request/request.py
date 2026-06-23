@@ -84,9 +84,10 @@ class RequestGenerator:
         finished_users = {r.user_id for r in finished_requests}.difference(
             current_users
         )
+        users = current_users.union(finished_users)
 
         if len(finished_users) < request_scenario.min_users:
-            user_id = max(finished_users) + 1 if finished_users else 0
+            user_id = max(users) + 1 if users else 0
         else:
             if len(finished_users) < request_scenario.max_users:
                 if random.random() < 0.5:
@@ -108,7 +109,7 @@ class RequestGenerator:
         )
         past_requests = [r for r in current_requests if r.user_id == user_id]
         min_input_tokens = max(
-            request_scenario.token_distribution.min_input_tokens,
+            0,
             max((r.isl + r.osl for r in past_requests), default=0),
         )
 
