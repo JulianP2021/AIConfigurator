@@ -4,13 +4,19 @@ import base64
 import io
 import sys
 import uuid
+
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+
+
+# Ensure project root is on sys.path when running the script directly
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.hardware.hardware import Hardware
 from src.node.node import Node
@@ -21,10 +27,6 @@ from src.simulations.simulation_distributed import (
     simulate_run_distributed,
 )
 
-# Ensure project root is importable
-_PROJECT_ROOT = Path(Path(__file__).parent)
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
 
 matplotlib.use("Agg")
 
@@ -299,7 +301,8 @@ def _results_inner_html(
 
 def _build_comparison_plots(results: list[dict[str, float | int | str]]) -> list[str]:
     """Generate base64-encoded PNGs for multi-config comparison.
-    Returns list of plot IDs."""
+    Returns list of plot IDs.
+    """
     plot_ids: list[str] = []
 
     # Plot 1: TTFT vs Price ($/hour)
@@ -430,42 +433,19 @@ async def index():
 
 @app.post("/simulate", response_class=HTMLResponse)
 async def simulate(
-    model: str | None = None,
-    isl: int | None = None,
-    osl: int | None = None,
-    requests: int | None = None,
-    req_rate: float | None = None,
-    cache_pct: float | None = None,
-    cfg_hardware: list[str] | None = None,
-    cfg_prefill_nodes: list[str] | None = None,
-    cfg_decode_nodes: list[str] | None = None,
-    cfg_batch: list[str] | None = None,
-    cfg_label: list[str] | None = None,
+    model: str = Form(...),
+    isl: int = Form(...),
+    osl: int = Form(...),
+    requests: int = Form(...),
+    req_rate: float = Form(...),
+    cache_pct: float = Form(...),
+    cfg_hardware: list[str] = Form(...),
+    cfg_prefill_nodes: list[str] = Form(...),
+    cfg_decode_nodes: list[str] = Form(...),
+    cfg_batch: list[str] = Form(...),
+    cfg_label: list[str] = Form(...),
     xhr: str = Form("0"),
 ):
-    if not model:
-        model = "Qwen/Qwen3-8B"
-    if not isl:
-        isl = 100
-    if not osl:
-        osl = 100
-    if not requests:
-        requests = 10
-    if not req_rate:
-        req_rate = 1.0
-    if not cache_pct:
-        cache_pct = 0.0
-    if cfg_label is None:
-        cfg_label = []
-    if cfg_batch is None:
-        cfg_batch = []
-    if cfg_decode_nodes is None:
-        cfg_decode_nodes = []
-    if cfg_prefill_nodes is None:
-        cfg_prefill_nodes = []
-    if cfg_hardware is None:
-        cfg_hardware = []
-
     try:
         # Gather configs
         n = len(cfg_hardware)

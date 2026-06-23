@@ -2,6 +2,35 @@ target-version = "py314"
 line-length = 88
 indent-width = 4
 
+
+
+[lint.pydocstyle]
+convention = "google"
+
+
+
+[format]
+preview = true
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+docstring-code-format = true
+
+exclude = [
+  "./.cache",
+  "./.git",
+  "./.idea",
+  "./.mypy_cache",
+  "./.pytest_cache",
+  "./.venv",
+  "./venv",
+  "./env",
+  "./cached_venv",
+  "./docs",
+  "./var",
+  "./.vscode",
+]
+
 [lint]
 select = [
     "E",   # pycodestyle errors
@@ -21,15 +50,39 @@ select = [
     "PT",  # flake8-pytest-style
     "RUF", # ruff-specific rules
 ]
+
+extend-select = ["E", "F", "I", "UP", "B", "W", "C90", "N", "D", "PYI", "PT", "RET", "SIM", "ARG", "ERA"]
 ignore = [
-    "E501",  # line too long, handled by formatter
+  "B008",
+  "C901",
+  "D100",
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "D203",
+  "D205",
+  "D213",
+  "COM812",
+  "E501",
+  "ERA001"
 ]
 
-[lint.pydocstyle]
-convention = "google"
+[lint.isort]
+lines-after-imports = 2
+lines-between-types = 1
+no-lines-before = ["future", "standard-library"]
+no-sections = false
+order-by-type = true
 
-[format]
-preview = true
-quote-style = "double"
-indent-style = "space"
-line-ending = "auto"
+
+[lint.per-file-ignores]
+"test_*.py" = ["S101"]
+"tests.py" = ["S101"]
+"tests_*.py" = ["S101"]
+"*/tests/*" = ["S101"]
+"conftest.py" = ["S101"]
+"__init__.py" = ["F401", "F403"]
