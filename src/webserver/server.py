@@ -37,33 +37,36 @@ _plot_store: dict[str, str] = {}  # id -> base64 PNG
 
 
 def _build_nodes(
-    hardware_name: str,
+    prefill_hardware_name: str,
+    decode_hardware_name: str,
     prefill_nodes: int,
     decode_nodes: int,
     batch_size: int,
     model: str,
 ) -> list[Node]:
-    hw = Hardware.from_name(hardware_name)
-    gpus_per_node = hw.spec.num_gpus
+    prefill_hw = Hardware.from_name(prefill_hardware_name)
+    decode_hw = Hardware.from_name(decode_hardware_name)
+    prefill_gpus_per_node = prefill_hw.spec.num_gpus
+    decode_gpus_per_node = decode_hw.spec.num_gpus
     nodes: list[Node] = []
     for _ in range(prefill_nodes):
         nodes.append(
             Node(
-                hardware=hw,
+                hardware=prefill_hw,
                 model_name=model,
                 batch_size=batch_size,
-                prefill_instances=gpus_per_node,
+                prefill_instances=prefill_gpus_per_node,
                 decode_instances=0,
             )
         )
     for _ in range(decode_nodes):
         nodes.append(
             Node(
-                hardware=hw,
+                hardware=decode_hw,
                 model_name=model,
                 batch_size=batch_size,
                 prefill_instances=0,
-                decode_instances=gpus_per_node,
+                decode_instances=decode_gpus_per_node,
             )
         )
     return nodes
@@ -72,7 +75,8 @@ def _build_nodes(
 def _run_single_config(
     *,
     label: str,
-    hardware: str,
+    prefill_hardware: str,
+    decode_hardware: str,
     prefill_nodes: int,
     decode_nodes: int,
     batch_size: int,
@@ -83,7 +87,14 @@ def _run_single_config(
     req_rate: float,
     cache_pct: float,
 ) -> SimulationResult:
-    nodes = _build_nodes(hardware, prefill_nodes, decode_nodes, batch_size, model)
+    nodes = _build_nodes(
+        prefill_hardware,
+        decode_hardware,
+        prefill_nodes,
+        decode_nodes,
+        batch_size,
+        model,
+    )
     scenario = DistributedScenario(
         name=label,
         nodes=nodes,
@@ -249,27 +260,30 @@ def _results_inner_html(
 
     if results:
         # ---- Best config metric card ----
-        best = min(results, key=lambda r: r["price_per_ttft"])
-        html += '<div class="card"><h2>Best Config (by Price/TTFT)</h2><div class="metrics">\n'
+        best = min(results, key=lambda r: r["request_latency"])
+        html += (
+            '<div class="card"><h2>Best Config (by Latency)</h2><div class="metrics">\n'
+        )
         html += _metric_card(best["label"], "Configuration")
         html += _metric_card(f"{best['ttft']:.2f}", "TTFT (ms)")
         html += _metric_card(f"{best['tpot']:.2f}", "TPOT (ms)")
         html += _metric_card(f"${best['price_usd_per_hour']:.2f}", "Price / hour")
-        html += _metric_card(f"{best['tokens_per_second']:.2f}", "tokens/s")
+        html += _metric_card(f"{best['max_request_latency']:.2f}", "max Latency (ms)")
         html += "</div></div>\n"
 
         # ---- Comparison table ----
         html += '<div class="card"><h2>Configuration Comparison</h2><table><thead><tr>'
-        html += "<th>Label</th><th>Hardware</th><th>Nodes (P/D)</th><th>Batch</th>"
+        html += "<th>Label</th><th>Prefill HW</th><th>Decode HW</th><th>Nodes (P/D)</th><th>Batch</th>"
         html += "<th>TTFT</th><th>max TTFT</th><th>TPOT</th><th>max TPOT</th>"
-        html += "<th>Latency</th><th>tok/s</th><th>tok/s/GPU</th><th>req/s</th><th>Conc</th>"
-        html += "<th>Price/h</th><th>$/TTFT</th><th>$/TPOT</th>"
+        html += "<th>Latency</th><th>max Latency</th><th>tok/s</th><th>tok/s/GPU</th><th>req/s</th>"
+        html += "<th>Price/h</th>"
         html += "</tr></thead><tbody>"
         for row in results:
             html += (
                 f"<tr>"
                 f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
-                f"<td>{row['hardware']}</td>"
+                f"<td>{row['prefill_hardware']}</td>"
+                f"<td>{row['decode_hardware']}</td>"
                 f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
                 f"<td>{row['batch_size']}</td>"
                 f"<td>{row['ttft']:.2f}</td>"
@@ -277,13 +291,11 @@ def _results_inner_html(
                 f"<td>{row['tpot']:.2f}</td>"
                 f"<td>{row['max_tpot']:.2f}</td>"
                 f"<td>{row['request_latency']:.2f}</td>"
+                f"<td>{row['max_request_latency']:.2f}</td>"
                 f"<td>{row['tokens_per_second']:.2f}</td>"
                 f"<td>{row['tokens_per_second_per_gpu']:.2f}</td>"
                 f"<td>{row['request_rate']:.3f}</td>"
-                f"<td>{row['concurrency']:.1f}</td>"
                 f"<td>${row['price_usd_per_hour']:.2f}</td>"
-                f"<td>{row['price_per_ttft']:.4f}</td>"
-                f"<td>{row['price_per_tpot']:.4f}</td>"
                 f"</tr>"
             )
         html += "</tbody></table></div>\n"
@@ -299,112 +311,65 @@ def _results_inner_html(
     return html
 
 
+def _build_single_plot(
+    results: list[dict[str, float | int | str]],
+    x_key: str,
+    x_label: str,
+    title: str,
+) -> str:
+    """Generate a single scatter plot and return its plot ID."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for row in results:
+        ax.scatter(
+            row[x_key],
+            row["price_usd_per_hour"],
+            s=120,
+            color=row.get("color", "#58a6ff"),
+            edgecolors="white",
+            linewidths=0.5,
+            zorder=3,
+        )
+        ax.annotate(
+            row["label"],
+            (row[x_key], row["price_usd_per_hour"]),
+            textcoords="offset points",
+            xytext=(8, 4),
+            fontsize=9,
+            color=row.get("color", "#58a6ff"),
+        )
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Price ($/hour)")
+    ax.set_title(title)
+    ax.set_ylim(bottom=0)
+    ax.set_xlim(left=0)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    pid = str(uuid.uuid4())
+    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+    return f"/plot/{pid}"
+
+
 def _build_comparison_plots(results: list[dict[str, float | int | str]]) -> list[str]:
     """Generate base64-encoded PNGs for multi-config comparison.
-    Returns list of plot IDs.
+    Returns list of plot IDs (6 plots: avg and max for TTFT, TPOT, Latency).
     """
-    plot_ids: list[str] = []
-
-    # Plot 1: TTFT vs Price ($/hour)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for row in results:
-        ax.scatter(
-            row["ttft"],
-            row["price_usd_per_hour"],
-            s=120,
-            color=row.get("color", "#58a6ff"),
-            edgecolors="white",
-            linewidths=0.5,
-            zorder=3,
-        )
-        ax.annotate(
-            row["label"],
-            (row["ttft"], row["price_usd_per_hour"]),
-            textcoords="offset points",
-            xytext=(8, 4),
-            fontsize=9,
-            color=row.get("color", "#58a6ff"),
-        )
-    ax.set_xlabel("TTFT (ms)")
-    ax.set_ylabel("Price ($/hour)")
-    ax.set_title("Price vs TTFT")
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-    pid = str(uuid.uuid4())
-    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-    plot_ids.append(f"/plot/{pid}")
-
-    # Plot 2: TPOT vs Price ($/hour)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for row in results:
-        ax.scatter(
-            row["tpot"],
-            row["price_usd_per_hour"],
-            s=120,
-            color=row.get("color", "#58a6ff"),
-            edgecolors="white",
-            linewidths=0.5,
-            zorder=3,
-        )
-        ax.annotate(
-            row["label"],
-            (row["tpot"], row["price_usd_per_hour"]),
-            textcoords="offset points",
-            xytext=(8, 4),
-            fontsize=9,
-            color=row.get("color", "#58a6ff"),
-        )
-    ax.set_xlabel("TPOT (ms)")
-    ax.set_ylabel("Price ($/hour)")
-    ax.set_title("Price vs TPOT")
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-    pid = str(uuid.uuid4())
-    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-    plot_ids.append(f"/plot/{pid}")
-
-    # Plot 3: Latency vs Price ($/hour)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    for row in results:
-        ax.scatter(
-            row["request_latency"],
-            row["price_usd_per_hour"],
-            s=120,
-            color=row.get("color", "#58a6ff"),
-            edgecolors="white",
-            linewidths=0.5,
-            zorder=3,
-        )
-        ax.annotate(
-            row["label"],
-            (row["request_latency"], row["price_usd_per_hour"]),
-            textcoords="offset points",
-            xytext=(8, 4),
-            fontsize=9,
-            color=row.get("color", "#58a6ff"),
-        )
-    ax.set_xlabel("End-to-End Latency (ms)")
-    ax.set_ylabel("Price ($/hour)")
-    ax.set_title("Price vs Latency")
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150)
-    plt.close(fig)
-    buf.seek(0)
-    pid = str(uuid.uuid4())
-    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-    plot_ids.append(f"/plot/{pid}")
-
-    return plot_ids
+    return [
+        # Average values
+        _build_single_plot(results, "ttft", "TTFT (ms)", "Price vs TTFT"),
+        _build_single_plot(results, "max_ttft", "Max TTFT (ms)", "Price vs Max TTFT"),
+        _build_single_plot(results, "tpot", "TPOT (ms)", "Price vs TPOT"),
+        _build_single_plot(results, "max_tpot", "Max TPOT (ms)", "Price vs Max TPOT"),
+        _build_single_plot(
+            results, "request_latency", "Latency (ms)", "Price vs Latency"
+        ),
+        _build_single_plot(
+            results, "max_request_latency", "Max Latency (ms)", "Price vs Max Latency"
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +404,8 @@ async def simulate(
     requests: int = Form(...),
     req_rate: float = Form(...),
     cache_pct: float = Form(...),
-    cfg_hardware: list[str] = Form(...),
+    cfg_prefill_hardware: list[str] = Form(...),
+    cfg_decode_hardware: list[str] = Form(...),
     cfg_prefill_nodes: list[str] = Form(...),
     cfg_decode_nodes: list[str] = Form(...),
     cfg_batch: list[str] = Form(...),
@@ -448,9 +414,10 @@ async def simulate(
 ):
     try:
         # Gather configs
-        n = len(cfg_hardware)
+        n = len(cfg_prefill_hardware)
         if not (
-            len(cfg_prefill_nodes)
+            len(cfg_decode_hardware)
+            == len(cfg_prefill_nodes)
             == len(cfg_decode_nodes)
             == len(cfg_batch)
             == len(cfg_label)
@@ -459,8 +426,10 @@ async def simulate(
             raise ValueError("Configuration arrays must all have the same length.")
 
         results_data: list[dict[str, float | int | str]] = []
+        skipped_labels: list[str] = []
         for i in range(n):
-            hw = cfg_hardware[i]
+            prefill_hw = cfg_prefill_hardware[i]
+            decode_hw = cfg_decode_hardware[i]
             prefill_n = int(cfg_prefill_nodes[i])
             decode_n = int(cfg_decode_nodes[i])
             batch = int(cfg_batch[i])
@@ -471,34 +440,32 @@ async def simulate(
                     f"Config '{label}' must have at least one prefill or decode node."
                 )
 
-            result = _run_single_config(
-                label=label,
-                hardware=hw,
-                prefill_nodes=prefill_n,
-                decode_nodes=decode_n,
-                batch_size=batch,
-                model=model,
-                isl=isl,
-                osl=osl,
-                total_requests=requests,
-                req_rate=req_rate,
-                cache_pct=cache_pct,
-            )
-
-            price_per_ttft = (
-                result.price_usd_per_hour / result.ttft
-                if result.ttft > 0
-                else float("inf")
-            )
-            price_per_tpot = (
-                result.price_usd_per_hour / result.tpot
-                if result.tpot > 0
-                else float("inf")
-            )
+            try:
+                result = _run_single_config(
+                    label=label,
+                    prefill_hardware=prefill_hw,
+                    decode_hardware=decode_hw,
+                    prefill_nodes=prefill_n,
+                    decode_nodes=decode_n,
+                    batch_size=batch,
+                    model=model,
+                    isl=isl,
+                    osl=osl,
+                    total_requests=requests,
+                    req_rate=req_rate,
+                    cache_pct=cache_pct,
+                )
+            except AssertionError as exc:
+                if "Too many requests in prefill queue" in str(exc):
+                    skipped_labels.append(label)
+                    print(f"Skipping config '{label}' due to prefill queue overflow.")
+                    continue
+                raise
 
             results_data.append({
                 "label": label,
-                "hardware": hw,
+                "prefill_hardware": prefill_hw,
+                "decode_hardware": decode_hw,
                 "prefill_nodes": prefill_n,
                 "decode_nodes": decode_n,
                 "batch_size": batch,
@@ -507,22 +474,26 @@ async def simulate(
                 "tpot": result.tpot,
                 "max_tpot": result.max_tpot,
                 "request_latency": result.request_latency,
+                "max_request_latency": result.max_request_latency,
                 "tokens_per_second": result.tokens_per_second,
                 "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
                 "request_rate": result.request_rate,
-                "concurrency": result.concurrency,
                 "price_usd_per_hour": result.price_usd_per_hour,
-                "price_per_ttft": price_per_ttft,
-                "price_per_tpot": price_per_tpot,
                 "color": COLORS[i % len(COLORS)],
             })
+
+        error_msg = None
+        if skipped_labels:
+            error_msg = f"Skipped configs (too many requests in prefill queue): {', '.join(skipped_labels)}"
 
         plot_urls = _build_comparison_plots(results_data)
         if xhr == "1":
             return HTMLResponse(
-                content=_results_inner_html(results_data, plot_urls, None)
+                content=_results_inner_html(results_data, plot_urls, error_msg)
             )
-        return HTMLResponse(content=_build_results_page(results_data, plot_urls, None))
+        return HTMLResponse(
+            content=_build_results_page(results_data, plot_urls, error_msg)
+        )
 
     except Exception as exc:
         import traceback
@@ -531,6 +502,12 @@ async def simulate(
         if xhr == "1":
             return HTMLResponse(content=_results_inner_html([], None, err))
         return HTMLResponse(content=_build_results_page([], None, err))
+
+
+@app.get("/api/hardware")
+async def hardware_options():
+    """Return the list of available hardware preset names."""
+    return {"hardware": list(Hardware.PRESETS.keys())}
 
 
 @app.get("/plot/{plot_id}")

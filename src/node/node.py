@@ -3,6 +3,7 @@ from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.model.model import Model
 
+
 node_id_counter = 0
 
 

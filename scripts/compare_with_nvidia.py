@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-Run a side-by-side comparison between:
+"""Run a side-by-side comparison between:
 1. Your discrete-event simulator (configurator)
-2. NVIDIA AI Configurator (aiconfigurator) estimate API
+2. NVIDIA AI Configurator (aiconfigurator) estimate API.
 
 Usage:
     python scripts/compare_with_nvidia.py --isl 1000 --osl 100 --requests 10 --model Qwen/Qwen3-8B
@@ -14,9 +13,11 @@ import argparse
 import json
 import logging
 import sys
+
 from pathlib import Path
 
 from aiconfigurator.cli.api import EstimateResult, cli_estimate
+
 
 # Ensure project root is on sys.path when running the script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,6 +31,7 @@ from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
 )
+
 
 # Suppress noisy NVIDIA loggers by default
 for noisy in ("aiconfigurator", "transformers", "urllib3"):
@@ -206,11 +208,11 @@ def print_comparison_table(
         ("ttft_ms", "TTFT (ms)"),
         ("tpot_ms", "TPOT (ms)"),
         ("request_latency_ms", "Request Latency (ms)"),
+        ("max_request_latency_ms", "max Latency (ms)"),
         ("tokens_per_second", "tokens/s"),
         ("tokens_per_second_per_gpu", "tokens/s/gpu"),
         ("tokens_per_second_per_user", "tokens/s/user"),
         ("request_rate", "req/s"),
-        ("concurrency", "Concurrency"),
         ("memory_gb", "Memory (GB)"),
     ]
 

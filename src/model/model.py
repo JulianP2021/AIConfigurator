@@ -11,7 +11,7 @@ class Model:
     def __init__(self, name: str):
         self.name = name
         self.config = fetch_architecture(self.name)
-        print(f"Model {self.name} config: {self.config}")
+        # print(f"Model {self.name} config: {self.config}")
 
     @property
     def dtype_size(self) -> float:

@@ -10,7 +10,9 @@ Examples::
 
 import argparse
 import sys
+
 from pathlib import Path
+
 
 # Allow importing ``src`` when the script is executed from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

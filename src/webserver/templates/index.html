@@ -99,7 +99,7 @@
         .btn-success:hover { background: var(--success); color: #fff; }
         .config-row {
             display: grid;
-            grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
+            grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1.5fr auto;
             gap: 0.75rem;
             align-items: end;
             padding: 0.75rem;
@@ -111,7 +111,7 @@
         .config-row .field { min-width: 0; }
         .config-header {
             display: grid;
-            grid-template-columns: 2fr 1fr 1fr 1fr 1fr auto;
+            grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1.5fr auto;
             gap: 0.75rem;
             padding: 0 0.75rem 0.4rem;
             font-size: 0.75rem;
@@ -195,7 +195,8 @@
                 <button type="button" class="btn btn-block" onclick="importConfig()" style="margin-top:0.5rem;">Apply JSON</button>
             </div>
             <div class="config-header">
-                <div>Hardware</div>
+                <div>Prefill HW</div>
+                <div>Decode HW</div>
                 <div>Prefill Nodes</div>
                 <div>Decode Nodes</div>
                 <div>Batch Size</div>
@@ -205,10 +206,13 @@
             <div id="configList">
                 <div class="config-row" data-idx="0">
                     <div class="field">
-                        <select name="cfg_hardware" form="simForm">
-                            <option value="DGX SPARK" selected>DGX SPARK</option>
-                            <option value="B200">B200</option>
-                            <option value="H100SXM">H100SXM</option>
+                        <select name="cfg_prefill_hardware" form="simForm">
+                            <!-- populated dynamically -->
+                        </select>
+                    </div>
+                    <div class="field">
+                        <select name="cfg_decode_hardware" form="simForm">
+                            <!-- populated dynamically -->
                         </select>
                     </div>
                     <div class="field"><input type="number" name="cfg_prefill_nodes" value="1" min="0" form="simForm"></div>
@@ -229,9 +233,32 @@
     <div id="toast" class="toast"></div>
 
     <script>
-        const PRESETS = ['DGX SPARK', 'B200', 'H100SXM'];
+        let PRESETS = [];
         const COLORS = ['#58a6ff', '#3fb950', '#f85149', '#d29922', '#a371f7', '#79c0ff', '#56d364', '#f0883e'];
         const STORAGE_KEY = 'configurator_last_comparison';
+
+        async function loadPresets() {
+            try {
+                const res = await fetch('/api/hardware');
+                const data = await res.json();
+                PRESETS = data.hardware || [];
+                if (PRESETS.length === 0) {
+                    showToast('No hardware presets found. Run refresh_machines.py first.', false);
+                    PRESETS = ['(none)'];
+                }
+            } catch (e) {
+                console.warn('Failed to load hardware presets:', e);
+                PRESETS = ['(none)'];
+            }
+            // Refresh any existing rows with the now-populated options
+            ['cfg_prefill_hardware', 'cfg_decode_hardware'].forEach(name => {
+                const selects = document.querySelectorAll(`select[name="${name}"]`);
+                selects.forEach(sel => {
+                    const current = sel.value;
+                    sel.innerHTML = PRESETS.map(p => `<option value="${p}"${p === current ? ' selected' : ''}>${p}</option>`).join('');
+                });
+            });
+        }
 
         function showToast(msg, ok) {
             const t = document.getElementById('toast');
@@ -253,14 +280,16 @@
                 configs: []
             };
             // Collect configs by index
-            const hw = fd.getAll('cfg_hardware');
+            const preHw = fd.getAll('cfg_prefill_hardware');
+            const decHw = fd.getAll('cfg_decode_hardware');
             const pre = fd.getAll('cfg_prefill_nodes');
             const dec = fd.getAll('cfg_decode_nodes');
             const bat = fd.getAll('cfg_batch');
             const lab = fd.getAll('cfg_label');
-            for (let i = 0; i < hw.length; i++) {
+            for (let i = 0; i < preHw.length; i++) {
                 state.configs.push({
-                    hardware: hw[i] || 'DGX SPARK',
+                    prefill_hardware: preHw[i] || '',
+                    decode_hardware: decHw[i] || '',
                     prefill_nodes: pre[i] || '1',
                     decode_nodes: dec[i] || '1',
                     batch: bat[i] || '10',
@@ -282,7 +311,7 @@
             list.innerHTML = '';
             const configs = state.configs || [];
             if (configs.length === 0) {
-                configs.push({ hardware: 'DGX SPARK', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config 1' });
+                configs.push({ prefill_hardware: (PRESETS[0] || ''), decode_hardware: (PRESETS[0] || ''), prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config 1' });
             }
             configs.forEach((cfg, idx) => addConfigRow(cfg, idx));
         }
@@ -294,9 +323,11 @@
             row.dataset.idx = idx;
             const color = COLORS[idx % COLORS.length];
             row.style.borderLeft = `4px solid ${color}`;
-            const hwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.hardware ? ' selected' : ''}>${p}</option>`).join('');
+            const preHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.prefill_hardware ? ' selected' : ''}>${p}</option>`).join('');
+            const decHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.decode_hardware ? ' selected' : ''}>${p}</option>`).join('');
             row.innerHTML = `
-                <div class="field"><select name="cfg_hardware" form="simForm">${hwOpts}</select></div>
+                <div class="field"><select name="cfg_prefill_hardware" form="simForm">${preHwOpts}</select></div>
+                <div class="field"><select name="cfg_decode_hardware" form="simForm">${decHwOpts}</select></div>
                 <div class="field"><input type="number" name="cfg_prefill_nodes" value="${cfg.prefill_nodes || 1}" min="0" form="simForm"></div>
                 <div class="field"><input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || 1}" min="0" form="simForm"></div>
                 <div class="field"><input type="number" name="cfg_batch" value="${cfg.batch || 10}" min="1" form="simForm"></div>
@@ -309,7 +340,7 @@
         function addConfig() {
             const list = document.getElementById('configList');
             const idx = list.children.length;
-            addConfigRow({ hardware: 'DGX SPARK', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config ' + (idx + 1) }, idx);
+            addConfigRow({ prefill_hardware: PRESETS[0] || '', decode_hardware: PRESETS[0] || '', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config ' + (idx + 1) }, idx);
         }
 
         function removeConfig(btn) {
@@ -388,7 +419,8 @@
         }
 
         // ---- Auto-restore on page load ----
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadPresets();
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
                 try {

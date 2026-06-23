@@ -151,6 +151,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     max_ttft_val = max(ttft_list) if ttft_list else 0.0
     max_tpot_val = max(tpot_list) if tpot_list else 0.0
     avg_latency = sum(latency_list) / len(latency_list) if latency_list else 0.0
+    max_latency_val = max(latency_list) if latency_list else 0.0
 
     request_rate = len(finished_requests) / total_time_s if total_time_s > 0 else 0.0
     _concurrency = total_decode_time_ms / wall_time_ms if wall_time_ms > 0 else 0.0
@@ -208,6 +209,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         ttft=avg_ttft,
         tpot=avg_tpot,
         request_latency=avg_latency,
+        max_request_latency=max_latency_val,
         max_ttft=max_ttft_val,
         max_tpot=max_tpot_val,
         tokens_per_second=tokens_per_second,

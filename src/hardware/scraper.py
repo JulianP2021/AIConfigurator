@@ -8,10 +8,13 @@ re-populate the file from Vast.ai when needed.
 import json
 import pathlib
 import re
+
 from typing import Any
 
 import requests
+
 from bs4 import BeautifulSoup
+
 
 _PRICING_PAGE = "https://vast.ai/pricing/gpu"
 _MARKET_API = "https://vast.ai/api/v0/bundles"

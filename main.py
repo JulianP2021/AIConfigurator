@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run the distributed simulator with configurable CLI parameters.
+"""Run the distributed simulator with configurable CLI parameters.
 
 Usage examples:
     # Default scenario

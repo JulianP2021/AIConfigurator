@@ -10,6 +10,7 @@ from .scraper import (
     refresh_machines_file,
 )
 
+
 __all__ = [
     "Hardware",
     "HardwareSpec",
