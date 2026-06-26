@@ -31,7 +31,7 @@ class Router:
         finished_requests: list[Request] = []
         prefilled_requests: list[Request] = []
 
-        time_to_next_completion = min([
+        time_to_next_completion: float = min([
             instance.time_to_next_completion()
             for instance in self.prefill_instances
             if instance.queue or instance.upload_queue
@@ -59,6 +59,9 @@ class Router:
                     f"Processing decode instance with queue length {len(instance.queue)}, download queue length {len(instance.download_queue)}"
                 )
                 decoded_requests = instance.process_queue(time_to_next_completion)
+                debug_print(
+                    f"Finished processing decode instance, {len(decoded_requests)} requests finished, total time passed: {total_time_ms / 1000} seconds"
+                )
                 finished_requests.extend(decoded_requests)
             total_time_ms += time_to_next_completion
             self.queue.extend(prefilled_requests)

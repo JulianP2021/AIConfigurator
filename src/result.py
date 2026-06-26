@@ -31,7 +31,7 @@ class SimulationResult:
     tokens_per_second: float
     tokens_per_second_per_gpu: float
     tokens_per_second_per_user: float
-    request_rate: float  # req/s
+    seq_per_second: float  # seq/s (completed sequences per second)
     concurrency: float  # average requests in flight
 
     # Resource
@@ -42,11 +42,6 @@ class SimulationResult:
 
     # Raw per-request data for deeper analysis
     per_request_stats: list[dict[str, Any]] = field(default_factory=list)
-
-    def __post_init__(self):
-        # Sanity checks
-        assert self.total_gpus > 0, "total_gpus must be > 0"
-        assert self.request_rate >= 0, "request_rate must be >= 0"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,7 +61,7 @@ class SimulationResult:
             "tokens_per_second": round(self.tokens_per_second, 2),
             "tokens_per_second_per_gpu": round(self.tokens_per_second_per_gpu, 2),
             "tokens_per_second_per_user": round(self.tokens_per_second_per_user, 2),
-            "request_rate": round(self.request_rate, 3),
+            "seq/s": round(self.seq_per_second, 3),
             "memory_gb": round(self.memory_gb, 2),
             "price_usd_per_hour": round(self.price_usd_per_hour, 4),
             "num_requests": len(self.per_request_stats),
@@ -82,6 +77,6 @@ class SimulationResult:
             f"tpot={self.tpot:.2f}ms, max_tpot={self.max_tpot:.2f}ms, "
             f"latency={self.request_latency:.2f}ms, "
             f"tok/s/gpu={self.tokens_per_second_per_gpu:.2f}, "
-            f"req/s={self.request_rate:.3f}, "
+            f"seq/s={self.seq_per_second:.3f}, "
             f"concurrency={self.concurrency:.1f})"
         )

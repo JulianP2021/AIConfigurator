@@ -103,7 +103,7 @@ def _fetch_specs(gpu_name: str) -> dict[str, Any]:
         msg = f"__NEXT_DATA__ script tag not found on {url}"
         raise ValueError(msg)
 
-    data = json.loads(script_tag.string)
+    data = json.loads(str(script_tag.string))
     gpu_details = data.get("props", {}).get("pageProps", {}).get("gpuDetails")
     if not gpu_details:
         msg = f"No gpuDetails found for {gpu_name!r}"
@@ -211,37 +211,6 @@ def lookup(gpu_name: str) -> dict[str, Any]:
         raise KeyError(msg) from None
 
 
-def fetch_hardware(gpu_name: str) -> "Hardware":  # noqa: F821, UP037
-    """Build a :class:`~hardware.hardware.Hardware` instance from the file cache.
-
-    Fields that are not provided by vast.ai (RAM, NVMe, network) are
-    defaulted to ``0`` so the caller can fill them in afterwards.
-    """
-    from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
-
-    scraped = lookup(gpu_name)
-    gpu_spec = GPUHardwareSpec(
-        flops=scraped["flops"],
-        gpu_mem=scraped["gpu_mem"],
-        gpu_bw=scraped["gpu_bw"],
-    )
-    spec = HardwareSpec(
-        gpu_hardware=gpu_spec,
-        num_gpus=1,
-        ram_mem=0,
-        ram_bw=0,
-        nvme_mem=0,
-        nvme_bw=0,
-        network_bw=0,
-        network_inet_up=0,
-        network_inet_down=0,
-        price_usd_per_hour=scraped["price_usd_per_hour"],
-        price_inet_up=0.0,
-        price_inet_down=0.0,
-    )
-    return Hardware(name=scraped["name"], spec=spec)
-
-
 # ---------------------------------------------------------------------------
 # Machine / node scraper backed by ``_machine_db.json``
 # ---------------------------------------------------------------------------
@@ -324,8 +293,9 @@ def fetch_machine_hardware(machine_name: str) -> "Hardware":  # noqa: F821, UP03
     from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
     scraped = lookup_machine(machine_name)
+    gpu = _fetch_specs(scraped["gpu_name"])
     gpu_spec = GPUHardwareSpec(
-        flops=scraped["flops"] // max(scraped["num_gpus"], 1),
+        flops=gpu["flops"],
         gpu_mem=scraped["gpu_mem"],
         gpu_bw=scraped["gpu_bw"],
     )
@@ -336,7 +306,6 @@ def fetch_machine_hardware(machine_name: str) -> "Hardware":  # noqa: F821, UP03
         ram_bw=scraped["ram_bw"],
         nvme_mem=scraped["nvme_mem"],
         nvme_bw=scraped["nvme_bw"],
-        network_bw=scraped["network_bw"],
         network_inet_up=scraped["network_inet_up"],
         network_inet_down=scraped["network_inet_down"],
         price_usd_per_hour=scraped["price_usd_per_hour"],

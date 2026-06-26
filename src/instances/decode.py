@@ -28,7 +28,7 @@ class DecodeInstance:
 
         return 100  # example value, replace with actual calculation
 
-    def process_queue(self, time_ms: int) -> list[Request]:
+    def process_queue(self, time_ms: float) -> list[Request]:
         processed_requests: list[Request] = []
         total_time_ms = time_ms
 
@@ -39,7 +39,7 @@ class DecodeInstance:
             "KV cache exceeds GPU memory, too many requests in decode queue"
         )
 
-        while time_ms > 0 and self.queue:
+        while time_ms > 0.000001 and self.queue:
             batch = self.queue[: self.max_batch_size]
             decode_time = self.calculate_decode_time(batch)
             if decode_time > time_ms:
@@ -57,16 +57,20 @@ class DecodeInstance:
             req.decode_time_ms += total_time_ms - time_ms
         return processed_requests
 
-    def calculate_decode_time(self, batch: list[Request]) -> int:
+    def calculate_decode_time(self, batch: list[Request]) -> float:
         flops = calculate_flops(self.model, batch, "decode")
         memory = calculate_memory(self.model, batch, "decode")
 
-        time_ms: int = int(
-            (float(flops) / self.hardware.flops + float(memory) / self.hardware.gpu_bw)
+        time_ms: float = (
+            max(
+                float(flops) / self.hardware.flops, float(memory) / self.hardware.gpu_bw
+            )
             * 1000
         )
-        debug_print(
-            f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req in batch]} of size {len(batch)}: {time_ms} ms"
+        print(flops / self.hardware.flops, memory / self.hardware.gpu_bw)
+
+        print(
+            f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req in batch]} of size {len(batch)}: {time_ms} ms, memory: {memory} bytes, flops: {flops}, hardware: {self.hardware.flops} FLOPS, {self.hardware.gpu_bw} B/s"
         )
         return time_ms
 

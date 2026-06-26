@@ -99,9 +99,6 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     wall_time_ms += drain_time_ms
     total_time_s = wall_time_ms / 1000.0
 
-    # ---- Aggregate metrics -------------------------------------------------
-    total_tokens_generated = sum(req.isl + req.osl for req in finished_requests)
-
     # Per-request stats
     per_request_stats: list[dict[str, float]] = []
     ttft_list: list[float] = []
@@ -117,7 +114,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
             req.prefill_time_ms + req.kv_upload_time_ms + req.kv_download_time_ms
         )
         # TPOT = decode_time_ms / output tokens (guard against div0)
-        tpot_val = float(req.decode_time_ms) / req.osl if req.osl > 0 else 0.0
+        tpot_val = float(req.decode_time_ms) / (req.osl - 1) if req.osl > 1 else 0.0
         # End-to-end latency
         latency_val = float(
             req.prefill_time_ms
@@ -153,28 +150,26 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     avg_latency = sum(latency_list) / len(latency_list) if latency_list else 0.0
     max_latency_val = max(latency_list) if latency_list else 0.0
 
-    request_rate = len(finished_requests) / total_time_s if total_time_s > 0 else 0.0
+    sequence_per_second = (
+        len(finished_requests) / total_time_s if total_time_s > 0 else 0.0
+    )
     _concurrency = total_decode_time_ms / wall_time_ms if wall_time_ms > 0 else 0.0
 
     # Approximate tokens/s per gpu: total generated tokens / total gpu seconds
-    total_gpu_seconds = total_time_s * sum(
-        node.hardware.spec.num_gpus for node in scenario.nodes
-    )
+    num_gpus = sum(node.hardware.spec.num_gpus for node in scenario.nodes)
     tokens_per_second = (
-        total_tokens_generated / total_time_s if total_time_s > 0 else 0.0
+        sequence_per_second
+        * sum(req.osl for req in finished_requests)
+        / len(finished_requests)
     )
-    tokens_per_second_per_gpu = (
-        total_tokens_generated / total_gpu_seconds if total_gpu_seconds > 0 else 0.0
-    )
+    tokens_per_second_per_gpu = tokens_per_second / num_gpus if num_gpus > 0 else 0.0
     batch_size = max(
         node.decode_instances[0].max_batch_size if node.decode_instances else 0
         for node in scenario.nodes
     )
 
     tokens_per_second_per_user = (
-        total_tokens_generated / (total_time_s * batch_size)
-        if total_time_s > 0 and batch_size > 0
-        else 0.0
+        tokens_per_second / (batch_size) if batch_size > 0 else 0.0
     )
 
     # Topology extraction
@@ -215,7 +210,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         tokens_per_second=tokens_per_second,
         tokens_per_second_per_gpu=tokens_per_second_per_gpu,
         tokens_per_second_per_user=tokens_per_second_per_user,
-        request_rate=request_rate,
+        seq_per_second=sequence_per_second,
         concurrency=batch_size,
         memory_gb=0,
         price_usd_per_hour=total_price_per_hour,
@@ -244,7 +239,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     print(f"  tokens/s:          {result.tokens_per_second:,.2f}")
     print(f"  tokens/s/gpu:      {result.tokens_per_second_per_gpu:,.2f}")
     print(f"  tokens/s/user:     {result.tokens_per_second_per_user:,.2f}")
-    print(f"  req/s:             {result.request_rate:.3f}")
+    print(f"  seq/s:             {result.seq_per_second:.3f}")
     print(f"  concurrency:       {result.concurrency:.1f}")
     print(f"{'-' * 60}")
     print(f"  Memory (peak):     {result.memory_gb:.2f} GB")

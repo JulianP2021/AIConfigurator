@@ -11,14 +11,14 @@ class Request:
     osl: int
     prefilled_tokens: int
     decoded_tokens: int = 0
-    remaining_prefill_time_ms: int = -1  # for requests that were not fully filled till next request, but are currently processed
+    remaining_prefill_time_ms: float = -1  # for requests that were not fully filled till next request, but are currently processed
 
-    prefill_time_ms: int = 0
-    decode_time_ms: int = 0
+    prefill_time_ms: float = 0
+    decode_time_ms: float = 0
 
-    kv_download_time_ms: int = 0
+    kv_download_time_ms: float = 0
     kv_downloaded: bool = False
-    kv_upload_time_ms: int = 0
+    kv_upload_time_ms: float = 0
     kv_uploaded: bool = False
     id: int
     user_id: int

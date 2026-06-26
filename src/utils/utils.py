@@ -6,7 +6,7 @@ def calculate_flops(model: Model, batch: list[Request], mode: str) -> int:
     total_flops = 0
     for request in batch:
         tokens_to_process = request.remaining_tokens_prefill if mode == "prefill" else 1
-        qk_proj = tokens_to_process * 4 * model.config["hidden_size"] ** 2
+        qo_proj = tokens_to_process * 4 * model.config["hidden_size"] ** 2
         kv_proj = (
             tokens_to_process
             * 4
@@ -18,9 +18,12 @@ def calculate_flops(model: Model, batch: list[Request], mode: str) -> int:
             )
         )
         attn = (
-            tokens_to_process
-            * 4
-            * (tokens_to_process + request.prefilled_tokens + request.decoded_tokens)
+            2
+            * (
+                (tokens_to_process + request.prefilled_tokens + request.decoded_tokens)
+                ** 2
+                - (request.prefilled_tokens + request.decoded_tokens) ** 2
+            )
             * model.config["hidden_size"]
         )
         ffn = (
@@ -29,7 +32,7 @@ def calculate_flops(model: Model, batch: list[Request], mode: str) -> int:
             * model.config["intermediate_size"]
             * model.config["hidden_size"]
         )
-        per_layer_flops = qk_proj + kv_proj + attn + ffn
+        per_layer_flops = qo_proj + kv_proj + attn + ffn
         total_flops += (
             per_layer_flops * model.config["num_hidden_layers"]
             + 2 * model.config["hidden_size"] * model.config["vocab_size"]
@@ -46,23 +49,27 @@ def calculate_memory(model: Model, batch: list[Request], mode: str) -> int:
     total_memory = 0
     matrices = (
         2 * model.dtype_size * (model.config["hidden_size"] ** 2)
+        + 2
+        * model.dtype_size
+        * (model.dtype_size * model.config["num_key_value_heads"] * d_kv)
         + 3
         * model.dtype_size
         * model.config["intermediate_size"]
         * model.config["hidden_size"]
     )
 
-    total_memory += (
-        matrices * model.config["num_hidden_layers"]
-        + 2
-        * model.dtype_size
-        * model.config["hidden_size"]
-        * model.config["vocab_size"]
+    embedding = (
+        2 * model.dtype_size * model.config["hidden_size"] * model.config["vocab_size"]
     )
+    output = (
+        2 * model.dtype_size * model.config["hidden_size"] * model.config["vocab_size"]
+    )
+
+    total_memory += matrices * model.config["num_hidden_layers"] + embedding + output
 
     for request in batch:
         tokens_to_process = request.remaining_tokens_prefill if mode == "prefill" else 1
-        qk_proj = tokens_to_process * 2 * model.dtype_size * model.config["hidden_size"]
+        qo_proj = tokens_to_process * 2 * model.dtype_size * model.config["hidden_size"]
         kv_proj = (
             tokens_to_process
             * 2
@@ -77,6 +84,6 @@ def calculate_memory(model: Model, batch: list[Request], mode: str) -> int:
             * model.config["hidden_size"]
         )
         layer_norm = 2 * model.dtype_size * model.config["hidden_size"]
-        per_layer_memory = qk_proj + kv_proj + kv_entries + layer_norm
+        per_layer_memory = qo_proj + kv_proj + kv_entries + layer_norm
         total_memory += per_layer_memory * model.config["num_hidden_layers"]
     return total_memory

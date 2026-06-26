@@ -15,6 +15,7 @@ import logging
 import sys
 
 from pathlib import Path
+from typing import Any
 
 from aiconfigurator.cli.api import EstimateResult, cli_estimate
 
@@ -41,8 +42,10 @@ for noisy in ("aiconfigurator", "transformers", "urllib3"):
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-SYSTEM = "h100_sxm"
+SYSTEM = "h200_sxm"
 BACKEND = "vllm"
+# Default hardware from our dynamically-loaded presets (single GPU)
+DEFAULT_HARDWARE = "H200 NVL x1 #0b4c87a9"
 
 
 def run_your_simulator(
@@ -57,6 +60,7 @@ def run_your_simulator(
     prefill_workers: int,
     decode_workers: int,
     cache_pct: float,
+    hardware: str,
 ) -> SimulationResult:
     """Run the discrete-event simulator with the matched topology."""
     print("[1/2] Running your simulator ...")
@@ -77,14 +81,14 @@ def run_your_simulator(
             name="compare",
             nodes=[
                 Node(
-                    hardware=Hardware.from_name("H100SXM"),
+                    hardware=Hardware.from_name(hardware),
                     model_name=model,
                     batch_size=batch_size,
                     prefill_instances=prefill_workers,
                     decode_instances=0,
                 ),
                 Node(
-                    hardware=Hardware.from_name("H100SXM"),
+                    hardware=Hardware.from_name(hardware),
                     model_name=model,
                     batch_size=batch_size,
                     prefill_instances=0,
@@ -116,15 +120,18 @@ def run_nvidia_disagg(
     batch_size: int,
     prefill_workers: int,
     decode_workers: int,
+    database_mode: str,
 ) -> EstimateResult:
     """Run NVIDIA AI Configurator disagg estimate with the same topology."""
-    print(f"[2/2] Running NVIDIA AI Configurator ({BACKEND}, disagg) ...")
+    print(
+        f"[2/2] Running NVIDIA AI Configurator ({BACKEND}, disagg, {database_mode}) ..."
+    )
     return cli_estimate(
         model_path=model,
         system_name=SYSTEM,
         mode="disagg",
         backend_name=BACKEND,
-        database_mode="SILICON",
+        database_mode=database_mode,
         isl=isl,
         osl=osl,
         # prefill
@@ -138,36 +145,18 @@ def run_nvidia_disagg(
         decode_batch_size=batch_size,
         decode_num_workers=decode_workers,
     )
+    # Attach database_mode so it can be read later in the comparison table
 
 
-def run_nvidia_agg(
-    *,
-    model: str,
-    isl: int,
-    osl: int,
-    batch_size: int,
-    total_gpus: int,
-) -> EstimateResult:
-    """Run NVIDIA AI Configurator agg estimate for comparison."""
-    print(f"[2/2] Running NVIDIA AI Configurator ({BACKEND}, agg) ...")
-    return cli_estimate(
-        model_path=model,
-        system_name=SYSTEM,
-        mode="agg",
-        backend_name=BACKEND,
-        database_mode="SILICON",
-        isl=isl,
-        osl=osl,
-        batch_size=batch_size,
-        tp_size=total_gpus,
-        pp_size=1,
-    )
+# Available database modes from NVIDIA AI Configurator
+DATABASE_MODES = ["SOL"]
 
 
-def nvidia_estimate_to_dict(est: EstimateResult) -> dict:
+def nvidia_estimate_to_dict(est: EstimateResult) -> dict[str, Any]:
     """Normalize an EstimateResult into a plain dict."""
     return {
         "mode": est.mode,
+        "database_mode": getattr(est, "database_mode", "SILICON"),
         "model_path": est.model_path,
         "system_name": est.system_name,
         "backend_name": est.backend_name,
@@ -183,7 +172,7 @@ def nvidia_estimate_to_dict(est: EstimateResult) -> dict:
         "tokens_per_second": round(est.tokens_per_second, 2),
         "tokens_per_second_per_gpu": round(est.tokens_per_second_per_gpu, 2),
         "tokens_per_second_per_user": round(est.tokens_per_second_per_user, 2),
-        "seq_per_second": round(est.seq_per_second, 3),
+        "seq/s": round(est.seq_per_second, 3),
         "concurrency": round(est.concurrency, 2),
         "power_w": round(est.power_w, 2),
         "memory_gb": round(est.memory, 2),
@@ -200,20 +189,21 @@ def print_comparison_table(
         ("Your Simulator", sim_result.to_dict()),
     ]
     for est in nvidia_results:
-        label = f"NVIDIA AIC ({est.mode})"
+        label = f"NVIDIA AIC ({est.mode}, {getattr(est, 'database_mode', 'SILICON')})"
         rows.append((label, nvidia_estimate_to_dict(est)))
 
     # Keys to compare
     keys = [
         ("ttft_ms", "TTFT (ms)"),
         ("tpot_ms", "TPOT (ms)"),
+        ("max_ttft_ms", "MAX TTFT (ms)"),
         ("request_latency_ms", "Request Latency (ms)"),
         ("max_request_latency_ms", "max Latency (ms)"),
         ("tokens_per_second", "tokens/s"),
         ("tokens_per_second_per_gpu", "tokens/s/gpu"),
         ("tokens_per_second_per_user", "tokens/s/user"),
-        ("request_rate", "req/s"),
-        ("memory_gb", "Memory (GB)"),
+        ("seq/s", "seq/s"),
+        ("concurrency", "Concurrency"),
     ]
 
     # Print header
@@ -247,7 +237,7 @@ def print_comparison_table(
     )
     for est in nvidia_results:
         if est.mode == "disagg":
-            raw = est.raw
+            raw: dict[str, Any] = est.raw
             print(
                 f"  NVIDIA ({est.mode}):   "
                 f"(p){raw.get('(p)workers', '?')} worker(s) x {raw.get('(p)tp', '?')} GPU + "
@@ -280,7 +270,7 @@ def main():
     parser.add_argument(
         "--osl",
         type=int,
-        default=100,
+        default=2,
         help="Output sequence length (fixed, default: 100)",
     )
     parser.add_argument(
@@ -313,15 +303,21 @@ def main():
     parser.add_argument(
         "--decode-workers", type=int, default=1, help="Decode workers (default: 1)"
     )
-    # Comparison mode
     parser.add_argument(
-        "--mode",
-        choices=["disagg", "agg", "both"],
-        default="disagg",
-        help="Which NVIDIA mode to compare against (default: disagg)",
+        "--hardware",
+        type=str,
+        default=DEFAULT_HARDWARE,
+        help=f"Hardware preset for your simulator (default: {DEFAULT_HARDWARE})",
     )
     parser.add_argument(
         "--debug", action="store_true", help="Enable verbose debug logging"
+    )
+    parser.add_argument(
+        "--database-modes",
+        nargs="+",
+        choices=DATABASE_MODES,
+        default=DATABASE_MODES,
+        help=f"NVIDIA database mode(s) to compare ({', '.join(DATABASE_MODES)}). Default: all",
     )
     parser.add_argument(
         "--save", type=str, default=None, help="Path to save JSON results"
@@ -332,8 +328,6 @@ def main():
         set_debug(True)
         logging.getLogger("aiconfigurator").setLevel(logging.DEBUG)
         print("Debug logging enabled.")
-
-    total_gpus = args.prefill_workers + args.decode_workers
 
     # Run your simulator
     sim_result = run_your_simulator(
@@ -347,11 +341,12 @@ def main():
         prefill_workers=args.prefill_workers,
         decode_workers=args.decode_workers,
         cache_pct=args.cache_pct,
+        hardware=args.hardware,
     )
 
-    # Run NVIDIA estimates
+    # Run NVIDIA estimates across all requested database modes
     nvidia_results: list[EstimateResult] = []
-    if args.mode in ("disagg", "both"):
+    for db_mode in args.database_modes:
         try:
             nvidia_results.append(
                 run_nvidia_disagg(
@@ -361,23 +356,11 @@ def main():
                     batch_size=args.batch_size,
                     prefill_workers=args.prefill_workers,
                     decode_workers=args.decode_workers,
+                    database_mode=db_mode,
                 )
             )
         except Exception as exc:
-            print(f"WARNING: NVIDIA disagg estimate failed: {exc}")
-    if args.mode in ("agg", "both"):
-        try:
-            nvidia_results.append(
-                run_nvidia_agg(
-                    model=args.model,
-                    isl=args.isl,
-                    osl=args.osl,
-                    batch_size=args.batch_size,
-                    total_gpus=total_gpus,
-                )
-            )
-        except Exception as exc:
-            print(f"WARNING: NVIDIA agg estimate failed: {exc}")
+            print(f"WARNING: NVIDIA disagg estimate failed ({db_mode}): {exc}")
 
     if not nvidia_results:
         print("ERROR: No NVIDIA estimates succeeded. Nothing to compare.")
@@ -385,6 +368,13 @@ def main():
 
     # Print comparison
     print_comparison_table(sim_result, nvidia_results)
+
+    for est in nvidia_results:
+        print(
+            f"NVIDIA ({est.mode}, {getattr(est, 'database_mode', 'SILICON')}) raw output:"
+        )
+        print(json.dumps(est.raw, indent=2))
+        print()
 
     # Optional JSON save
     if args.save:

@@ -2,7 +2,6 @@
 
 from .hardware import Hardware, HardwareSpec
 from .scraper import (
-    fetch_hardware,
     fetch_machine_hardware,
     lookup,
     lookup_machine,
@@ -14,7 +13,6 @@ from .scraper import (
 __all__ = [
     "Hardware",
     "HardwareSpec",
-    "fetch_hardware",
     "fetch_machine_hardware",
     "lookup",
     "lookup_machine",
