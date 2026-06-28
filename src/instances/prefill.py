@@ -1,8 +1,14 @@
+from typing import Any
+
+from src.aiconfigurator_lib.estimator import (
+    build_session,
+    get_meta,
+    run_static_inference,
+)
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import debug_print
 from src.model.model import Model
 from src.request.request import Request
-from src.utils.utils import calculate_flops, calculate_memory
 
 
 class UploadRequest:
@@ -18,13 +24,31 @@ class PrefillInstance:
     hardware: GPUHardwareSpec
     queue: list[Request]
     upload_queue: list[tuple[UploadRequest, float]]
+    download_queue: list[tuple[UploadRequest, float]]
+
     model: Model
+    session: Any
 
     def __init__(self, hardware: GPUHardwareSpec, model: Model):
         self.hardware = hardware
         self.queue = []
         self.upload_queue = []
+        self.download_queue = []
         self.model = model
+
+        system_name, backend_version = get_meta(
+            backend_version="",
+            mem_bw=self.hardware.gpu_bw,
+            mem_capacity=self.hardware.gpu_mem,
+            bfloat16_tc_flops=self.hardware.flops,
+        )
+        self.session = build_session(
+            model_name=self.model.name,
+            system_name=system_name,
+            backend_name="vllm",
+            backend_version=backend_version,
+            database_mode="SOL",
+        )
 
     def add_request(self, request: Request):
         self.queue.append(request)
@@ -131,13 +155,15 @@ class PrefillInstance:
         return finished_requests
 
     def calculate_prefill_time(self, request: Request) -> float:
-        flops = calculate_flops(self.model, [request], "prefill")
-        memory = calculate_memory(self.model, [request], "prefill")
 
-        time_ms: float = max(
-            float(flops) / self.hardware.flops * 1000,
-            float(memory) / self.hardware.gpu_bw * 1000,
+        result = run_static_inference(
+            mode="prefill",
+            built_session=self.session,
+            isl=request.isl,
+            osl=1,
+            prefix=request.prefilled_tokens,
         )
+        time_ms = result["prefill_latency_ms"]
         debug_print(
             f"Calculated prefill time for request with id: {request.id} : {time_ms} ms"
         )

@@ -1,8 +1,14 @@
+from typing import Any
+
+from src.aiconfigurator_lib.estimator import (
+    build_session,
+    get_meta,
+    run_static_inference,
+)
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import debug_print
 from src.model.model import Model
 from src.request.request import Request
-from src.utils.utils import calculate_flops, calculate_memory
 
 
 class DecodeInstance:
@@ -11,13 +17,29 @@ class DecodeInstance:
     download_queue: list[Request]
     max_batch_size: int
     model: Model
+    session: Any
 
     def __init__(self, hardware: GPUHardwareSpec, max_batch_size: int, model: Model):
         self.hardware = hardware
         self.queue = []
         self.download_queue = []
+        self.upload_queue = []
         self.max_batch_size = max_batch_size
         self.model = model
+
+        system_name, backend_version = get_meta(
+            backend_version="",
+            mem_bw=self.hardware.gpu_bw,
+            mem_capacity=self.hardware.gpu_mem,
+            bfloat16_tc_flops=self.hardware.flops,
+        )
+        self.session = build_session(
+            model_name=self.model.name,
+            system_name=system_name,
+            backend_name="vllm",
+            backend_version=backend_version,
+            database_mode="SOL",
+        )
 
     def add_request(self, request: Request):
         self.queue.append(request)
@@ -58,19 +80,22 @@ class DecodeInstance:
         return processed_requests
 
     def calculate_decode_time(self, batch: list[Request]) -> float:
-        flops = calculate_flops(self.model, batch, "decode")
-        memory = calculate_memory(self.model, batch, "decode")
-
-        time_ms: float = (
-            max(
-                float(flops) / self.hardware.flops, float(memory) / self.hardware.gpu_bw
-            )
-            * 1000
+        avg_isl = int(
+            sum(req.prefilled_tokens + req.decoded_tokens for req in batch) / len(batch)
         )
-        print(flops / self.hardware.flops, memory / self.hardware.gpu_bw)
+        result = run_static_inference(
+            mode="decode",
+            built_session=self.session,
+            isl=avg_isl,
+            osl=2,
+            prefix=avg_isl,
+            batch_size=len(batch),
+            stride=10,
+        )
+        time_ms = result["decode_latency_ms"]
 
         print(
-            f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req in batch]} of size {len(batch)}: {time_ms} ms, memory: {memory} bytes, flops: {flops}, hardware: {self.hardware.flops} FLOPS, {self.hardware.gpu_bw} B/s"
+            f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req in batch]} of size {len(batch)}: {time_ms} ms"
         )
         return time_ms
 

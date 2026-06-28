@@ -4,6 +4,8 @@ import pathlib
 from dataclasses import dataclass
 from typing import ClassVar
 
+from src.logger import debug_print
+
 
 @dataclass(frozen=True)
 class GPUHardwareSpec:
@@ -76,7 +78,7 @@ class Hardware:
             raise ValueError(f"Unknown hardware preset: {name}")
         spec = cls.PRESETS[name]
 
-        print(f"Loaded hardware preset '{name}': {spec}")
+        debug_print(f"Loaded hardware preset '{name}': {spec}")
         return cls(name=name, spec=spec)
 
     PRESETS: ClassVar[dict[str, HardwareSpec]] = _load_machine_presets()

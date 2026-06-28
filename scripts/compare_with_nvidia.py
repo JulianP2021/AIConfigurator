@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from aiconfigurator.cli.api import EstimateResult, cli_estimate
+from aiconfigurator.sdk.perf_database import set_systems_paths
 
 
 # Ensure project root is on sys.path when running the script directly
@@ -126,6 +127,8 @@ def run_nvidia_disagg(
     print(
         f"[2/2] Running NVIDIA AI Configurator ({BACKEND}, disagg, {database_mode}) ..."
     )
+    set_systems_paths("default")
+
     return cli_estimate(
         model_path=model,
         system_name=SYSTEM,

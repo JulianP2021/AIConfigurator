@@ -168,9 +168,7 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         for node in scenario.nodes
     )
 
-    tokens_per_second_per_user = (
-        tokens_per_second / (batch_size) if batch_size > 0 else 0.0
-    )
+    tokens_per_second_per_user = 1000 / avg_tpot if avg_tpot > 0 else 0.0
 
     # Topology extraction
     num_prefill_workers = sum([
