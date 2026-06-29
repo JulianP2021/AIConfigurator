@@ -136,14 +136,14 @@ def main():
         name="cli_run",
         nodes=[
             Node(
-                hardware=Hardware.from_name("DGX SPARK"),
+                hardware=Hardware.from_name("H200 NVL x1 #25533289"),
                 model_name=args.model,
                 batch_size=args.batch_size,
                 prefill_instances=args.prefill_workers,
                 decode_instances=0,
             ),
             Node(
-                hardware=Hardware.from_name("DGX SPARK"),
+                hardware=Hardware.from_name("H200 NVL x1 #25533289"),
                 model_name=args.model,
                 batch_size=args.batch_size,
                 prefill_instances=0,

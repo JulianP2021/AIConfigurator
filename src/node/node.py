@@ -35,13 +35,16 @@ class Node:
 
         self.prefill_instances = [
             PrefillInstance(
-                hardware=hardware.spec.gpu_hardware, model=Model(model_name)
+                node_id=self.id,
+                hardware=hardware.spec.gpu_hardware,
+                model=Model(model_name),
             )
             for _ in range(prefill_instances)
         ]
 
         self.decode_instances = [
             DecodeInstance(
+                node_id=self.id,
                 hardware=hardware.spec.gpu_hardware,
                 max_batch_size=batch_size,
                 model=Model(model_name),

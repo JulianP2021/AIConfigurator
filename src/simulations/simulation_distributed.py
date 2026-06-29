@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from src.cache.cache import Cache
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.logger import debug_print
@@ -20,23 +21,46 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
 
+    node_hardware_specs = {node.id: node.hardware for node in scenario.nodes}
+
+    model = (
+        scenario.nodes[0].prefill_instances[0].model
+        if scenario.nodes[0].prefill_instances
+        else scenario.nodes[0].decode_instances[0].model
+    )
+
+    cache = Cache(layers={}, node_hardware=node_hardware_specs, model=model)
+
     for node in scenario.nodes:
         prefill_instances.extend(node.prefill_instances)
         decode_instances.extend(node.decode_instances)
 
+        for prefill_instance in node.prefill_instances:
+            prefill_instance.set_cache(cache)
+        for decode_instance in node.decode_instances:
+            decode_instance.set_cache(cache)
+
     router = Router(
-        queue=[], prefill_instances=prefill_instances, decode_instnces=decode_instances
+        queue=[], prefill_instances=prefill_instances, decode_instances=decode_instances
     )
 
     request_generator = RequestGenerator(scenario.requests.req_s)
     wall_time_ms = 0
+    drain_time_ms = 0
 
     finished_requests: list[Request] = []
     current_requests: list[Request] = []
-
-    for _ in range(scenario.requests.total_requests):
-        time_till_next_ms = int(request_generator.time_till_next_request() * 1000)
-        wall_time_ms += time_till_next_ms
+    num_reqs = 0
+    time_to_next_completion = 0
+    while (
+        time_to_next_completion < float("inf")
+        or num_reqs < scenario.requests.total_requests
+    ):
+        if num_reqs < scenario.requests.total_requests:
+            time_till_next_ms = int(request_generator.time_till_next_request() * 1000)
+            wall_time_ms += time_till_next_ms
+        else:
+            time_till_next_ms = float("inf")
 
         router.route_requests()
 
@@ -44,23 +68,24 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         while passed_time < time_till_next_ms:
             prefilled_requests: list[Request] = []
             time_to_next_completion = min(
-                [
-                    instance.time_to_next_completion()
-                    for instance in prefill_instances
-                    if instance.queue
-                ]
+                [instance.time_to_next_completion() for instance in prefill_instances]
+                + [instance.time_to_next_completion() for instance in decode_instances]
                 + [time_till_next_ms - passed_time]
             )
+            debug_print(
+                f"Time to next completion: {time_to_next_completion} ms, passed time: {passed_time} ms, time till next request: {time_till_next_ms} ms {[instance.time_to_next_completion() for instance in prefill_instances]},{[instance.time_to_next_completion() for instance in decode_instances]},{[time_till_next_ms - passed_time]},"
+            )
+
             for instance in prefill_instances:
                 debug_print(
-                    f"Processing prefill instance with queue length {len(instance.queue)}"
+                    f"Processing prefill instance with download queue length {len(instance.download_queue)}, queue length {len(instance.queue)}, upload queue length {len(instance.upload_queue)}"
                 )
                 prefilled_requests.extend(
                     instance.process_queue(time_to_next_completion)
                 )
             for instance in decode_instances:
                 debug_print(
-                    f"Processing decode instance with queue length {len(instance.queue)}"
+                    f"Processing decode instance with download queue length {len(instance.download_queue)}, queue length {len(instance.queue)}, upload queue length {len(instance.upload_queue)}"
                 )
                 decoded_requests = instance.process_queue(time_to_next_completion)
                 finished_requests.extend(decoded_requests)
@@ -72,27 +97,21 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
             prefilled_requests = []
             router.route_requests()
 
-        new_request = request_generator.generate_request(
-            scenario.requests, current_requests, finished_requests
-        )
-        current_requests.append(new_request)
-        router.queue.append(new_request)
-        debug_print(
-            f"Generated new request with id: {new_request.id} after {wall_time_ms / 1000} seconds, user_id: {new_request.user_id}, isl: {new_request.isl}, osl: {new_request.osl}, cached: {new_request.prefilled_tokens}"
-        )
+        if num_reqs < scenario.requests.total_requests:
+            new_request = request_generator.generate_request(
+                scenario.requests, current_requests, finished_requests
+            )
+            current_requests.append(new_request)
+            router.queue.append(new_request)
+            num_reqs += 1
 
-    router.route_requests()
-    debug_print(
-        f"Already finished requests: {len(finished_requests)} out of {scenario.requests.total_requests}"
-    )
-    debug_print("Finished generating requests, finishing remaining requests in queue")
-    router.log()
+            debug_print(
+                f"Generated new request with id: {new_request.id} after {wall_time_ms / 1000} seconds, user_id: {new_request.user_id}, isl: {new_request.isl}, osl: {new_request.osl}, cached: {new_request.prefilled_tokens}"
+            )
+        else:
+            drain_time_ms += passed_time
 
-    (drain_time_ms, reqs) = router.finish_requests()
-    debug_print(
-        f"Finished requests: {finished_requests}, Final finished requests: {[req.id for req in reqs]}"
-    )
-    finished_requests.extend(reqs)
+    debug_print(f"Finished requests: {finished_requests}")
 
     assert len(finished_requests) == scenario.requests.total_requests
 
@@ -113,6 +132,11 @@ def simulate_run_distributed(scenario: DistributedScenario) -> SimulationResult:
         ttft_val = float(
             req.prefill_time_ms + req.kv_upload_time_ms + req.kv_download_time_ms
         )
+
+        debug_print(
+            f"Request {req.id} TTFT: {ttft_val} ms, prefill: {req.prefill_time_ms} ms, kv_upload: {req.kv_upload_time_ms} ms, kv_download: {req.kv_download_time_ms} ms"
+        )
+
         # TPOT = decode_time_ms / output tokens (guard against div0)
         tpot_val = float(req.decode_time_ms) / (req.osl - 1) if req.osl > 1 else 0.0
         # End-to-end latency

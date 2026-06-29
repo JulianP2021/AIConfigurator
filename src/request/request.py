@@ -6,9 +6,28 @@ from dataclasses import dataclass
 request_id_counter = 0
 
 
+class UploadRequest:
+    request: Request
+    remaining_upload_time_ms: float
+
+    def __init__(self, request: Request, remaining_upload_time_ms: float):
+        self.request = request
+        self.remaining_upload_time_ms = remaining_upload_time_ms
+
+
+class DownloadRequest:
+    request: Request
+    remaining_download_time_ms: float
+
+    def __init__(self, request: Request, remaining_download_time_ms: float):
+        self.request = request
+        self.remaining_download_time_ms = remaining_download_time_ms
+
+
 class Request:
     isl: int
     osl: int
+    prefix: int
     prefilled_tokens: int
     decoded_tokens: int = 0
     remaining_prefill_time_ms: float = -1  # for requests that were not fully filled till next request, but are currently processed
@@ -17,9 +36,7 @@ class Request:
     decode_time_ms: float = 0
 
     kv_download_time_ms: float = 0
-    kv_downloaded: bool = False
     kv_upload_time_ms: float = 0
-    kv_uploaded: bool = False
     id: int
     user_id: int
 
@@ -27,6 +44,7 @@ class Request:
         global request_id_counter
         self.isl = isl
         self.osl = osl
+        self.prefix = cached
         self.prefilled_tokens = cached
         self.id = request_id_counter
         self.user_id = user_id
@@ -48,7 +66,7 @@ class Request:
 
     @property
     def stage(self) -> str:
-        return "decode" if self.remaining_prefill_time_ms == 0 else "prefill"
+        return "decode" if self.remaining_tokens_prefill == 0 else "prefill"
 
 
 @dataclass

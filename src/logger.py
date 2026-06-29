@@ -3,7 +3,11 @@ import logging
 
 # Module-level logger used by debug_print
 logger = logging.getLogger(name="configurator")
-# logging.basicConfig(filename='example.log', encoding='utf-8', format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename="example.log",
+    encoding="utf-8",
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 
 
 def set_debug(enabled: bool) -> None:

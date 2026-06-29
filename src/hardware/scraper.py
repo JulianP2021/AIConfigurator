@@ -109,14 +109,14 @@ def _fetch_specs(gpu_name: str) -> dict[str, Any]:
         msg = f"No gpuDetails found for {gpu_name!r}"
         raise ValueError(msg)
 
-    fp32 = gpu_details.get("FP32 (float)")
+    fp16 = gpu_details.get("FP16 (float)")
     mem_size = gpu_details.get("Memory Size")
     bandwidth = gpu_details.get("Bandwidth")
 
     missing = [
         k
         for k, v in {
-            "FP32 (float)": fp32,
+            "FP16 (float)": fp16,
             "Memory Size": mem_size,
             "Bandwidth": bandwidth,
         }.items()
@@ -128,7 +128,7 @@ def _fetch_specs(gpu_name: str) -> dict[str, Any]:
 
     return {
         "name": gpu_name,
-        "flops": _to_flops(fp32),
+        "flops": _to_flops(fp16),
         "gpu_mem": _to_bytes(mem_size),
         "gpu_bw": _to_bytes_per_second(bandwidth),
     }
@@ -227,9 +227,12 @@ def _make_machine_name(offer: dict[str, Any]) -> str:
 
 
 def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
+    print("Extracting offer", offer)
     num_gpus = offer.get("num_gpus", 1)
     if num_gpus <= 0:
         num_gpus = 1
+
+    """{'id': 40089800, 'ask_contract_id': 40089800, 'bundle_id': 1130562978, 'bundled_results': None, 'bw_nvlink': 0.0, 'compute_cap': 890, 'cpu_arch': 'amd64', 'cpu_cores': 32, 'cpu_cores_effective': 32.0, 'cpu_ghz': 7.03125, 'cpu_name': 'AMD Ryzen Threadripper PRO 5955WX 16-Cores', 'cpu_ram': 257386, 'credit_discount_max': 0.0, 'cuda_max_good': 13.0, 'direct_port_count': 198, 'disk_bw': 1782.0, 'disk_name': 'XF-1TB 2280', 'disk_space': 350.6, 'dlperf': 248.55034200883523, 'dlperf_per_dphtotal': 265.6713869453108, 'dph_base': 0.9333333333333332, 'dph_total': 0.9355555555555555, 'driver_version': '580.65.06', 'driver_vers': 580065006, 'duration': 14080909.973277807, 'end_date': 1796744949.0, 'external': None, 'flops_per_dphtotal': 174.00508503562946, 'geolocation': 'Quebec, CA', 'geolocode': 513588759, 'gpu_arch': 'nvidia', 'gpu_display_active': False, 'gpu_frac': 1.0, 'gpu_ids': [179125, 179126], 'gpu_lanes': 16, 'gpu_mem_bw': 901.3, 'gpu_name': 'RTX 4090', 'gpu_ram': 49140, 'gpu_total_ram': 98280, 'gpu_max_power': 327.0, 'gpu_max_temp': 15.0, 'has_avx': 1, 'host_id': 201023, 'hosting_type': 0, 'hostname': None, 'inet_down': 8095.2, 'inet_down_cost': 0.0026041666666666665, 'inet_up': 5141.3, 'inet_up_cost': 0.00390625, 'is_bid': False, 'logo': '/static/logos/vastai_small2.png', 'machine_id': 57721, 'min_bid': 0.8, 'mobo_name': 'Pro WS WRX80E-SAGE SE WIFI', 'num_gpus': 2, 'os_version': '22.04', 'pci_gen': 4.0, 'pcie_bw': 25.0, 'public_ipaddr': '64.119.209.250', 'reliability': 0.9809817, 'reliability_mult': 0.8404374, 'rentable': False, 'rented': False, 'score': 357.98550905507267, 'start_date': None, 'static_ip': False, 'storage_cost': 0.19999999999999998, 'storage_total_cost': 0.0022222222222222222, 'total_flops': 162.791424, 'verification': 'unverified', 'vericode': 0, 'vram_costperhour': 0.009724596391263057, 'webpage': None, 'vms_enabled': False, 'expected_reliability': 0.0, 'sla_sigma_x': None, 'sla_broker_rate': None, 'is_vm_deverified': False, 'resource_type': 'gpu', 'cluster_id': None, 'avail_vol_ask_id': 40089805, 'avail_vol_dph': 0.0002777777777777778, 'avail_vol_size': 212.0, 'nw_disk_min_bw': None, 'nw_disk_max_bw': None, 'nw_disk_avg_bw': None, 'rn': 1, 'dph_total_adj': 0.9407638888888888, 'reliability2': 0.9809817, 'target_reliability': 0.0, 'sla_r_claim': 0.0, 'discount_rate': None, 'discounted_hourly': 0, 'discounted_dph_total': 0.9355555555555555, 'search': {'gpuCostPerHour': 0.9333333333333332, 'diskHour': 0.0022222222222222222, 'slaPremiumPerHour': 0.0, 'totalHour': 0.9355555555555555, 'discountTotalHour': 0, 'discountedTotalPerHour': 0.9355555555555555}, 'instance': {'gpuCostPerHour': 0, 'diskHour': 0.0022222222222222222, 'slaPremiumPerHour': 0, 'totalHour': 0.0022222222222222222, 'discountTotalHour': 0, 'discountedTotalPerHour': 0.0022222222222222222}, 'time_remaining': '', 'time_remaining_isbid': '', 'internet_up_cost_per_tb': 4.0, 'internet_down_cost_per_tb': 2.6666666666666665}"""
 
     return {
         "name": _make_machine_name(offer),
@@ -239,7 +242,7 @@ def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
         "gpu_mem": offer.get("gpu_ram", 0),
         "gpu_bw": offer.get("gpu_mem_bw", 0),
         "ram_mem": offer.get("cpu_ram", 0),
-        "ram_bw": 0,
+        "ram_bw": offer.get("pcie_bw", 0),
         "nvme_mem": offer.get("disk_space", 0),
         "nvme_bw": offer.get("disk_bw", 0),
         "network_bw": offer.get("bw_nvlink", 0),
