@@ -7,9 +7,10 @@ from src.aiconfigurator_lib.estimator import (
 )
 from src.cache.cache import Cache
 from src.hardware.hardware import GPUHardwareSpec
-from src.logger import debug_print
+from src.logger import LOG_INSTANCE, log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, UploadRequest
+from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 
 
 class DecodeInstance:
@@ -22,6 +23,7 @@ class DecodeInstance:
     model: Model
     session: Any
     cache: Cache | None
+    scheduler: BandwidthScheduler | None
 
     def __init__(
         self, node_id: int, hardware: GPUHardwareSpec, max_batch_size: int, model: Model
@@ -32,6 +34,8 @@ class DecodeInstance:
         self.download_queue = []
         self.upload_queue = []
         self.max_batch_size = max_batch_size
+        self.cache = None
+        self.scheduler = None
         self.model = model
 
         system_name, backend_version = get_meta(
@@ -51,77 +55,46 @@ class DecodeInstance:
     def set_cache(self, cache: Cache):
         self.cache = cache
 
+    def set_scheduler(self, scheduler: BandwidthScheduler):
+        self.scheduler = scheduler
+
     def add_request(self, request: Request):
         assert self.cache is not None, "Cache must be set before adding requests"
+        assert self.scheduler is not None, (
+            "Scheduler must be set before adding requests"
+        )
         dt = self.cache.download_kv(self.node_id, request)
-        debug_print(
-            f"Adding request {request.id} to decode instance {self.node_id}, with download_time {dt}"
+        log(
+            LOG_INSTANCE,
+            f"Adding request {request.id} to decode instance {self.node_id}, "
+            f"with {dt.remaining_bytes} bytes to download across {len(dt.legs)} legs",
         )
-        self.download_queue.append((DownloadRequest(request, dt), -1))
-
-    def _calculate_process_time(
-        self, time_ms: float, is_downloading: bool, is_uploading: bool
-    ) -> tuple[list[tuple[Request, float]], float, float, float, float]:
-        """Calculate the time to process the next event in the queue. Returns a tuple of (batch, next_download_time, next_decode_time, next_upload_time, next_event_time)."""
-        if self.download_queue:
-            download_time = self.download_queue[0][0].remaining_download_time_ms
+        if dt.active_leg:
+            self.scheduler.register(dt)
+            self.download_queue.append((dt, -1))
         else:
-            download_time = float("inf")
-
-        batch = self.queue[: self.max_batch_size]
-        if len(batch) == 0:
-            decode_time = float("inf")
-        else:
-            decode_time = self.calculate_decode_time(batch)
-
-        if self.upload_queue:
-            upload_time = self.upload_queue[0][0].remaining_upload_time_ms
-        else:
-            upload_time = float("inf")
-
-        if is_downloading:
-            next_event_time = min(download_time, decode_time)
-        elif is_uploading:
-            next_event_time = min(upload_time, decode_time)
-        else:
-            next_event_time = decode_time
-
-        next_event_time = (
-            max(next_event_time, decode_time)
-            if decode_time != float("inf")
-            else next_event_time
-        )
-
-        debug_print(
-            f"Time to next completion for decode instance {
-                self.node_id
-            }: download_time={download_time}, decode_time={decode_time}, upload_time={
-                upload_time
-            }, min_time={next_event_time}, 'download_queue': {
-                len(self.download_queue)
-            }, 'decode_queue': {len(self.queue)}, 'upload_queue': {
-                len(self.upload_queue)
-            }"
-        )
-
-        return (
-            batch,
-            download_time,
-            decode_time,
-            upload_time,
-            min(next_event_time, time_ms),
-        )
+            self.queue.append((request, -1))
 
     def time_to_next_completion(self) -> float:
-        return self._calculate_process_time(
-            float("inf"), len(self.download_queue) > 0, len(self.upload_queue) > 0
-        )[4]
+        """Return the remaining time until the active decode batch finishes one token.
+
+        Transfer completion times are handled globally by the
+        ``BandwidthScheduler``; this method only reports compute events.
+        """
+        batch = self.queue[: self.max_batch_size]
+        if batch:
+            return self.calculate_decode_time(batch)
+        return float("inf")
 
     def process_queue(self, time_ms: float) -> list[Request]:
         assert self.cache is not None, "Cache must be set before processing queue"
+        assert self.scheduler is not None, (
+            "Scheduler must be set before processing queue"
+        )
 
-        debug_print(
-            f"Processing decode queue for node {self.node_id} with time_ms: {time_ms}"
+        log(
+            LOG_INSTANCE,
+            f"Processing decode queue for node {self.node_id} with time_ms: {time_ms}",
         )
 
         assert time_ms >= 0, "Time to process queue should be non-negative"
@@ -132,88 +105,72 @@ class DecodeInstance:
             "KV cache exceeds GPU memory, too many requests in decode queue"
         )
 
-        total_time_ms = time_ms
-
-        self.upload_queue = [
-            (upload_request, total_time_ms) for upload_request, _ in self.upload_queue
-        ]
-
-        self.queue = [
-            (prefill_request, total_time_ms) for prefill_request, _ in self.queue
-        ]
-
-        self.download_queue = [
-            (download_request, total_time_ms)
-            for download_request, _ in self.download_queue
-        ]
-
         finished_requests: list[Request] = []
 
-        while time_ms > 0 and (self.download_queue or self.queue or self.upload_queue):
-            is_downloading = len(self.download_queue) > 0
-            is_uploading = len(self.upload_queue) > 0 and not is_downloading
-
-            for _, start in self.download_queue:
-                if start == -1:
-                    start = time_ms
-
-            for _, start in self.upload_queue:
-                if start == -1:
-                    start = time_ms
-
-            batch, _, _, _, next_event_time = self._calculate_process_time(
-                time_ms, is_downloading, is_uploading
-            )
-
-            if next_event_time == float("inf"):
-                break
-
-            process_time = min(next_event_time, time_ms)
-
-            time_ms -= process_time
-
-            if is_downloading and self.download_queue:
-                download_request, download_start = self.download_queue[0]
-                if download_start != -1:
-                    download_request.request.kv_download_time_ms += process_time
-                    download_request.remaining_download_time_ms -= process_time
-                    if download_request.remaining_download_time_ms <= 0:
-                        self.queue.append((download_request.request, time_ms))
+        # Active download. Download and upload may overlap on the same instance.
+        if self.download_queue:
+            download_request, _ = self.download_queue[0]
+            download_request.request.kv_download_time_ms += time_ms
+            leg = download_request.active_leg
+            if leg:
+                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
+                leg.remaining_bytes -= bytes_done
+                if leg.remaining_bytes <= 0:
+                    self.scheduler.unregister(download_request)
+                    has_more = download_request.advance_leg()
+                    if has_more:
+                        self.scheduler.register(download_request)
+                    else:
+                        self.queue.append((download_request.request, 0))
                         self.download_queue.pop(0)
 
-            if len(batch) > 0:
-                for request, _ in batch:
-                    request.decode_time_ms += process_time
+        # Active decode batch
+        batch = self.queue[: self.max_batch_size]
+        finished_in_batch: list[Request] = []
+        if batch:
+            decode_time_per_token = self.calculate_decode_time(batch)
+            for request, _ in batch:
+                request.decode_time_ms += time_ms
+                if request.remaining_decode_time_ms == -1:
+                    request.remaining_decode_time_ms = decode_time_per_token
+                request.remaining_decode_time_ms -= time_ms
+                if request.remaining_decode_time_ms <= 0:
+                    request.remaining_decode_time_ms = 0
                     request.decoded_tokens += 1
                     if request.decoded_tokens >= request.osl:
-                        request.decode_time_ms += total_time_ms - time_ms
-                        debug_print(
-                            f"Finishing request decode with id: {request.id} after {request.decode_time_ms / 1000} seconds + process queue"
+                        log(
+                            LOG_INSTANCE,
+                            f"Finishing request decode with id: {request.id} after "
+                            f"{request.decode_time_ms / 1000} seconds + process queue",
                         )
-                        self.upload_queue.append((
-                            UploadRequest(
-                                request, self.cache.upload_kv(self.node_id, request)
-                            ),
-                            time_ms,
-                        ))
-                        self.queue.pop(0)
+                        finished_in_batch.append(request)
+                        ur = self.cache.upload_kv(self.node_id, request)
+                        if ur.active_leg:
+                            self.scheduler.register(ur)
+                        self.upload_queue.append((ur, 0))
 
-            if is_uploading and self.upload_queue:
-                upload_request, upload_start = self.upload_queue[0]
-                upload_request.request.kv_upload_time_ms += process_time
-                upload_request.remaining_upload_time_ms -= process_time
-                if upload_request.remaining_upload_time_ms <= 0:
-                    finished_requests.append(upload_request.request)
-                    self.upload_queue.pop(0)
+        # Remove finished requests from the decode queue by identity so that
+        # finishing a request behind the head does not evict unrelated requests.
+        if finished_in_batch:
+            finished_set = {id(r) for r in finished_in_batch}
+            self.queue = [(r, t) for r, t in self.queue if id(r) not in finished_set]
 
-        for download_request, download_start in self.download_queue:
-            download_request.request.kv_download_time_ms += download_start
-
-        for upload_request, upload_start in self.upload_queue:
-            upload_request.request.kv_upload_time_ms += upload_start
-
-        for req, decode_start in self.queue:
-            req.decode_time_ms += decode_start
+        # Active upload
+        if self.upload_queue:
+            upload_request, _ = self.upload_queue[0]
+            upload_request.request.kv_upload_time_ms += time_ms
+            leg = upload_request.active_leg
+            if leg:
+                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
+                leg.remaining_bytes -= bytes_done
+                if leg.remaining_bytes <= 0:
+                    self.scheduler.unregister(upload_request)
+                    has_more = upload_request.advance_leg()
+                    if has_more:
+                        self.scheduler.register(upload_request)
+                    else:
+                        finished_requests.append(upload_request.request)
+                        self.upload_queue.pop(0)
 
         return finished_requests
 
@@ -233,16 +190,24 @@ class DecodeInstance:
         )
         time_ms = result["decode_latency_ms"]
 
-        debug_print(
-            f"Calculated decode time for batch{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} of size {len(batch)}: {time_ms} ms"
+        log(
+            LOG_INSTANCE,
+            f"Calculated decode time for batch"
+            f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
+            f"of size {len(batch)}: {time_ms} ms",
         )
         return time_ms
 
     def log(self):
-        debug_print(
-            f"Decode instance state: {len(self.queue)} requests in queue, {len(self.download_queue)} requests in download queue"
+        log(
+            LOG_INSTANCE,
+            f"Decode instance state: {len(self.queue)} requests in queue, "
+            f"{len(self.download_queue)} requests in download queue",
         )
         for request, _ in self.queue:
-            debug_print(
-                f"Request id: {request.id}, decoded tokens: {request.decoded_tokens}, remaining tokens decode: {request.osl - request.decoded_tokens}, decode time ms: {request.decode_time_ms}"
+            log(
+                LOG_INSTANCE,
+                f"Request id: {request.id}, decoded tokens: {request.decoded_tokens}, "
+                f"remaining tokens decode: {request.osl - request.decoded_tokens}, "
+                f"decode time ms: {request.decode_time_ms}",
             )

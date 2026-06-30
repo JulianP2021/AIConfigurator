@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Run the distributed simulator with configurable CLI parameters.
 
+Defaults are read from ``.env`` at the project root. CLI arguments override
+``.env`` values, and shell environment variables override ``.env`` values.
+
 Usage examples:
-    # Default scenario
+    # Default scenario (from .env)
     python main.py
 
     # Custom model and lengths
@@ -18,98 +21,139 @@ Usage examples:
 import argparse
 
 from src.hardware.hardware import Hardware
-from src.logger import set_debug
+from src.logger import set_debug, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
 )
+from src.utils.env_reader import EnvConfig, load_env
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(env: EnvConfig) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Distributed LLM inference simulator")
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen3-8B",
-        help="HuggingFace model name (default: Qwen/Qwen3-8B)",
+        default=env.model,
+        help=f"HuggingFace model name (default: {env.model})",
     )
     parser.add_argument(
         "--isl",
         type=int,
-        default=1000,
-        help="Input sequence length (fixed, default: 1000)",
+        default=env.isl,
+        help=f"Input sequence length (fixed, default: {env.isl})",
     )
     parser.add_argument(
         "--osl",
         type=int,
-        default=100,
-        help="Output sequence length (fixed, default: 100)",
+        default=env.osl,
+        help=f"Output sequence length (fixed, default: {env.osl})",
     )
     parser.add_argument(
         "--requests",
         type=int,
-        default=10,
-        help="Total requests to simulate (default: 10)",
+        default=env.requests,
+        help=f"Total requests to simulate (default: {env.requests})",
     )
     parser.add_argument(
         "--req-rate",
         type=float,
-        default=2.0,
-        help="Request arrival rate in req/s (default: 2.0)",
+        default=env.req_rate,
+        help=f"Request arrival rate in req/s (default: {env.req_rate})",
     )
     parser.add_argument(
         "--unique-users",
         action="store_true",
+        default=env.unique_users,
         help="Set max_users > total_requests so every request gets a unique user (no shared prefix)",
     )
     parser.add_argument(
-        "--min-users", type=int, default=1, help="Minimum number of users (default: 1)"
+        "--min-users",
+        type=int,
+        default=env.min_users,
+        help=f"Minimum number of users (default: {env.min_users})",
     )
     parser.add_argument(
         "--max-users",
         type=int,
-        default=10,
-        help="Maximum number of users (default: 10)",
+        default=env.max_users,
+        help=f"Maximum number of users (default: {env.max_users})",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=10, help="Decode batch size (default: 10)"
+        "--batch-size",
+        type=int,
+        default=env.batch_size,
+        help=f"Decode batch size (default: {env.batch_size})",
     )
     parser.add_argument(
         "--prefill-workers",
         type=int,
-        default=1,
-        help="Number of prefill workers (default: 1)",
+        default=env.prefill_workers,
+        help=f"Number of prefill workers (default: {env.prefill_workers})",
     )
     parser.add_argument(
         "--decode-workers",
         type=int,
-        default=1,
-        help="Number of decode workers (default: 1)",
+        default=env.decode_workers,
+        help=f"Number of decode workers (default: {env.decode_workers})",
     )
     parser.add_argument(
-        "--gpus-per-node", type=int, default=1, help="GPUs per node (default: 1)"
+        "--gpus-per-node",
+        type=int,
+        default=env.gpus_per_node,
+        help=f"GPUs per node (default: {env.gpus_per_node})",
     )
     parser.add_argument(
-        "--debug", action="store_true", help="Enable verbose debug logging"
+        "--debug",
+        action="store_true",
+        default=env.debug,
+        help="Enable verbose debug logging (sets LOG_MASK to all components)",
+    )
+    parser.add_argument(
+        "--log-mask",
+        type=lambda s: int(s, 0),
+        default=env.log_mask,
+        help=(
+            "Component logging bitmask: bit 0 (1)=cache, bit 1 (2)=instances, "
+            "bit 2 (4)=router, bit 3 (8)=simulation. 0=none, 15=all "
+            f"(default: {env.log_mask})"
+        ),
     )
     parser.add_argument(
         "--cache-pct",
         type=float,
-        default=0.0,
-        help="Cache percentage for prefix caching (default: 0.0, i.e. no cache hit)",
+        default=env.cache_pct,
+        help=f"Cache percentage for prefix caching (default: {env.cache_pct})",
+    )
+    parser.add_argument(
+        "--ram-usage-fraction",
+        type=float,
+        default=env.ram_usage_fraction,
+        help=f"Fraction of node RAM usable for the KV cache layer (default: {env.ram_usage_fraction})",
+    )
+    parser.add_argument(
+        "--ssd-usage-fraction",
+        type=float,
+        default=env.ssd_usage_fraction,
+        help=f"Fraction of node SSD usable for the KV cache layer (default: {env.ssd_usage_fraction})",
     )
     return parser
 
 
 def main():
-    parser = build_parser()
+    env = load_env()
+    parser = build_parser(env)
     args = parser.parse_args()
 
     if args.debug:
         set_debug(True)
-        print("Debug logging enabled.")
+        print("Debug logging enabled (LOG_MASK=all).")
+    else:
+        set_log_mask(args.log_mask)
+        if args.log_mask:
+            print(f"Logging enabled with LOG_MASK={args.log_mask}.")
 
     # If --unique-users, force min_users and max_users > total_requests so every
     # request is a new user (no shared prefix / no repeat users).
@@ -159,7 +203,11 @@ def main():
         ),
     )
 
-    result = simulate_run_distributed(scenario)
+    result = simulate_run_distributed(
+        scenario,
+        ram_usage_fraction=args.ram_usage_fraction,
+        ssd_usage_fraction=args.ssd_usage_fraction,
+    )
 
     # Print compact JSON for piping
     import json

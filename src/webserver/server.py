@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.hardware.hardware import Hardware
+from src.logger import set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.result import SimulationResult
@@ -26,11 +27,16 @@ from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
 )
+from src.utils.env_reader import load_env
 
 
 matplotlib.use("Agg")
 
 app = FastAPI(title="Configurator Simulator")
+
+# Load .env configuration (including LOG_MASK) at startup.
+_env = load_env()
+set_log_mask(_env.log_mask)
 
 # In-memory storage for plots (keyed by UUID)
 _plot_store: dict[str, str] = {}  # id -> base64 PNG

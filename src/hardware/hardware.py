@@ -4,7 +4,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import ClassVar
 
-from src.logger import debug_print
+from src.logger import LOG_SIMULATION, log
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,7 @@ class Hardware:
             raise ValueError(f"Unknown hardware preset: {name}")
         spec = cls.PRESETS[name]
 
-        debug_print(f"Loaded hardware preset '{name}': {spec}")
+        log(LOG_SIMULATION, f"Loaded hardware preset '{name}': {spec}")
         return cls(name=name, spec=spec)
 
     PRESETS: ClassVar[dict[str, HardwareSpec]] = _load_machine_presets()
