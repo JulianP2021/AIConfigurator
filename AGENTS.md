@@ -127,18 +127,28 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime.
 
 ## Testing
 
-There is currently no test suite. To verify changes:
+A pytest suite lives in `tests/`.
 
 ```bash
-# Quick smoke test
+# Run all unit tests
+.venv/bin/python -m pytest tests/
+
+# Run with verbose output
+.venv/bin/python -m pytest tests/ -v
+
+# Quick simulator smoke test
 .venv/bin/python main.py --requests 4 --isl 128 --osl 8 --req-rate 10 --cache-pct 0.5
 
 # Module import check
-.venv/bin/python -m py_compile main.py src/**/*.py src/webserver/server.py
-
-# Component-specific logging check
-.venv/bin/python main.py --log-mask 1 --requests 4 --isl 128 --osl 8
+.venv/bin/python -m py_compile main.py src/**/*.py src/webserver/server.py tests/*.py
 ```
+
+The test suite covers:
+
+- `tests/test_logger.py` — bitmask logging behavior.
+- `tests/test_bandwidth_scheduler.py` — equal-share scheduling for RAM/SSD/NETWORK bottlenecks.
+- `tests/test_cache.py` — two-tier cache, LRU eviction, capacity validation, and transfer-leg generation.
+- `tests/test_request.py` — `TransferLeg`, `DownloadRequest`, `UploadRequest`, and `Request` basics.
 
 ## Contact / Ownership
 

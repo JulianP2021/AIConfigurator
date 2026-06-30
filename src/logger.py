@@ -82,8 +82,8 @@ def get_log_mask() -> int:
 
 
 def is_debug() -> bool:
-    """Return whether debug logging is enabled."""
-    return _min_level <= logging.DEBUG and _log_mask != LOG_NONE
+    """Return whether debug logging is enabled for all components."""
+    return _min_level <= logging.DEBUG and _log_mask == LOG_ALL
 
 
 def log(component: int, msg: str, level: int = logging.DEBUG) -> None:
