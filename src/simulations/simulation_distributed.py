@@ -259,9 +259,7 @@ def simulate_run_distributed(
     )
 
     # Pricing (hourly rate only)
-    total_price_per_hour = sum(
-        node.hardware.spec.price_usd_per_hour for node in scenario.nodes
-    )
+    total_price_per_hour = sum(node.hardware.spec.dph_base for node in scenario.nodes)
 
     result = SimulationResult(
         scenario_name=scenario.name,

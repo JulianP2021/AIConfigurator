@@ -55,21 +55,17 @@ def _cli() -> int:
         print("-" * 110)
         for name, spec in sorted(db.items()):
             gpus = spec["num_gpus"]
-            gpu_mem = spec["gpu_mem"]
             ram = spec["ram_mem"]
             nvme = spec["nvme_mem"]
             net_up = spec["network_inet_up"]
             net_down = spec["network_inet_down"]
-            price = spec["price_usd_per_hour"]
             print(
                 f"{name:<45} "
                 f"{gpus:<5} "
-                f"{gpu_mem:<10.0f} "
                 f"{ram:<10.0f} "
                 f"{nvme:<10.0f} "
                 f"{net_up:<8.0f} "
                 f"{net_down:<8.0f} "
-                f"${price:.4f}"
             )
         return 0
 

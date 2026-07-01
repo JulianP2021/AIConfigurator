@@ -137,7 +137,6 @@ class Request:
     prefilled_tokens: int
     decoded_tokens: int = 0
     remaining_prefill_time_ms: float = -1
-    remaining_decode_time_ms: float = -1
 
     prefill_time_ms: float = 0
     decode_time_ms: float = 0

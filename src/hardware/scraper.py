@@ -109,21 +109,21 @@ def _fetch_specs(gpu_name: str) -> dict[str, Any]:
         msg = f"No gpuDetails found for {gpu_name!r}"
         raise ValueError(msg)
 
-    fp16 = gpu_details.get("FP16 (float)")
+    fp16 = gpu_details.get("FP16 (half)")
     mem_size = gpu_details.get("Memory Size")
     bandwidth = gpu_details.get("Bandwidth")
 
     missing = [
         k
         for k, v in {
-            "FP16 (float)": fp16,
+            "FP16 (half)": fp16,
             "Memory Size": mem_size,
             "Bandwidth": bandwidth,
         }.items()
         if not v
     ]
     if missing:
-        msg = f"Missing required fields for {gpu_name!r}: {missing}"
+        msg = f"Missing required fields for {gpu_name!r}: {missing, gpu_details}"
         raise ValueError(msg)
 
     return {
@@ -131,6 +131,9 @@ def _fetch_specs(gpu_name: str) -> dict[str, Any]:
         "flops": _to_flops(fp16),
         "gpu_mem": _to_bytes(mem_size),
         "gpu_bw": _to_bytes_per_second(bandwidth),
+        # The GPU detail page does not expose power/temperature details.
+        "gpu_max_power": 0.0,
+        "gpu_max_temp": 0.0,
     }
 
 
@@ -186,6 +189,12 @@ def refresh_file(gpu_names: list[str]) -> None:
         gpu_names: GPU identifiers to collect, e.g. ``["B300", "B200"]``.
     """
     db: dict[str, dict[str, Any]] = {}
+    prior_content = _DB_PATH.read_text(
+        encoding="utf-8"
+    )  # Ensure file exists before writing.
+    if prior_content:
+        db = json.loads(prior_content)
+
     for name in gpu_names:
         specs = _fetch_specs(name)
         specs["price_usd_per_hour"] = _fetch_live_price(name)
@@ -227,30 +236,57 @@ def _make_machine_name(offer: dict[str, Any]) -> str:
 
 
 def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
-    print("Extracting offer", offer)
+    """Extract all numeric and descriptive fields from a Vast.ai offer."""
     num_gpus = offer.get("num_gpus", 1)
     if num_gpus <= 0:
         num_gpus = 1
-
-    """{'id': 40089800, 'ask_contract_id': 40089800, 'bundle_id': 1130562978, 'bundled_results': None, 'bw_nvlink': 0.0, 'compute_cap': 890, 'cpu_arch': 'amd64', 'cpu_cores': 32, 'cpu_cores_effective': 32.0, 'cpu_ghz': 7.03125, 'cpu_name': 'AMD Ryzen Threadripper PRO 5955WX 16-Cores', 'cpu_ram': 257386, 'credit_discount_max': 0.0, 'cuda_max_good': 13.0, 'direct_port_count': 198, 'disk_bw': 1782.0, 'disk_name': 'XF-1TB 2280', 'disk_space': 350.6, 'dlperf': 248.55034200883523, 'dlperf_per_dphtotal': 265.6713869453108, 'dph_base': 0.9333333333333332, 'dph_total': 0.9355555555555555, 'driver_version': '580.65.06', 'driver_vers': 580065006, 'duration': 14080909.973277807, 'end_date': 1796744949.0, 'external': None, 'flops_per_dphtotal': 174.00508503562946, 'geolocation': 'Quebec, CA', 'geolocode': 513588759, 'gpu_arch': 'nvidia', 'gpu_display_active': False, 'gpu_frac': 1.0, 'gpu_ids': [179125, 179126], 'gpu_lanes': 16, 'gpu_mem_bw': 901.3, 'gpu_name': 'RTX 4090', 'gpu_ram': 49140, 'gpu_total_ram': 98280, 'gpu_max_power': 327.0, 'gpu_max_temp': 15.0, 'has_avx': 1, 'host_id': 201023, 'hosting_type': 0, 'hostname': None, 'inet_down': 8095.2, 'inet_down_cost': 0.0026041666666666665, 'inet_up': 5141.3, 'inet_up_cost': 0.00390625, 'is_bid': False, 'logo': '/static/logos/vastai_small2.png', 'machine_id': 57721, 'min_bid': 0.8, 'mobo_name': 'Pro WS WRX80E-SAGE SE WIFI', 'num_gpus': 2, 'os_version': '22.04', 'pci_gen': 4.0, 'pcie_bw': 25.0, 'public_ipaddr': '64.119.209.250', 'reliability': 0.9809817, 'reliability_mult': 0.8404374, 'rentable': False, 'rented': False, 'score': 357.98550905507267, 'start_date': None, 'static_ip': False, 'storage_cost': 0.19999999999999998, 'storage_total_cost': 0.0022222222222222222, 'total_flops': 162.791424, 'verification': 'unverified', 'vericode': 0, 'vram_costperhour': 0.009724596391263057, 'webpage': None, 'vms_enabled': False, 'expected_reliability': 0.0, 'sla_sigma_x': None, 'sla_broker_rate': None, 'is_vm_deverified': False, 'resource_type': 'gpu', 'cluster_id': None, 'avail_vol_ask_id': 40089805, 'avail_vol_dph': 0.0002777777777777778, 'avail_vol_size': 212.0, 'nw_disk_min_bw': None, 'nw_disk_max_bw': None, 'nw_disk_avg_bw': None, 'rn': 1, 'dph_total_adj': 0.9407638888888888, 'reliability2': 0.9809817, 'target_reliability': 0.0, 'sla_r_claim': 0.0, 'discount_rate': None, 'discounted_hourly': 0, 'discounted_dph_total': 0.9355555555555555, 'search': {'gpuCostPerHour': 0.9333333333333332, 'diskHour': 0.0022222222222222222, 'slaPremiumPerHour': 0.0, 'totalHour': 0.9355555555555555, 'discountTotalHour': 0, 'discountedTotalPerHour': 0.9355555555555555}, 'instance': {'gpuCostPerHour': 0, 'diskHour': 0.0022222222222222222, 'slaPremiumPerHour': 0, 'totalHour': 0.0022222222222222222, 'discountTotalHour': 0, 'discountedTotalPerHour': 0.0022222222222222222}, 'time_remaining': '', 'time_remaining_isbid': '', 'internet_up_cost_per_tb': 4.0, 'internet_down_cost_per_tb': 2.6666666666666665}"""
 
     return {
         "name": _make_machine_name(offer),
         "gpu_name": offer.get("gpu_name", ""),
         "num_gpus": num_gpus,
-        "flops": offer.get("total_flops", 0),
-        "gpu_mem": offer.get("gpu_ram", 0),
-        "gpu_bw": offer.get("gpu_mem_bw", 0),
-        "ram_mem": offer.get("cpu_ram", 0),
-        "ram_bw": offer.get("pcie_bw", 0),
-        "nvme_mem": offer.get("disk_space", 0),
-        "nvme_bw": offer.get("disk_bw", 0),
-        "network_bw": offer.get("bw_nvlink", 0),
-        "network_inet_up": offer.get("inet_up", 0),
-        "network_inet_down": offer.get("inet_down", 0),
-        "price_usd_per_hour": offer.get("dph_total", 0.0),
-        "price_inet_up": offer.get("inet_up_cost", 0.0),
-        "price_inet_down": offer.get("inet_down_cost", 0.0),
+        # "flops": offer.get("total_flops", 0),
+        # "gpu_mem": offer.get("gpu_ram", 0) * 1024**2,
+        # "gpu_bw": offer.get("gpu_mem_bw", 0) * 1024**3,
+        # "gpu_max_power": offer.get("gpu_max_power", 0.0),
+        # "gpu_max_temp": offer.get("gpu_max_temp", 0.0),
+        "cpu_cores": offer.get("cpu_cores", 0),
+        "cpu_cores_effective": offer.get("cpu_cores_effective", 0.0),
+        "cpu_ghz": offer.get("cpu_ghz", 0.0),
+        "cpu_name": offer.get("cpu_name", ""),
+        "cpu_ram": offer.get("cpu_ram", 0) * 1024**2,
+        "disk_bw": offer.get("disk_bw", 0.0) * 1024**2,
+        "disk_name": offer.get("disk_name", ""),
+        "disk_space": offer.get("disk_space", 0.0) * 1024**3,
+        "dlperf": offer.get("dlperf", 0.0),
+        "dlperf_per_dphtotal": offer.get("dlperf_per_dphtotal", 0.0),
+        "dph_base": offer.get("dph_base", 0.0),
+        "dph_total": offer.get("dph_total", 0.0),
+        "geolocation": offer.get("geolocation", ""),
+        "gpu_display_active": offer.get("gpu_display_active", False),
+        "gpu_frac": offer.get("gpu_frac", 1.0),
+        "gpu_lanes": offer.get("gpu_lanes", 0),
+        "has_avx": offer.get("has_avx", 0),
+        "host_id": offer.get("host_id", 0),
+        "inet_down_cost": offer.get("inet_down_cost", 0.0),
+        "inet_up_cost": offer.get("inet_up_cost", 0.0),
+        "mobo_name": offer.get("mobo_name", ""),
+        "os_version": offer.get("os_version", ""),
+        "pci_gen": offer.get("pci_gen", 0.0),
+        "pcie_bw": offer.get("pcie_bw", 0.0),
+        "ram_mem": offer.get("cpu_ram", 0) * 1024**2,
+        "ram_bw": offer.get("pcie_bw", 0.0) * 1024**2,
+        "nvme_mem": offer.get("disk_space", 0.0) * 1024**3,
+        "nvme_bw": offer.get("disk_bw", 0.0) * 1024**2,
+        "network_bw": offer.get("bw_nvlink", 0.0) * 1024**2,
+        "network_inet_up": offer.get("inet_up", 0.0) * 1024**2 / 8,
+        "network_inet_down": offer.get("inet_down", 0.0) * 1024**2 / 8,
+        "reliability": offer.get("reliability", 0.0),
+        "reliability_mult": offer.get("reliability_mult", 0.0),
+        "score": offer.get("score", 0.0),
+        "storage_cost": offer.get("storage_cost", 0.0) / 1024**3,
+        "storage_total_cost": offer.get("storage_total_cost", 0.0) / 1024**3,
+        "verification": offer.get("verification", ""),
     }
 
 
@@ -299,20 +335,50 @@ def fetch_machine_hardware(machine_name: str) -> "Hardware":  # noqa: F821, UP03
     gpu = _fetch_specs(scraped["gpu_name"])
     gpu_spec = GPUHardwareSpec(
         flops=gpu["flops"],
-        gpu_mem=scraped["gpu_mem"],
-        gpu_bw=scraped["gpu_bw"],
+        gpu_mem=gpu["gpu_mem"],
+        gpu_bw=gpu["gpu_bw"],
     )
     spec = HardwareSpec(
         gpu_hardware=gpu_spec,
         num_gpus=scraped["num_gpus"],
-        ram_mem=scraped["ram_mem"],
-        ram_bw=scraped["ram_bw"],
+        ram_mem=scraped["ram_mem"] * 1024**2,
+        ram_bw=scraped["ram_bw"] * 1024**2,
         nvme_mem=scraped["nvme_mem"],
         nvme_bw=scraped["nvme_bw"],
         network_inet_up=scraped["network_inet_up"],
         network_inet_down=scraped["network_inet_down"],
-        price_usd_per_hour=scraped["price_usd_per_hour"],
-        price_inet_up=scraped["price_inet_up"],
-        price_inet_down=scraped["price_inet_down"],
+        cpu_cores=scraped.get("cpu_cores", 0),
+        cpu_cores_effective=scraped.get("cpu_cores_effective", 0.0),
+        cpu_ghz=scraped.get("cpu_ghz", 0.0),
+        cpu_name=scraped.get("cpu_name", ""),
+        cpu_ram=scraped.get("cpu_ram", 0),
+        disk_bw=scraped.get("disk_bw", 0.0),
+        disk_name=scraped.get("disk_name", ""),
+        disk_space=scraped.get("disk_space", 0.0),
+        dlperf=scraped.get("dlperf", 0.0),
+        dlperf_per_dphtotal=scraped.get("dlperf_per_dphtotal", 0.0),
+        dph_base=scraped.get("dph_base", 0.0),
+        dph_total=scraped.get("dph_total", 0.0),
+        geolocation=scraped.get("geolocation", ""),
+        gpu_display_active=scraped.get("gpu_display_active", False),
+        gpu_frac=scraped.get("gpu_frac", 1.0),
+        gpu_lanes=scraped.get("gpu_lanes", 0),
+        gpu_max_power=scraped.get("gpu_max_power", 0.0),
+        gpu_max_temp=scraped.get("gpu_max_temp", 0.0),
+        has_avx=scraped.get("has_avx", 0),
+        host_id=scraped.get("host_id", 0),
+        inet_down_cost=scraped.get("inet_down_cost", 0.0),
+        inet_up_cost=scraped.get("inet_up_cost", 0.0),
+        mobo_name=scraped.get("mobo_name", ""),
+        os_version=scraped.get("os_version", ""),
+        pci_gen=scraped.get("pci_gen", 0.0),
+        pcie_bw=scraped.get("pcie_bw", 0.0),
+        network_bw=scraped.get("network_bw", 0.0),
+        reliability=scraped.get("reliability", 0.0),
+        reliability_mult=scraped.get("reliability_mult", 0.0),
+        score=scraped.get("score", 0.0),
+        storage_cost=scraped.get("storage_cost", 0.0),
+        storage_total_cost=scraped.get("storage_total_cost", 0.0),
+        verification=scraped.get("verification", ""),
     )
     return Hardware(name=scraped["name"], spec=spec)

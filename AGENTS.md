@@ -117,6 +117,15 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime.
 - `DownloadRequest` / `UploadRequest` contain sequential `TransferLeg`s. Only the active leg receives bandwidth.
 - Instances register/unregister legs with the scheduler as they start and finish.
 
+## Decode Batch Model
+
+- Decode runs in frozen batches of exactly one token.
+- `DecodeInstance` tracks instance-level state (`current_batch`, `remaining_batch_time_ms`, `current_batch_decode_time_ms`) instead of per-request timers.
+- The batch is formed from the head of the queue and frozen until one token is decoded for every active request.
+- After the token, finished requests are removed and trigger KV upload; the batch is then reformed (adding any newly arrived requests) for the next token.
+- Partial progress within a token is banked instance-side; if a smaller transfer/arrival event occurs, the decode timer is decremented but no token completes.
+- When a token completes, the per-token decode time is recalculated because the average ISL in the batch has grown by one.
+
 ## Common Pitfalls
 
 - `HardwareSpec.ram_bw` and `nvme_bw` are stored in bytes/second.
@@ -149,6 +158,7 @@ The test suite covers:
 - `tests/test_bandwidth_scheduler.py` — equal-share scheduling for RAM/SSD/NETWORK bottlenecks.
 - `tests/test_cache.py` — two-tier cache, LRU eviction, capacity validation, and transfer-leg generation.
 - `tests/test_request.py` — `TransferLeg`, `DownloadRequest`, `UploadRequest`, and `Request` basics.
+- `tests/test_decode.py` — frozen one-token decode batches and instance-level partial progress.
 
 ## Contact / Ownership
 

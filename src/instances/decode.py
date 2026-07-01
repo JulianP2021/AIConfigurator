@@ -25,6 +25,12 @@ class DecodeInstance:
     cache: Cache | None
     scheduler: BandwidthScheduler | None
 
+    # Decode runs in frozen batches of one token. These fields track the
+    # instance-level progress for the current batch.
+    current_batch: list[Request] | None
+    remaining_batch_time_ms: float | None
+    current_batch_decode_time_ms: float | None
+
     def __init__(
         self, node_id: int, hardware: GPUHardwareSpec, max_batch_size: int, model: Model
     ):
@@ -37,6 +43,9 @@ class DecodeInstance:
         self.cache = None
         self.scheduler = None
         self.model = model
+        self.current_batch = None
+        self.remaining_batch_time_ms = None
+        self.current_batch_decode_time_ms = None
 
         system_name, backend_version = get_meta(
             backend_version="",
@@ -75,16 +84,46 @@ class DecodeInstance:
         else:
             self.queue.append((request, -1))
 
+    def _ensure_batch(self) -> None:
+        """Freeze a new batch from the head of the queue when none is active."""
+        if not self.current_batch:
+            self.current_batch = [req for req, _ in self.queue[: self.max_batch_size]]
+            self.remaining_batch_time_ms = None
+            self.current_batch_decode_time_ms = None
+
+    def _batch_ids(self) -> tuple[int, ...]:
+        """Return stable ids of the current batch for change detection."""
+        if self.current_batch is None:
+            return ()
+        return tuple(id(r) for r in self.current_batch)
+
     def time_to_next_completion(self) -> float:
-        """Return the remaining time until the active decode batch finishes one token.
+        """Return a lower-bound time until one request in the batch finishes.
+
+        This is intentionally a lowball estimate: remaining time for the current
+        in-flight token plus the current per-token decode latency multiplied by
+        the smallest number of remaining output tokens (minus the current one)
+        for any request in the batch.
 
         Transfer completion times are handled globally by the
         ``BandwidthScheduler``; this method only reports compute events.
         """
-        batch = self.queue[: self.max_batch_size]
-        if batch:
-            return self.calculate_decode_time(batch)
-        return float("inf")
+        self._ensure_batch()
+        if not self.current_batch:
+            return float("inf")
+
+        if self.current_batch_decode_time_ms is None:
+            self.current_batch_decode_time_ms = self.calculate_decode_time([
+                (r, 0) for r in self.current_batch
+            ])
+
+        if self.remaining_batch_time_ms is None:
+            self.remaining_batch_time_ms = self.current_batch_decode_time_ms
+
+        remaining_tokens = min(r.osl - r.decoded_tokens for r in self.current_batch)
+        return self.remaining_batch_time_ms + self.current_batch_decode_time_ms * (
+            remaining_tokens - 1
+        )
 
     def process_queue(self, time_ms: float) -> list[Request]:
         assert self.cache is not None, "Cache must be set before processing queue"
@@ -125,35 +164,69 @@ class DecodeInstance:
                         self.download_queue.pop(0)
 
         # Active decode batch
-        batch = self.queue[: self.max_batch_size]
+        self._ensure_batch()
         finished_in_batch: list[Request] = []
-        if batch:
-            decode_time_per_token = self.calculate_decode_time(batch)
-            for request, _ in batch:
-                request.decode_time_ms += time_ms
-                if request.remaining_decode_time_ms == -1:
-                    request.remaining_decode_time_ms = decode_time_per_token
-                request.remaining_decode_time_ms -= time_ms
-                if request.remaining_decode_time_ms <= 0:
-                    request.remaining_decode_time_ms = 0
-                    request.decoded_tokens += 1
-                    if request.decoded_tokens >= request.osl:
-                        log(
-                            LOG_INSTANCE,
-                            f"Finishing request decode with id: {request.id} after "
-                            f"{request.decode_time_ms / 1000} seconds + process queue",
-                        )
-                        finished_in_batch.append(request)
-                        ur = self.cache.upload_kv(self.node_id, request)
-                        if ur.active_leg:
-                            self.scheduler.register(ur)
-                        self.upload_queue.append((ur, 0))
+        if self.current_batch:
+            if self.current_batch_decode_time_ms is None:
+                self.current_batch_decode_time_ms = self.calculate_decode_time([
+                    (r, 0) for r in self.current_batch
+                ])
 
-        # Remove finished requests from the decode queue by identity so that
-        # finishing a request behind the head does not evict unrelated requests.
-        if finished_in_batch:
-            finished_set = {id(r) for r in finished_in_batch}
-            self.queue = [(r, t) for r, t in self.queue if id(r) not in finished_set]
+            if self.remaining_batch_time_ms is None:
+                self.remaining_batch_time_ms = self.current_batch_decode_time_ms
+
+            self.remaining_batch_time_ms -= time_ms
+
+            # Count how many full tokens completed in this step. Recalculate
+            # the per-token decode time each time a token completes, because
+            # the average ISL in the batch grows by one.
+            tokens_done = 0
+            while self.remaining_batch_time_ms <= 0 and self.current_batch:
+                tokens_done += 1
+                # Update the batch's average ISL before recalculating the
+                # next token's latency.
+                for req in self.current_batch:
+                    req.decoded_tokens += 1
+                # Recompute per-token time for the now-longer sequences.
+                next_decode_time = self.calculate_decode_time([
+                    (r, 0) for r in self.current_batch
+                ])
+                self.remaining_batch_time_ms += next_decode_time
+                self.current_batch_decode_time_ms = next_decode_time
+
+            # Apply the elapsed wall-clock time to every request's total
+            # decode time. Requests that completed a token already had their
+            # decoded_tokens incremented above.
+            for request in self.current_batch:
+                request.decode_time_ms += time_ms
+                if request.decoded_tokens >= request.osl:
+                    log(
+                        LOG_INSTANCE,
+                        f"Finishing request decode with id: {request.id} after "
+                        f"{request.decode_time_ms / 1000} seconds + process queue",
+                    )
+                    finished_in_batch.append(request)
+                    ur = self.cache.upload_kv(self.node_id, request)
+                    if ur.active_leg:
+                        self.scheduler.register(ur)
+                    self.upload_queue.append((ur, 0))
+
+            # Remove finished requests from the queue and the frozen batch.
+            if finished_in_batch:
+                finished_set = {id(r) for r in finished_in_batch}
+                self.queue = [
+                    (r, t) for r, t in self.queue if id(r) not in finished_set
+                ]
+                self.current_batch = [
+                    r for r in self.current_batch if id(r) not in finished_set
+                ]
+
+            # If we completed one or more tokens, or the batch is empty,
+            # unfreeze so a new batch can be formed for the next token step.
+            if tokens_done > 0 or not self.current_batch:
+                self.current_batch = None
+                self.remaining_batch_time_ms = None
+                self.current_batch_decode_time_ms = None
 
         # Active upload
         if self.upload_queue:

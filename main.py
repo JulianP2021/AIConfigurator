@@ -21,6 +21,7 @@ Usage examples:
 import argparse
 
 from src.hardware.hardware import Hardware
+from src.hardware.scraper import fetch_machine_hardware
 from src.logger import set_debug, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -176,18 +177,24 @@ def main():
         cache_percentage=args.cache_pct,
     )
 
+    hardware = fetch_machine_hardware("H200 x1 #440acd08")
+    assert type(hardware) is Hardware, (
+        f"Expected Hardware instance, got {type(hardware)}"
+    )
+    assert hardware is not None, "Failed to fetch hardware for H200 x1 #440acd08"
+
     scenario = DistributedScenario(
         name="cli_run",
         nodes=[
             Node(
-                hardware=Hardware.from_name("H200 NVL x1 #25533289"),
+                hardware=hardware,
                 model_name=args.model,
                 batch_size=args.batch_size,
                 prefill_instances=args.prefill_workers,
                 decode_instances=0,
             ),
             Node(
-                hardware=Hardware.from_name("H200 NVL x1 #25533289"),
+                hardware=hardware,
                 model_name=args.model,
                 batch_size=args.batch_size,
                 prefill_instances=0,

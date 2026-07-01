@@ -1,9 +1,20 @@
 {
   "B200": {
     "name": "B200",
-    "flops": 62080000000000,
+    "flops": 248300000000000,
     "gpu_mem": 96000000000,
     "gpu_bw": 4099999999999,
-    "price_usd_per_hour": 4.0575
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 4.733333333333333
+  },
+  "H200": {
+    "name": "H200",
+    "flops": 241300000000000,
+    "gpu_mem": 141000000000,
+    "gpu_bw": 3360000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 2.649736842105263
   }
 }
