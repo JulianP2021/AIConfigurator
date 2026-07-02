@@ -3,9 +3,14 @@
 import pytest
 
 from src.cache.cache import Cache, CacheItem
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import Hardware, S3Spec
 from src.model.model import Model
 from src.request.request import Request
+
+
+def bottleneck_names(tracks: list[list]) -> list[str]:
+    """Return bottleneck names flattened from a list of leg tracks."""
+    return [leg.bottleneck for track in tracks for leg in track]
 
 
 @pytest.fixture
@@ -131,8 +136,8 @@ class TestCacheDownload:
     ):
         req = request_factory()
         dr = cache_with_fake_model.download_kv(0, req)
-        assert dr.legs == []
-        assert dr.active_leg is None
+        assert dr.tracks == []
+        assert dr.active_legs == []
 
     def test_download_from_ram_local(self, cache_with_fake_model: Cache):
         req = Request(128, 8, 0, 1)
@@ -140,7 +145,7 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert dr.legs == []
+        assert dr.tracks == []
 
     def test_download_from_ram_local_replaces_existing_item(
         self, cache_with_fake_model: Cache
@@ -152,7 +157,7 @@ class TestCacheDownload:
         original_tick = old_item.last_access_tick
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert dr.legs == []
+        assert dr.tracks == []
 
         ram_items = cache_with_fake_model.find_cache(req.id)
         assert len(ram_items) == 1
@@ -165,7 +170,7 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(1, req)
-        assert [leg.bottleneck for leg in dr.legs] == ["NETWORK", "RAM_LOCAL"]
+        assert bottleneck_names(dr.tracks) == ["NETWORK", "RAM_LOCAL"]
 
     def test_download_from_ssd_remote(self, small_cache: Cache):
         req = Request(512, 8, 0, 1)
@@ -179,7 +184,7 @@ class TestCacheDownload:
         assert source_layer.name == "SSD"
 
         dr = small_cache.download_kv(1, req)
-        assert [leg.bottleneck for leg in dr.legs] == [
+        assert bottleneck_names(dr.tracks) == [
             "SSD_LOCAL",
             "RAM_LOCAL",
             "NETWORK",
@@ -202,15 +207,14 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert [leg.bottleneck for leg in dr.legs] == [
-            "SSD_LOCAL",
-            "NETWORK",
-            "RAM_LOCAL",
+        assert [bottleneck_names([track]) for track in dr.tracks] == [
+            ["SSD_LOCAL"],
+            ["NETWORK", "RAM_LOCAL"],
         ]
-        assert dr.legs[0].remaining_bytes == cache_with_fake_model.kv_size(
+        assert dr.tracks[0][0].remaining_bytes == cache_with_fake_model.kv_size(
             cache_with_fake_model.model, 100
         )
-        assert dr.legs[1].remaining_bytes == cache_with_fake_model.kv_size(
+        assert dr.tracks[1][0].remaining_bytes == cache_with_fake_model.kv_size(
             cache_with_fake_model.model, 100
         )
 
@@ -236,10 +240,7 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert [leg.bottleneck for leg in dr.legs] == ["NETWORK", "RAM_LOCAL"]
-        assert dr.legs[0].remaining_bytes == cache_with_fake_model.kv_size(
-            cache_with_fake_model.model, 100
-        )
+        assert bottleneck_names(dr.tracks) == ["NETWORK", "RAM_LOCAL"]
 
         local_items = cache_with_fake_model.find_cache(req.id, node_id=0)
         assert len(local_items) == 1
@@ -263,18 +264,84 @@ class TestCacheDownload:
         small_cache.delete_item(item99)
 
         dr = small_cache.download_kv(0, req)
-        assert [leg.bottleneck for leg in dr.legs] == [
-            "SSD_LOCAL",
-            "SSD_LOCAL",
-            "RAM_LOCAL",
-            "NETWORK",
-            "RAM_LOCAL",
+        assert [bottleneck_names([track]) for track in dr.tracks] == [
+            ["SSD_LOCAL"],
+            ["SSD_LOCAL", "RAM_LOCAL", "NETWORK", "RAM_LOCAL"],
         ]
 
         local_items = small_cache.find_cache(req.id, node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 512
+
+
+class TestCacheS3:
+    def test_ssd_eviction_uploads_to_s3(
+        self, fake_model: Model, s3_tiny_hardware: Hardware, s3_enabled: S3Spec
+    ):
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_enabled,
+        )
+
+        req = Request(512, 8, 0, 1)
+        req.id = 40
+        cache.insert_cache_item(CacheItem(req.id, 0, 512), 0)
+        # First insertion: req 40 evicted to SSD.
+        cache.insert_cache_item(CacheItem(41, 0, 512), 0)
+        # Second insertion: SSD full, req 40 uploaded to S3 to make room.
+        cache.insert_cache_item(CacheItem(42, 0, 512), 0)
+
+        s3_items = [item for item in cache._s3_layer().content if item.req_id == req.id]
+        assert len(s3_items) == 1
+        assert s3_items[0].token_start == 0
+        assert s3_items[0].token_end == 512
+
+    def test_download_falls_back_to_s3(
+        self, cache_with_fake_model: Cache, s3_enabled: S3Spec
+    ):
+        cache = Cache(
+            layers={},
+            node_hardware=cache_with_fake_model.node_hardware,
+            model=cache_with_fake_model.model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_enabled,
+        )
+
+        req = Request(512, 8, 0, 1)
+        req.id = 42
+        # Place a copy only in S3.
+        s3_layer = cache._s3_layer()
+        s3_layer.content.append(CacheItem(req.id, 0, 512))
+
+        dr = cache.download_kv(0, req)
+        assert [bottleneck_names([track]) for track in dr.tracks] == [["S3_DOWNLOAD"]]
+
+        local_items = cache.find_cache(req.id, node_id=0)
+        assert len(local_items) == 1
+        assert local_items[0].token_start == 0
+        assert local_items[0].token_end == 512
+
+    def test_s3_not_used_when_disabled(self, cache_with_fake_model: Cache):
+        cache = Cache(
+            layers={},
+            node_hardware=cache_with_fake_model.node_hardware,
+            model=cache_with_fake_model.model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=S3Spec.from_gbps(enabled=False),
+        )
+
+        req = Request(512, 8, 0, 1)
+        req.id = 45
+        # No local cache and no S3 layer.
+        dr = cache.download_kv(0, req)
+        assert dr.tracks == []
 
 
 class TestCacheLRU:
@@ -310,14 +377,14 @@ class TestCacheLRU:
 
 
 class TestCacheUpload:
-    def test_upload_creates_ram_local_leg(self, cache_with_fake_model: Cache):
+    def test_upload_creates_ram_local_track(self, cache_with_fake_model: Cache):
         req = Request(128, 8, 0, 1)
         req.id = 20
         req.prefilled_tokens = 128
         req.decoded_tokens = 0
 
         ur = cache_with_fake_model.upload_kv(0, req)
-        assert [leg.bottleneck for leg in ur.legs] == ["RAM_LOCAL"]
+        assert bottleneck_names(ur.tracks) == ["RAM_LOCAL"]
         assert ur.request.id == req.id
 
     def test_upload_appends_to_existing_cache(self, cache_with_fake_model: Cache):
@@ -328,4 +395,4 @@ class TestCacheUpload:
         req.decoded_tokens = 0
 
         ur = cache_with_fake_model.upload_kv(0, req)
-        assert ur.legs[-1].bottleneck == "RAM_LOCAL"
+        assert bottleneck_names(ur.tracks) == ["RAM_LOCAL"]

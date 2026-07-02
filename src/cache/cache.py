@@ -1,9 +1,13 @@
 from dataclasses import dataclass
 
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import Hardware, S3Spec
 from src.logger import LOG_CACHE, log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, TransferLeg, UploadRequest
+
+
+# Sentinel node id used for the shared S3/object-store tier.
+S3_NODE_ID = -1
 
 
 @dataclass
@@ -39,6 +43,7 @@ class Cache:
     model: Model
     ram_usage_fraction: float
     ssd_usage_fraction: float
+    s3_spec: S3Spec
     ram_capacity_bytes: dict[int, int]
     ssd_capacity_bytes: dict[int, int]
     ram_usage_bytes: dict[int, int]
@@ -52,12 +57,14 @@ class Cache:
         model: Model,
         ram_usage_fraction: float = 0.8,
         ssd_usage_fraction: float = 0.8,
+        s3_spec: S3Spec | None = None,
     ):
         self.layers = layers
         self.node_hardware = node_hardware
         self.model = model
         self.ram_usage_fraction = ram_usage_fraction
         self.ssd_usage_fraction = ssd_usage_fraction
+        self.s3_spec = s3_spec or S3Spec.from_gbps(enabled=False)
         self.ram_capacity_bytes = {
             node_id: int(hardware.spec.cpu_ram * ram_usage_fraction)
             for node_id, hardware in node_hardware.items()
@@ -69,6 +76,10 @@ class Cache:
         self.ram_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.ssd_usage_bytes = dict.fromkeys(node_hardware, 0)
         self._access_tick = 0
+
+        # S3 is a single shared layer keyed by S3_NODE_ID.
+        if self.s3_spec.enabled:
+            self.layers[S3_NODE_ID] = [CacheLayer(S3_NODE_ID, "S3", [])]
 
         self._validate_capacity()
 
@@ -110,26 +121,62 @@ class Cache:
     def _ssd_layer(self, node_id: int) -> CacheLayer:
         return self.get_layer(node_id, "SSD")
 
-    def _evict_ssd_lru(self, node_id: int) -> None:
-        """Permanently delete the least-recently-used item from a node's SSD layer."""
+    def _s3_layer(self) -> CacheLayer:
+        return self.get_layer(S3_NODE_ID, "S3")
+
+    def _has_s3_equivalent(self, item: CacheItem) -> bool:
+        """Return True if an equivalent item already exists in the shared S3 layer."""
+        if not self.s3_spec.enabled:
+            return False
+        s3_layer = self._s3_layer()
+        return any(
+            existing.req_id == item.req_id
+            and existing.token_start == item.token_start
+            and existing.token_end == item.token_end
+            for existing in s3_layer.content
+        )
+
+    def _evict_ssd_lru(self, node_id: int) -> TransferLeg | None:
+        """Delete the least-recently-used item from a node's SSD layer.
+
+        If S3 is enabled, the victim is copied to the shared S3 layer before
+        deletion (unless an equivalent copy already exists there).  Returns an
+        S3 upload leg if an upload happened, otherwise None.
+        """
         layer = self._ssd_layer(node_id)
         if not layer.content:
-            return
+            return None
         victim = min(layer.content, key=lambda item: item.last_access_tick)
         victim_size = self._item_size(victim)
         layer.content.remove(victim)
         self.ssd_usage_bytes[node_id] -= victim_size
+
+        s3_leg: TransferLeg | None = None
+        if self.s3_spec.enabled and not self._has_s3_equivalent(victim):
+            s3_layer = self._s3_layer()
+            copied = CacheItem(victim.req_id, victim.token_start, victim.token_end)
+            s3_layer.content.append(copied)
+            self._touch(copied)
+            s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
+            log(
+                LOG_CACHE,
+                f"Uploaded SSD-evicted KV for request {victim.req_id} "
+                f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
+            )
+
         log(
             LOG_CACHE,
             f"Deleted SSD LRU KV for request {victim.req_id} "
             f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} SSD",
         )
+        return s3_leg
 
-    def _evict_ram_to_ssd(self, node_id: int) -> CacheItem:
+    def _evict_ram_to_ssd(self, node_id: int) -> tuple[CacheItem, list[TransferLeg]]:
         """Move the least-recently-used item from RAM to SSD.
 
-        If the SSD layer is full, its LRU item is deleted first.
-        Returns the moved item so the caller can build a transfer leg.
+        If the SSD layer is full, its LRU item is evicted to S3 (when enabled)
+        before deletion.  Returns the moved item and any S3 upload legs produced
+        by SSD overflow evictions.
         """
         ram_layer = self._ram_layer(node_id)
         if not ram_layer.content:
@@ -140,13 +187,16 @@ class Cache:
         ram_layer.content.remove(victim)
         self.ram_usage_bytes[node_id] -= victim_size
 
-        # Make room on SSD, deleting SSD LRU synchronously if needed.
+        # Make room on SSD, evicting SSD LRU to S3 synchronously if needed.
+        s3_legs: list[TransferLeg] = []
         while (
             self.ssd_usage_bytes[node_id] + victim_size
             > self.ssd_capacity_bytes[node_id]
             and self._ssd_layer(node_id).content
         ):
-            self._evict_ssd_lru(node_id)
+            s3_leg = self._evict_ssd_lru(node_id)
+            if s3_leg is not None:
+                s3_legs.append(s3_leg)
 
         ssd_layer = self._ssd_layer(node_id)
         ssd_layer.content.append(victim)
@@ -157,12 +207,14 @@ class Cache:
             f"Evicted RAM LRU KV for request {victim.req_id} "
             f"({victim.tokens} tokens, {victim_size} bytes) to node {node_id} SSD",
         )
-        return victim
+        return victim, s3_legs
 
     def _make_room_ram(self, node_id: int, size: int) -> list[TransferLeg]:
         """Evict RAM items to SSD until ``size`` bytes fit.
 
-        Returns the synchronous SSD write legs generated by the evictions.
+        Returns the eviction legs generated by the process: SSD_LOCAL write
+        legs for the RAM->SSD evictions and S3_UPLOAD legs for any SSD overflow
+        evictions that were pushed to S3.
         """
         eviction_legs: list[TransferLeg] = []
         while self._ram_layer(node_id).content:
@@ -171,15 +223,18 @@ class Cache:
                 break
             # Evict the RAM LRU. Capacity validation guarantees each eviction
             # frees at least a 512-token-sized slot, so the loop converges.
-            victim = self._evict_ram_to_ssd(node_id)
+            victim, s3_legs = self._evict_ram_to_ssd(node_id)
             victim_size = self._item_size(victim)
             eviction_legs.append(
                 TransferLeg(victim_size, node_id, node_id, "SSD_LOCAL")
             )
+            eviction_legs.extend(s3_legs)
         return eviction_legs
 
     def _ensure_node_accounting(self, node_id: int) -> None:
         """Create usage/capacity entries for a node if they do not exist."""
+        if node_id == S3_NODE_ID:
+            return
         if node_id not in self.ram_capacity_bytes:
             hardware = self.node_hardware.get(node_id)
             if hardware is None:
@@ -309,7 +364,25 @@ class Cache:
                 self.delete_item(existing)
 
         merged = CacheItem(req_id, token_start, token_end)
-        return self.insert_cache_item(merged, node_id)
+        eviction_legs = self.insert_cache_item(merged, node_id)
+
+        # If S3 is enabled and this node does not already have an equivalent
+        # copy in S3, push the merged item to S3 in parallel.
+        if self.s3_spec.enabled and not self._has_s3_equivalent(merged):
+            s3_layer = self._s3_layer()
+            copied = CacheItem(merged.req_id, merged.token_start, merged.token_end)
+            s3_layer.content.append(copied)
+            self._touch(copied)
+            eviction_legs.append(
+                TransferLeg(self._item_size(merged), node_id, S3_NODE_ID, "S3_UPLOAD")
+            )
+            log(
+                LOG_CACHE,
+                f"Uploaded merged KV for request {merged.req_id} from node {node_id} to S3 "
+                f"({merged.tokens} tokens)",
+            )
+
+        return eviction_legs
 
     def _find_download_segments(
         self, req_id: int, dest_node_id: int, required_end: int
@@ -320,7 +393,7 @@ class Cache:
         ``(start, end, source_node_id, source_layer_name)``.  ``effective_end``
         is the largest token index that can actually be downloaded given the
         globally cached contiguous prefix.  Local SSD items on ``dest_node_id``
-        are promoted; remote items are copied.
+        are promoted; remote items and the shared S3 tier are copied.
         """
         all_items = self._find_all_items(req_id)
         global_prefix = self._contiguous_prefix(all_items)
@@ -348,25 +421,43 @@ class Cache:
             seg_end = min(item.token_end, effective_end)
             segments.append((item.token_start, seg_end, layer.node_id, layer.name))
 
-        # Fetch any remaining ranges from remote sources.
+        # Fetch any remaining ranges from remote node sources first.
         miss_start = local_end
         while miss_start < effective_end:
             source: tuple[CacheItem, CacheLayer] | None = None
             for item in all_items:
                 layer = self.find_cache_layer(item)
-                if layer is None or layer.node_id == dest_node_id:
+                if (
+                    layer is None
+                    or layer.node_id == dest_node_id
+                    or layer.node_id == S3_NODE_ID
+                ):
                     continue
                 if item.token_start <= miss_start < item.token_end:
                     source = (item, layer)
                     break
             if source is None:
-                # Coverage gap: stop at what we can satisfy.
-                effective_end = miss_start
                 break
             item, layer = source
             seg_end = min(item.token_end, effective_end)
             segments.append((miss_start, seg_end, layer.node_id, layer.name))
             miss_start = seg_end
+
+        # S3 fallback for anything still missing.
+        if miss_start < effective_end and self.s3_spec.enabled:
+            for item in all_items:
+                layer = self.find_cache_layer(item)
+                if layer is None or layer.node_id != S3_NODE_ID:
+                    continue
+                if item.token_start <= miss_start < item.token_end:
+                    seg_end = min(item.token_end, effective_end)
+                    segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
+                    miss_start = seg_end
+                    break
+
+        if miss_start < effective_end:
+            # Coverage gap: stop at what we can satisfy.
+            effective_end = miss_start
 
         return effective_end, segments
 
@@ -405,9 +496,15 @@ class Cache:
 
         A remote read from RAM does not need a source-side RAM staging leg: the
         data is already in the source node's host RAM.  A remote read from SSD
-        still needs SSD_LOCAL to model reading the SSD into source RAM.
+        still needs SSD_LOCAL to model reading the SSD into source RAM.  A read
+        from S3 is modeled as a single S3_DOWNLOAD leg to the destination node.
         """
         legs: list[TransferLeg] = []
+
+        if source_node_id == S3_NODE_ID:
+            return [
+                TransferLeg(bytes_to_transfer, S3_NODE_ID, dest_node_id, "S3_DOWNLOAD")
+            ]
 
         if source_layer_name == "SSD":
             # SSD -> source RAM
@@ -480,10 +577,11 @@ class Cache:
         )
 
         if bytes_to_transfer <= 0:
-            return UploadRequest(request, eviction_legs)
+            # Only eviction work to do; represent it as a single-track transfer.
+            return UploadRequest(request, [eviction_legs])
 
-        upload_leg = TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")
-        return UploadRequest(request, [*eviction_legs, upload_leg])
+        upload_track = [TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")]
+        return UploadRequest(request, [eviction_legs, upload_track])
 
     def download_kv(self, node_id: int, request: Request) -> DownloadRequest:
         """Assemble KV for ``request`` on ``node_id`` RAM from all cached sources.
@@ -503,26 +601,28 @@ class Cache:
         # Optimistically update cache state: merge everything into one RAM item.
         eviction_legs = self._merge_into_ram(request.id, node_id, 0, effective_end)
 
-        data_legs: list[TransferLeg] = []
+        tracks: list[list[TransferLeg]] = []
+        if eviction_legs:
+            tracks.append(eviction_legs)
         for start, end, source_node_id, source_layer_name in segments:
             if source_node_id == node_id and source_layer_name == "RAM":
                 # Already in destination RAM; no physical transfer needed.
                 continue
             bytes_to_transfer = self.kv_size(self.model, end - start)
-            data_legs.extend(
-                self._build_data_legs(
-                    source_layer_name, source_node_id, node_id, bytes_to_transfer
-                )
+            track = self._build_data_legs(
+                source_layer_name, source_node_id, node_id, bytes_to_transfer
             )
+            if track:
+                tracks.append(track)
 
         log(
             LOG_CACHE,
             f"Downloading KV for request {request.id} to node {node_id}, "
             f"effective tokens: {effective_end}/{required_end}, "
             f"segments: {segments}, "
-            f"legs: {[leg.bottleneck for leg in eviction_legs + data_legs]}",
+            f"tracks: {[[leg.bottleneck for leg in track] for track in tracks]}",
         )
-        return DownloadRequest(request, eviction_legs + data_legs)
+        return DownloadRequest(request, tracks)
 
     def kv_size(self, model: Model, tokens: int) -> int:
         return model.kv_size_per_token * tokens

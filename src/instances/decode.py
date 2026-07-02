@@ -76,9 +76,9 @@ class DecodeInstance:
         log(
             LOG_INSTANCE,
             f"Adding request {request.id} to decode instance {self.node_id}, "
-            f"with {dt.remaining_bytes} bytes to download across {len(dt.legs)} legs",
+            f"with {dt.remaining_bytes} bytes to download across {len(dt.tracks)} tracks",
         )
-        if dt.active_leg:
+        if dt.active_legs:
             self.scheduler.register(dt)
             self.download_queue.append((dt, -1))
         else:
@@ -143,11 +143,11 @@ class DecodeInstance:
         # Drain transfers that the global scheduler has fully completed.  The
         # transfer objects are shared between the instance queue and the
         # scheduler; a finished transfer has no active leg left.
-        while self.download_queue and self.download_queue[0][0].active_leg is None:
+        while self.download_queue and not self.download_queue[0][0].active_legs:
             download_request, _ = self.download_queue.pop(0)
             self.queue.append((download_request.request, 0))
 
-        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+        while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
             finished_requests.append(upload_request.request)
 
@@ -200,7 +200,7 @@ class DecodeInstance:
                     )
                     finished_in_batch.append(request)
                     ur = self.cache.upload_kv(self.node_id, request)
-                    if ur.active_leg:
+                    if ur.active_legs:
                         self.scheduler.register(ur)
                     self.upload_queue.append((ur, 0))
 

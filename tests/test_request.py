@@ -6,37 +6,63 @@ from src.request.request import DownloadRequest, Request, TransferLeg, UploadReq
 
 
 class TestTransferLeg:
-    def test_active_leg_starts_at_zero(self):
+    def test_active_legs_start_at_zero(self):
         leg = TransferLeg(100, 0, 1, "NETWORK")
-        ur = UploadRequest(Request(10, 2, 0), [leg])
-        assert ur.active_leg is leg
+        ur = UploadRequest(Request(10, 2, 0), [[leg]])
+        assert ur.active_legs == [leg]
         assert ur.remaining_bytes == 100
-        assert ur.source_node_id == 0
-        assert ur.dest_node_id == 1
-        assert ur.bottleneck == "NETWORK"
 
-    def test_advance_leg_moves_to_next(self):
+    def test_advance_track_moves_to_next(self):
         legs = [
             TransferLeg(100, 0, 0, "RAM_LOCAL"),
             TransferLeg(100, 0, 1, "NETWORK"),
         ]
-        dr = DownloadRequest(Request(10, 2, 0), legs)
-        assert dr.active_leg == legs[0]
-        assert dr.advance_leg() is True
-        assert dr.active_leg == legs[1]
+        dr = DownloadRequest(Request(10, 2, 0), [legs])
+        assert dr.active_legs == [legs[0]]
+        assert dr.advance_track(0) is True
+        assert dr.active_legs == [legs[1]]
 
-    def test_advance_leg_returns_false_at_end(self):
+    def test_advance_track_returns_false_at_end(self):
         leg = TransferLeg(100, 0, 1, "NETWORK")
-        ur = UploadRequest(Request(10, 2, 0), [leg])
-        assert ur.advance_leg() is False
-        assert ur.active_leg is None
+        ur = UploadRequest(Request(10, 2, 0), [[leg]])
+        assert ur.advance_track(0) is False
+        assert ur.active_legs == []
         assert ur.remaining_bytes == 0
 
     def test_bandwidth_setter_updates_active_leg(self):
         leg = TransferLeg(100, 0, 1, "NETWORK")
-        dr = DownloadRequest(Request(10, 2, 0), [leg])
-        dr.bandwidth_bytes_per_ms = 1_000.0
+        dr = DownloadRequest(Request(10, 2, 0), [[leg]])
+        dr.active_legs[0].bandwidth_bytes_per_ms = 1_000.0
         assert leg.bandwidth_bytes_per_ms == 1_000.0
+
+    def test_parallel_tracks_active_together(self):
+        leg_a = TransferLeg(100, 0, 0, "SSD_LOCAL")
+        leg_b = TransferLeg(100, 0, 1, "NETWORK")
+        dr = DownloadRequest(Request(10, 2, 0), [[leg_a], [leg_b]])
+        assert dr.active_legs == [leg_a, leg_b]
+        assert dr.remaining_bytes == 200
+
+    def test_complete_when_all_tracks_exhausted(self):
+        dr = DownloadRequest(
+            Request(10, 2, 0),
+            [
+                [TransferLeg(0, 0, 0, "RAM_LOCAL")],
+                [TransferLeg(0, 0, 1, "NETWORK")],
+            ],
+        )
+        assert dr.active_legs == []
+        assert dr.is_complete()
+
+    def test_default_latency_per_bottleneck(self):
+        assert TransferLeg(0, 0, 0, "RAM_LOCAL").remaining_latency_ms == 0.0
+        assert TransferLeg(0, 0, 0, "SSD_LOCAL").remaining_latency_ms == 0.1
+        assert TransferLeg(0, 0, 0, "NETWORK").remaining_latency_ms == 0.0
+        assert TransferLeg(0, 0, 0, "S3_UPLOAD").remaining_latency_ms == 50.0
+        assert TransferLeg(0, 0, 0, "S3_DOWNLOAD").remaining_latency_ms == 50.0
+
+    def test_custom_latency_override(self):
+        leg = TransferLeg(100, 0, 1, "S3_DOWNLOAD", latency_ms=12.0)
+        assert leg.remaining_latency_ms == 12.0
 
 
 class TestRequest:

@@ -15,6 +15,31 @@ class GPUHardwareSpec:
 
 
 @dataclass(frozen=True)
+class S3Spec:
+    """Shared S3/object-store bandwidth configuration.
+
+    S3 is modeled as a single shared pool with independent upload/download
+    bandwidths.  Values are stored in bytes per second.
+    """
+
+    enabled: bool
+    up_bw_bytes_per_s: int
+    down_bw_bytes_per_s: int
+
+    @classmethod
+    def from_gbps(
+        cls, enabled: bool = True, up_gbps: float = 25.0, down_gbps: float = 25.0
+    ) -> S3Spec:
+        """Build an S3Spec from gigabits-per-second values."""
+        gbps_to_bytes_per_s = 1e9 / 8.0
+        return cls(
+            enabled=enabled,
+            up_bw_bytes_per_s=int(up_gbps * gbps_to_bytes_per_s),
+            down_bw_bytes_per_s=int(down_gbps * gbps_to_bytes_per_s),
+        )
+
+
+@dataclass(frozen=True)
 class HardwareSpec:
     gpu_hardware: GPUHardwareSpec
     num_gpus: int

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.cache.cache import Cache
-from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec
+from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec, S3Spec
 from src.model.model import Model
 from src.request.request import Request
 
@@ -86,6 +86,12 @@ def _make_spec(
 
 
 @pytest.fixture
+def s3_enabled() -> S3Spec:
+    """S3 spec with enabled 25 Gbps symmetric bandwidth for tests."""
+    return S3Spec.from_gbps(enabled=True)
+
+
+@pytest.fixture
 def tiny_hardware() -> Hardware:
     """A hardware preset with small, deterministic memory/bandwidth values."""
     spec = _make_spec(
@@ -111,6 +117,20 @@ def small_hardware() -> Hardware:
         network_inet_down=20_000_000,
     )
     return Hardware(name="small", spec=spec)
+
+
+@pytest.fixture
+def s3_tiny_hardware() -> Hardware:
+    """A hardware preset that fits exactly one 512-token item in RAM/SSD."""
+    spec = _make_spec(
+        ram_mem=65_000,
+        ram_bw=1_000_000_000,
+        nvme_mem=65_000,
+        nvme_bw=100_000_000,
+        network_inet_up=10_000_000,
+        network_inet_down=20_000_000,
+    )
+    return Hardware(name="s3-tiny", spec=spec)
 
 
 @pytest.fixture

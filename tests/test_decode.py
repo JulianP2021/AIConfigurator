@@ -28,9 +28,9 @@ def fake_decode_instance() -> DecodeInstance:
     instance.download_queue = []
     instance.upload_queue = []
     instance.cache = MagicMock(spec=Cache)
-    instance.cache.upload_kv.return_value = MagicMock(active_leg=None)
+    instance.cache.upload_kv.return_value = MagicMock(active_legs=[])
     instance.cache.download_kv.return_value = MagicMock(
-        active_leg=None, legs=[], remaining_bytes=0
+        active_legs=[], tracks=[], remaining_bytes=0
     )
     instance.scheduler = MagicMock()
     instance.session = MagicMock()

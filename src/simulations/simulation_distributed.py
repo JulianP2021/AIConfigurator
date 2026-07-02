@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from src.cache.cache import Cache
+from src.hardware.hardware import S3Spec
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.logger import LOG_SIMULATION, log
@@ -22,6 +23,7 @@ def simulate_run_distributed(
     scenario: DistributedScenario,
     ram_usage_fraction: float = 0.8,
     ssd_usage_fraction: float = 0.8,
+    s3_spec: S3Spec | None = None,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -40,8 +42,9 @@ def simulate_run_distributed(
         model=model,
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
+        s3_spec=s3_spec,
     )
-    scheduler = BandwidthScheduler(scenario.nodes)
+    scheduler = BandwidthScheduler(scenario.nodes, s3_spec=s3_spec)
 
     for node in scenario.nodes:
         prefill_instances.extend(node.prefill_instances)

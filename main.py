@@ -20,7 +20,7 @@ Usage examples:
 
 import argparse
 
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import Hardware, S3Spec
 from src.hardware.scraper import fetch_machine_hardware
 from src.logger import set_debug, set_log_mask
 from src.node.node import Node
@@ -140,6 +140,24 @@ def build_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.ssd_usage_fraction,
         help=f"Fraction of node SSD usable for the KV cache layer (default: {env.ssd_usage_fraction})",
     )
+    parser.add_argument(
+        "--s3-enabled",
+        action="store_true",
+        default=env.s3_enabled,
+        help="Enable the shared S3/object-store cache fallback (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--s3-up-bw-gbps",
+        type=float,
+        default=env.s3_up_bw_gbps,
+        help=f"S3 upload bandwidth in Gbps (default: {env.s3_up_bw_gbps})",
+    )
+    parser.add_argument(
+        "--s3-down-bw-gbps",
+        type=float,
+        default=env.s3_down_bw_gbps,
+        help=f"S3 download bandwidth in Gbps (default: {env.s3_down_bw_gbps})",
+    )
     return parser
 
 
@@ -210,10 +228,17 @@ def main():
         ),
     )
 
+    s3_spec = S3Spec.from_gbps(
+        enabled=args.s3_enabled,
+        up_gbps=args.s3_up_bw_gbps,
+        down_gbps=args.s3_down_bw_gbps,
+    )
+
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=args.ram_usage_fraction,
         ssd_usage_fraction=args.ssd_usage_fraction,
+        s3_spec=s3_spec,
     )
 
     # Print compact JSON for piping

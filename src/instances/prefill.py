@@ -61,7 +61,7 @@ class PrefillInstance:
             "Scheduler must be set before adding requests"
         )
         dr = self.cache.download_kv(self.node_id, request)
-        if dr.active_leg:
+        if dr.active_legs:
             self.scheduler.register(dr)
             self.download_queue.append((dr, -1))
         else:
@@ -98,18 +98,18 @@ class PrefillInstance:
         # Drain transfers that the global scheduler has fully completed.  The
         # transfer objects are shared between the instance queue and the
         # scheduler; a finished transfer has no active leg left.
-        while self.download_queue and self.download_queue[0][0].active_leg is None:
+        while self.download_queue and not self.download_queue[0][0].active_legs:
             download_request, _ = self.download_queue.pop(0)
             self.queue.append((download_request.request, 0))
 
-        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+        while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
             finished_requests.append(upload_request.request)
 
         # Also handle the case where the head upload finished in the same step
         # that the prefill itself finished.  In that situation the upload
         # object is still at the head of upload_queue and has no active leg.
-        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+        while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
             finished_requests.append(upload_request.request)
 
@@ -136,7 +136,7 @@ class PrefillInstance:
                 )
                 self.queue.pop(0)
                 ur = self.cache.upload_kv(self.node_id, request)
-                if ur.active_leg:
+                if ur.active_legs:
                     self.scheduler.register(ur)
                 self.upload_queue.append((ur, 0))
 

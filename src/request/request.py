@@ -1,6 +1,7 @@
 import random
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 
 request_id_counter = 0
@@ -9,12 +10,23 @@ request_id_counter = 0
 class TransferLeg:
     """One sequential segment of a physical KV transfer.
 
-    A transfer is a list of legs. Only the active leg is scheduled at any
-    moment. Bottleneck values:
+    A transfer is made of independent *tracks*, each a list of legs.  Within a
+    track legs run sequentially; across tracks they run in parallel.
+    Bottleneck values:
       * ``RAM_LOCAL``  : shares the node's ``ram_bw``.
       * ``SSD_LOCAL``  : shares the node's ``nvme_bw``.
       * ``NETWORK``    : shares ``network_inet_up`` at source and
         ``network_inet_down`` at destination.
+      * ``S3_UPLOAD``  : shared S3 upload link.
+      * ``S3_DOWNLOAD``: shared S3 download link.
+
+    Each leg carries a fixed startup ``latency_ms`` that must elapse before
+    bytes begin to move.  Default latencies:
+      * ``RAM_LOCAL``  : 0 ms
+      * ``SSD_LOCAL``  : 0.1 ms
+      * ``NETWORK``    : 0 ms
+      * ``S3_UPLOAD``  : 50 ms
+      * ``S3_DOWNLOAD``: 50 ms
     """
 
     remaining_bytes: int
@@ -22,6 +34,15 @@ class TransferLeg:
     dest_node_id: int
     bottleneck: str
     bandwidth_bytes_per_ms: float = 0.0
+    remaining_latency_ms: float = 0.0
+
+    _DEFAULT_LATENCY_MS: ClassVar[dict[str, float]] = {
+        "RAM_LOCAL": 0.0,
+        "SSD_LOCAL": 0.1,
+        "NETWORK": 0.0,
+        "S3_UPLOAD": 50.0,
+        "S3_DOWNLOAD": 50.0,
+    }
 
     def __init__(
         self,
@@ -29,105 +50,81 @@ class TransferLeg:
         source_node_id: int,
         dest_node_id: int,
         bottleneck: str,
+        latency_ms: float | None = None,
     ):
         self.remaining_bytes = remaining_bytes
         self.source_node_id = source_node_id
         self.dest_node_id = dest_node_id
         self.bottleneck = bottleneck
+        self.remaining_latency_ms = (
+            latency_ms
+            if latency_ms is not None
+            else self._DEFAULT_LATENCY_MS.get(bottleneck, 0.0)
+        )
 
 
-class UploadRequest:
+class _MultiTrackTransfer:
+    """Mixin-like base for upload/download requests with parallel leg tracks."""
+
     request: Request
-    legs: list[TransferLeg]
-    current_leg: int
+    tracks: list[list[TransferLeg]]
+    current_legs: list[int]
 
-    def __init__(self, request: Request, legs: list[TransferLeg]):
+    def __init__(self, request: Request, tracks: list[list[TransferLeg]]):
         self.request = request
-        self.legs = legs
-        self.current_leg = 0
+        self.tracks = tracks
+        self.current_legs = [0] * len(tracks)
+        self._skip_zero_legs()
+
+    def _skip_zero_legs(self) -> None:
+        """Advance tracks past any zero-byte legs created by no-op sources."""
+        for track_idx in range(len(self.tracks)):
+            while (
+                self.current_legs[track_idx] < len(self.tracks[track_idx])
+                and self.tracks[track_idx][self.current_legs[track_idx]].remaining_bytes
+                <= 0
+            ):
+                self.current_legs[track_idx] += 1
 
     @property
-    def active_leg(self) -> TransferLeg | None:
-        if self.current_leg < len(self.legs):
-            return self.legs[self.current_leg]
-        return None
+    def active_legs(self) -> list[TransferLeg]:
+        """All currently active legs, one per non-exhausted track."""
+        return [
+            self.tracks[track_idx][self.current_legs[track_idx]]
+            for track_idx in range(len(self.tracks))
+            if self.current_legs[track_idx] < len(self.tracks[track_idx])
+        ]
 
     @property
     def remaining_bytes(self) -> int:
-        return self.active_leg.remaining_bytes if self.active_leg else 0
+        """Sum of remaining bytes across all active legs."""
+        return sum(leg.remaining_bytes for leg in self.active_legs)
 
-    @property
-    def source_node_id(self) -> int:
-        return self.active_leg.source_node_id if self.active_leg else 0
+    def advance_track(self, track_idx: int) -> bool:
+        """Advance a track after its current leg finished.
 
-    @property
-    def dest_node_id(self) -> int:
-        return self.active_leg.dest_node_id if self.active_leg else 0
+        Returns True if the track still has an active leg.
+        """
+        self.current_legs[track_idx] += 1
+        while (
+            self.current_legs[track_idx] < len(self.tracks[track_idx])
+            and self.tracks[track_idx][self.current_legs[track_idx]].remaining_bytes
+            <= 0
+        ):
+            self.current_legs[track_idx] += 1
+        return self.current_legs[track_idx] < len(self.tracks[track_idx])
 
-    @property
-    def bandwidth_bytes_per_ms(self) -> float:
-        return self.active_leg.bandwidth_bytes_per_ms if self.active_leg else 0.0
-
-    @bandwidth_bytes_per_ms.setter
-    def bandwidth_bytes_per_ms(self, value: float) -> None:
-        if self.active_leg:
-            self.active_leg.bandwidth_bytes_per_ms = value
-
-    @property
-    def bottleneck(self) -> str:
-        return self.active_leg.bottleneck if self.active_leg else "RAM_LOCAL"
-
-    def advance_leg(self) -> bool:
-        """Move to the next leg. Returns True if there is another leg."""
-        self.current_leg += 1
-        return self.current_leg < len(self.legs)
+    def is_complete(self) -> bool:
+        """True when every track has been exhausted."""
+        return not self.active_legs
 
 
-class DownloadRequest:
-    request: Request
-    legs: list[TransferLeg]
-    current_leg: int
+class UploadRequest(_MultiTrackTransfer):
+    """Tracks for an upload.  Eviction and upload tracks run in parallel."""
 
-    def __init__(self, request: Request, legs: list[TransferLeg]):
-        self.request = request
-        self.legs = legs
-        self.current_leg = 0
 
-    @property
-    def active_leg(self) -> TransferLeg | None:
-        if self.current_leg < len(self.legs):
-            return self.legs[self.current_leg]
-        return None
-
-    @property
-    def remaining_bytes(self) -> int:
-        return self.active_leg.remaining_bytes if self.active_leg else 0
-
-    @property
-    def source_node_id(self) -> int:
-        return self.active_leg.source_node_id if self.active_leg else 0
-
-    @property
-    def dest_node_id(self) -> int:
-        return self.active_leg.dest_node_id if self.active_leg else 0
-
-    @property
-    def bandwidth_bytes_per_ms(self) -> float:
-        return self.active_leg.bandwidth_bytes_per_ms if self.active_leg else 0.0
-
-    @bandwidth_bytes_per_ms.setter
-    def bandwidth_bytes_per_ms(self, value: float) -> None:
-        if self.active_leg:
-            self.active_leg.bandwidth_bytes_per_ms = value
-
-    @property
-    def bottleneck(self) -> str:
-        return self.active_leg.bottleneck if self.active_leg else "RAM_LOCAL"
-
-    def advance_leg(self) -> bool:
-        """Move to the next leg. Returns True if there is another leg."""
-        self.current_leg += 1
-        return self.current_leg < len(self.legs)
+class DownloadRequest(_MultiTrackTransfer):
+    """Tracks for a download.  Eviction and per-source data tracks run in parallel."""
 
 
 class Request:

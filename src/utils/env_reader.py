@@ -36,6 +36,11 @@ class EnvConfig:
     ram_usage_fraction: float = 0.8
     ssd_usage_fraction: float = 0.8
 
+    # Shared S3/object-store cache
+    s3_enabled: bool = True
+    s3_up_bw_gbps: float = 25.0
+    s3_down_bw_gbps: float = 25.0
+
     # Logging bitmask:
     #   bit 0 (1)  = cache
     #   bit 1 (2)  = instances
@@ -62,6 +67,9 @@ _DEFAULTS = {
     "CACHE_PCT": "0.0",
     "RAM_USAGE_FRACTION": "0.8",
     "SSD_USAGE_FRACTION": "0.8",
+    "S3_ENABLED": "true",
+    "S3_UP_BW_GBPS": "25.0",
+    "S3_DOWN_BW_GBPS": "25.0",
     "LOG_MASK": "15",
     "DEBUG": "false",
 }
@@ -86,11 +94,18 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "GPUS_PER_NODE",
     }:
         return int(value)
-    if key in {"REQ_RATE", "CACHE_PCT", "RAM_USAGE_FRACTION", "SSD_USAGE_FRACTION"}:
+    if key in {
+        "REQ_RATE",
+        "CACHE_PCT",
+        "RAM_USAGE_FRACTION",
+        "SSD_USAGE_FRACTION",
+        "S3_UP_BW_GBPS",
+        "S3_DOWN_BW_GBPS",
+    }:
         return float(value)
     if key == "LOG_MASK":
         return int(value, 0)
-    if key in {"UNIQUE_USERS", "DEBUG"}:
+    if key in {"UNIQUE_USERS", "DEBUG", "S3_ENABLED"}:
         return _parse_bool(value)
     return value
 
@@ -153,6 +168,9 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         cache_pct=float(merged["CACHE_PCT"]),
         ram_usage_fraction=float(merged["RAM_USAGE_FRACTION"]),
         ssd_usage_fraction=float(merged["SSD_USAGE_FRACTION"]),
+        s3_enabled=_parse_bool(merged["S3_ENABLED"]),
+        s3_up_bw_gbps=float(merged["S3_UP_BW_GBPS"]),
+        s3_down_bw_gbps=float(merged["S3_DOWN_BW_GBPS"]),
         log_mask=int(merged["LOG_MASK"], 0),
         debug=_parse_bool(merged["DEBUG"]),
     )
