@@ -185,7 +185,7 @@ class Cache:
             if hardware is None:
                 raise ValueError(f"Unknown node_id: {node_id}")
             self.ram_capacity_bytes[node_id] = int(
-                hardware.spec.ram_mem * self.ram_usage_fraction
+                hardware.spec.cpu_ram * self.ram_usage_fraction
             )
             self.ssd_capacity_bytes[node_id] = int(
                 hardware.spec.nvme_mem * self.ssd_usage_fraction
