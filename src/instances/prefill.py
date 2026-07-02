@@ -95,23 +95,28 @@ class PrefillInstance:
 
         finished_requests: list[Request] = []
 
-        # Active download. Download and upload on the same instance may overlap,
-        # but downloads (and uploads) are processed sequentially per queue.
+        # Drain transfers that the global scheduler has fully completed.  The
+        # transfer objects are shared between the instance queue and the
+        # scheduler; a finished transfer has no active leg left.
+        while self.download_queue and self.download_queue[0][0].active_leg is None:
+            download_request, _ = self.download_queue.pop(0)
+            self.queue.append((download_request.request, 0))
+
+        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+            upload_request, _ = self.upload_queue.pop(0)
+            finished_requests.append(upload_request.request)
+
+        # Also handle the case where the head upload finished in the same step
+        # that the prefill itself finished.  In that situation the upload
+        # object is still at the head of upload_queue and has no active leg.
+        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+            upload_request, _ = self.upload_queue.pop(0)
+            finished_requests.append(upload_request.request)
+
+        # Active download.  Count elapsed transfer time for the request stats.
         if self.download_queue:
             download_request, _ = self.download_queue[0]
             download_request.request.kv_download_time_ms += time_ms
-            leg = download_request.active_leg
-            if leg:
-                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
-                leg.remaining_bytes -= bytes_done
-                if leg.remaining_bytes <= 0:
-                    self.scheduler.unregister(download_request)
-                    has_more = download_request.advance_leg()
-                    if has_more:
-                        self.scheduler.register(download_request)
-                    else:
-                        self.queue.append((download_request.request, 0))
-                        self.download_queue.pop(0)
 
         # Active prefill
         if self.queue:
@@ -135,22 +140,10 @@ class PrefillInstance:
                     self.scheduler.register(ur)
                 self.upload_queue.append((ur, 0))
 
-        # Active upload
+        # Active upload.  Count elapsed transfer time for the request stats.
         if self.upload_queue:
             upload_request, _ = self.upload_queue[0]
             upload_request.request.kv_upload_time_ms += time_ms
-            leg = upload_request.active_leg
-            if leg:
-                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
-                leg.remaining_bytes -= bytes_done
-                if leg.remaining_bytes <= 0:
-                    self.scheduler.unregister(upload_request)
-                    has_more = upload_request.advance_leg()
-                    if has_more:
-                        self.scheduler.register(upload_request)
-                    else:
-                        finished_requests.append(upload_request.request)
-                        self.upload_queue.pop(0)
 
         return finished_requests
 

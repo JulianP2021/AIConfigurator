@@ -22,6 +22,8 @@ class SimulationResult:
     # Latency metrics (milliseconds)
     ttft: float  # avg prefill_time_ms + kv transfer overhead
     tpot: float  # avg decode_time_ms / osl
+    kv_upload_time: float  # avg kv upload time per request
+    kv_download_time: float  # avg kv download time per request
     request_latency: float  # end-to-end per request
     max_request_latency: float  # max end-to-end latency across all requests
     max_ttft: float  # max TTFT across all requests

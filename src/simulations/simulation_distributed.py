@@ -111,6 +111,11 @@ def simulate_run_distributed(
                 f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
             )
 
+            # Advance all transfers globally using the scheduler.  It returns
+            # fully completed transfers; instances drain their own queues by
+            # checking ``active_leg is None`` at the top of ``process_queue``.
+            scheduler.advance_time(time_to_next_completion)
+
             for instance in prefill_instances:
                 log(
                     LOG_SIMULATION,
@@ -168,6 +173,8 @@ def simulate_run_distributed(
     # Per-request stats
     per_request_stats: list[dict[str, float]] = []
     ttft_list: list[float] = []
+    kv_upload_list: list[float] = []
+    kv_download_list: list[float] = []
     tpot_list: list[float] = []
     latency_list: list[float] = []
 
@@ -197,6 +204,8 @@ def simulate_run_distributed(
 
         ttft_list.append(ttft_val)
         tpot_list.append(tpot_val)
+        kv_upload_list.append(req.kv_upload_time_ms)
+        kv_download_list.append(req.kv_download_time_ms)
         latency_list.append(latency_val)
         total_decode_time_ms += float(req.decode_time_ms)
         total_prefill_time_ms += float(req.prefill_time_ms)
@@ -217,6 +226,10 @@ def simulate_run_distributed(
 
     avg_ttft = sum(ttft_list) / len(ttft_list) if ttft_list else 0.0
     avg_tpot = sum(tpot_list) / len(tpot_list) if tpot_list else 0.0
+    avg_kv_upload = sum(kv_upload_list) / len(kv_upload_list) if kv_upload_list else 0.0
+    avg_kv_download = (
+        sum(kv_download_list) / len(kv_download_list) if kv_download_list else 0.0
+    )
     max_ttft_val = max(ttft_list) if ttft_list else 0.0
     max_tpot_val = max(tpot_list) if tpot_list else 0.0
     avg_latency = sum(latency_list) / len(latency_list) if latency_list else 0.0
@@ -271,6 +284,8 @@ def simulate_run_distributed(
         batch_size=batch_size,
         ttft=avg_ttft,
         tpot=avg_tpot,
+        kv_upload_time=avg_kv_upload,
+        kv_download_time=avg_kv_download,
         request_latency=avg_latency,
         max_request_latency=max_latency_val,
         max_ttft=max_ttft_val,
@@ -302,6 +317,8 @@ def simulate_run_distributed(
     print(f"  max TTFT:          {result.max_ttft:.2f} ms")
     print(f"  TPOT:              {result.tpot:.2f} ms")
     print(f"  max TPOT:          {result.max_tpot:.2f} ms")
+    print(f"  KV Upload Time:    {result.kv_upload_time:.2f} ms")
+    print(f"  KV Download Time:  {result.kv_download_time:.2f} ms")
     print(f"  Request Latency:   {result.request_latency:.2f} ms")
     print(f"{'-' * 60}")
     print(f"  tokens/s:          {result.tokens_per_second:,.2f}")

@@ -140,7 +140,24 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert [leg.bottleneck for leg in dr.legs] == ["RAM_LOCAL"]
+        assert dr.legs == []
+
+    def test_download_from_ram_local_replaces_existing_item(
+        self, cache_with_fake_model: Cache
+    ):
+        req = Request(128, 8, 0, 1)
+        req.id = 10
+        old_item = CacheItem(req.id, 0, 128)
+        cache_with_fake_model.insert_cache_item(old_item, 0)
+        original_tick = old_item.last_access_tick
+
+        dr = cache_with_fake_model.download_kv(0, req)
+        assert dr.legs == []
+
+        ram_items = cache_with_fake_model.find_cache(req.id)
+        assert len(ram_items) == 1
+        assert ram_items[0].last_access_tick > original_tick
+        assert old_item not in cache_with_fake_model._ram_layer(0).content
 
     def test_download_from_ram_remote(self, cache_with_fake_model: Cache):
         req = Request(128, 8, 0, 1)
@@ -148,11 +165,7 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(1, req)
-        assert [leg.bottleneck for leg in dr.legs] == [
-            "RAM_LOCAL",
-            "NETWORK",
-            "RAM_LOCAL",
-        ]
+        assert [leg.bottleneck for leg in dr.legs] == ["NETWORK", "RAM_LOCAL"]
 
     def test_download_from_ssd_remote(self, small_cache: Cache):
         req = Request(512, 8, 0, 1)
@@ -172,6 +185,96 @@ class TestCacheDownload:
             "NETWORK",
             "RAM_LOCAL",
         ]
+
+    def test_download_merges_local_ssd_and_remote_ram(
+        self, cache_with_fake_model: Cache
+    ):
+        req = Request(200, 8, 0, 1)
+        req.id = 30
+        # Node 0 SSD has 0-100.
+        ssd_item = CacheItem(req.id, 0, 100)
+        ssd_layer = cache_with_fake_model._ssd_layer(0)
+        ssd_layer.content.append(ssd_item)
+        cache_with_fake_model.ssd_usage_bytes[0] += cache_with_fake_model._item_size(
+            ssd_item
+        )
+        # Node 1 RAM has 100-200.
+        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
+
+        dr = cache_with_fake_model.download_kv(0, req)
+        assert [leg.bottleneck for leg in dr.legs] == [
+            "SSD_LOCAL",
+            "NETWORK",
+            "RAM_LOCAL",
+        ]
+        assert dr.legs[0].remaining_bytes == cache_with_fake_model.kv_size(
+            cache_with_fake_model.model, 100
+        )
+        assert dr.legs[1].remaining_bytes == cache_with_fake_model.kv_size(
+            cache_with_fake_model.model, 100
+        )
+
+        local_items = cache_with_fake_model.find_cache(req.id, node_id=0)
+        assert len(local_items) == 1
+        assert local_items[0].token_start == 0
+        assert local_items[0].token_end == 200
+        # Remote source copy is retained.
+        remote_items = cache_with_fake_model._ram_layer(1).content
+        assert any(
+            item.req_id == req.id and item.token_start == 100 and item.token_end == 200
+            for item in remote_items
+        )
+        # Local SSD copy was promoted, so SSD is empty.
+        assert cache_with_fake_model.ssd_usage_bytes[0] == 0
+
+    def test_download_skips_local_ram_segment(self, cache_with_fake_model: Cache):
+        req = Request(200, 8, 0, 1)
+        req.id = 31
+        # Node 0 RAM already has 0-100.
+        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 100), 0)
+        # Node 1 RAM has 100-200.
+        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
+
+        dr = cache_with_fake_model.download_kv(0, req)
+        assert [leg.bottleneck for leg in dr.legs] == ["NETWORK", "RAM_LOCAL"]
+        assert dr.legs[0].remaining_bytes == cache_with_fake_model.kv_size(
+            cache_with_fake_model.model, 100
+        )
+
+        local_items = cache_with_fake_model.find_cache(req.id, node_id=0)
+        assert len(local_items) == 1
+        assert local_items[0].token_start == 0
+        assert local_items[0].token_end == 200
+
+    def test_download_merges_local_ssd_and_remote_ssd(self, small_cache: Cache):
+        req = Request(512, 8, 0, 1)
+        req.id = 33
+        # Node 0 SSD has 0-256 (insert then evict to SSD).
+        small_cache.insert_cache_item(CacheItem(req.id, 0, 256), 0)
+        small_cache.insert_cache_item(CacheItem(99, 0, 512), 0)
+        # Node 1 SSD has 256-512.
+        small_cache.insert_cache_item(CacheItem(req.id, 256, 512), 1)
+        small_cache.insert_cache_item(CacheItem(98, 0, 512), 1)
+
+        # Make room on node 0 RAM so the merged item inserts without eviction.
+        item99 = next(
+            item for item in small_cache._ram_layer(0).content if item.req_id == 99
+        )
+        small_cache.delete_item(item99)
+
+        dr = small_cache.download_kv(0, req)
+        assert [leg.bottleneck for leg in dr.legs] == [
+            "SSD_LOCAL",
+            "SSD_LOCAL",
+            "RAM_LOCAL",
+            "NETWORK",
+            "RAM_LOCAL",
+        ]
+
+        local_items = small_cache.find_cache(req.id, node_id=0)
+        assert len(local_items) == 1
+        assert local_items[0].token_start == 0
+        assert local_items[0].token_end == 512
 
 
 class TestCacheLRU:

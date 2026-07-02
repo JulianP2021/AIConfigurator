@@ -18,8 +18,6 @@ class GPUHardwareSpec:
 class HardwareSpec:
     gpu_hardware: GPUHardwareSpec
     num_gpus: int
-    ram_mem: int
-    ram_bw: int
     nvme_mem: int
     nvme_bw: int
     network_inet_up: int  # in bytes per second
@@ -83,8 +81,6 @@ def _load_machine_presets() -> dict[str, HardwareSpec]:
         spec = HardwareSpec(
             gpu_hardware=gpu_spec,
             num_gpus=num_gpus,
-            ram_mem=int(entry.get("ram_mem", 0)),
-            ram_bw=int(entry.get("ram_bw", 0)),
             nvme_mem=int(entry.get("nvme_mem", 0)),
             nvme_bw=int(entry.get("nvme_bw", 0)),
             network_inet_up=int(entry.get("network_inet_up", 0)),

@@ -133,6 +133,10 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
     for key, default in _DEFAULTS.items():
         merged[key] = os.environ.get(key, file_values.get(key, default))
 
+    print(f"Loaded environment configuration from {path}:")
+    for key, value in merged.items():
+        print(f"  {key} = {value}")
+
     return EnvConfig(
         model=str(merged["MODEL"]),
         isl=int(merged["ISL"]),

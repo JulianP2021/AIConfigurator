@@ -33,7 +33,7 @@ class TestBandwidthScheduler:
 
         # 10 MB / (10 GB/s) = 1 ms
         assert scheduler.next_event_ms() == pytest.approx(1.0, rel=1e-3)
-        assert ur.bandwidth_bytes_per_ms == tiny_hardware.spec.ram_bw / 1000.0
+        assert ur.bandwidth_bytes_per_ms == tiny_hardware.spec.pcie_bw / 1000.0
 
     def test_ram_local_share_two_transfers(self, tiny_hardware: Hardware):
         scheduler = BandwidthScheduler([FakeNode(0, tiny_hardware)])
@@ -46,8 +46,8 @@ class TestBandwidthScheduler:
 
         # Equal share: each gets 5 GB/s, so 5 MB / 5 GB/s = 1 ms
         assert scheduler.next_event_ms() == pytest.approx(1.0, rel=1e-3)
-        assert ur_a.bandwidth_bytes_per_ms == tiny_hardware.spec.ram_bw / 2 / 1000.0
-        assert ur_b.bandwidth_bytes_per_ms == tiny_hardware.spec.ram_bw / 2 / 1000.0
+        assert ur_a.bandwidth_bytes_per_ms == tiny_hardware.spec.pcie_bw / 2 / 1000.0
+        assert ur_b.bandwidth_bytes_per_ms == tiny_hardware.spec.pcie_bw / 2 / 1000.0
 
     def test_network_share_is_min_of_up_and_down(self, tiny_hardware: Hardware):
         scheduler = BandwidthScheduler([

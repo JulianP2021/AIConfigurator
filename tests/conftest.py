@@ -32,22 +32,69 @@ def fake_model() -> Model:
     return model
 
 
+def _make_spec(
+    ram_mem: int,
+    ram_bw: int,
+    nvme_mem: int,
+    nvme_bw: int,
+    network_inet_up: int,
+    network_inet_down: int,
+) -> HardwareSpec:
+    """Build a HardwareSpec with all required fields from the Vast.ai schema."""
+    gpu_spec = GPUHardwareSpec(flops=1, gpu_mem=1_000_000_000, gpu_bw=1_000_000_000)
+    return HardwareSpec(
+        gpu_hardware=gpu_spec,
+        num_gpus=1,
+        nvme_mem=nvme_mem,
+        nvme_bw=nvme_bw,
+        network_inet_up=network_inet_up,
+        network_inet_down=network_inet_down,
+        cpu_cores=1,
+        cpu_cores_effective=1.0,
+        cpu_ghz=1.0,
+        cpu_name="test",
+        cpu_ram=ram_mem,
+        disk_bw=1.0,
+        disk_name="test",
+        disk_space=1.0,
+        dlperf=1.0,
+        dlperf_per_dphtotal=1.0,
+        dph_base=1.0,
+        dph_total=1.0,
+        geolocation="test",
+        gpu_display_active=False,
+        gpu_frac=1.0,
+        gpu_lanes=1,
+        gpu_max_power=1.0,
+        gpu_max_temp=1.0,
+        has_avx=1,
+        host_id=0,
+        inet_down_cost=0.0,
+        inet_up_cost=0.0,
+        mobo_name="test",
+        os_version="test",
+        pci_gen=1.0,
+        pcie_bw=ram_bw,
+        network_bw=1.0,
+        reliability=1.0,
+        reliability_mult=1.0,
+        score=1.0,
+        storage_cost=0.0,
+        storage_total_cost=0.0,
+        verification="test",
+    )
+
+
 @pytest.fixture
 def tiny_hardware() -> Hardware:
     """A hardware preset with small, deterministic memory/bandwidth values."""
-    gpu_spec = GPUHardwareSpec(flops=1, gpu_mem=1_000_000_000, gpu_bw=1_000_000_000)
-    spec = HardwareSpec(
-        gpu_hardware=gpu_spec,
-        num_gpus=1,
+    spec = _make_spec(
         ram_mem=10_000_000_000,  # 10 GB
         ram_bw=10_000_000_000,  # 10 GB/s
         nvme_mem=5_000_000_000,  # 5 GB
         nvme_bw=1_000_000_000,  # 1 GB/s
         network_inet_up=100_000_000,  # 100 MB/s
         network_inet_down=200_000_000,  # 200 MB/s
-        price_usd_per_hour=1.0,
-        price_inet_up=0.0,
-        price_inet_down=0.0,
     )
     return Hardware(name="tiny", spec=spec)
 
@@ -55,19 +102,13 @@ def tiny_hardware() -> Hardware:
 @pytest.fixture
 def small_hardware() -> Hardware:
     """A hardware preset that can barely hold a few 512-token items in RAM/SSD."""
-    gpu_spec = GPUHardwareSpec(flops=1, gpu_mem=1_000_000_000, gpu_bw=1_000_000_000)
-    spec = HardwareSpec(
-        gpu_hardware=gpu_spec,
-        num_gpus=1,
+    spec = _make_spec(
         ram_mem=300_000,  # fits ~3 items of 100 bytes/token * 512 tokens
         ram_bw=1_000_000_000,
         nvme_mem=200_000,  # fits ~2 items
         nvme_bw=100_000_000,
         network_inet_up=10_000_000,
         network_inet_down=20_000_000,
-        price_usd_per_hour=1.0,
-        price_inet_up=0.0,
-        price_inet_down=0.0,
     )
     return Hardware(name="small", spec=spec)
 

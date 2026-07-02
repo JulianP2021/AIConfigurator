@@ -118,7 +118,7 @@ def build_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.log_mask,
         help=(
             "Component logging bitmask: bit 0 (1)=cache, bit 1 (2)=instances, "
-            "bit 2 (4)=router, bit 3 (8)=simulation. 0=none, 15=all "
+            "bit 2 (4)=router,  bit 3 (8)=simulation, bit 4 (16)=bandwidth. 0=none, 31=all "
             f"(default: {env.log_mask})"
         ),
     )
@@ -177,11 +177,11 @@ def main():
         cache_percentage=args.cache_pct,
     )
 
-    hardware = fetch_machine_hardware("H200 x1 #440acd08")
+    hardware = fetch_machine_hardware("H200 x1 #8a0e41af")
     assert type(hardware) is Hardware, (
         f"Expected Hardware instance, got {type(hardware)}"
     )
-    assert hardware is not None, "Failed to fetch hardware for H200 x1 #440acd08"
+    assert hardware is not None, "Failed to fetch hardware for H200 x1 #8a0e41af"
 
     scenario = DistributedScenario(
         name="cli_run",

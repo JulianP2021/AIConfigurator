@@ -25,8 +25,8 @@ class DecodeInstance:
     cache: Cache | None
     scheduler: BandwidthScheduler | None
 
-    # Decode runs in frozen batches of one token. These fields track the
-    # instance-level progress for the current batch.
+    # Decode runs in frozen batches of exactly one token. These fields track
+    # the instance-level progress for the current batch.
     current_batch: list[Request] | None
     remaining_batch_time_ms: float | None
     current_batch_decode_time_ms: float | None
@@ -91,12 +91,6 @@ class DecodeInstance:
             self.remaining_batch_time_ms = None
             self.current_batch_decode_time_ms = None
 
-    def _batch_ids(self) -> tuple[int, ...]:
-        """Return stable ids of the current batch for change detection."""
-        if self.current_batch is None:
-            return ()
-        return tuple(id(r) for r in self.current_batch)
-
     def time_to_next_completion(self) -> float:
         """Return a lower-bound time until one request in the batch finishes.
 
@@ -146,22 +140,21 @@ class DecodeInstance:
 
         finished_requests: list[Request] = []
 
-        # Active download. Download and upload may overlap on the same instance.
+        # Drain transfers that the global scheduler has fully completed.  The
+        # transfer objects are shared between the instance queue and the
+        # scheduler; a finished transfer has no active leg left.
+        while self.download_queue and self.download_queue[0][0].active_leg is None:
+            download_request, _ = self.download_queue.pop(0)
+            self.queue.append((download_request.request, 0))
+
+        while self.upload_queue and self.upload_queue[0][0].active_leg is None:
+            upload_request, _ = self.upload_queue.pop(0)
+            finished_requests.append(upload_request.request)
+
+        # Active download. Count elapsed transfer time for the request stats.
         if self.download_queue:
             download_request, _ = self.download_queue[0]
             download_request.request.kv_download_time_ms += time_ms
-            leg = download_request.active_leg
-            if leg:
-                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
-                leg.remaining_bytes -= bytes_done
-                if leg.remaining_bytes <= 0:
-                    self.scheduler.unregister(download_request)
-                    has_more = download_request.advance_leg()
-                    if has_more:
-                        self.scheduler.register(download_request)
-                    else:
-                        self.queue.append((download_request.request, 0))
-                        self.download_queue.pop(0)
 
         # Active decode batch
         self._ensure_batch()
@@ -228,22 +221,10 @@ class DecodeInstance:
                 self.remaining_batch_time_ms = None
                 self.current_batch_decode_time_ms = None
 
-        # Active upload
+        # Active upload. Count elapsed transfer time for the request stats.
         if self.upload_queue:
             upload_request, _ = self.upload_queue[0]
             upload_request.request.kv_upload_time_ms += time_ms
-            leg = upload_request.active_leg
-            if leg:
-                bytes_done = leg.bandwidth_bytes_per_ms * time_ms
-                leg.remaining_bytes -= bytes_done
-                if leg.remaining_bytes <= 0:
-                    self.scheduler.unregister(upload_request)
-                    has_more = upload_request.advance_leg()
-                    if has_more:
-                        self.scheduler.register(upload_request)
-                    else:
-                        finished_requests.append(upload_request.request)
-                        self.upload_queue.pop(0)
 
         return finished_requests
 

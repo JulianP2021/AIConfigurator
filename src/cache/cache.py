@@ -59,7 +59,7 @@ class Cache:
         self.ram_usage_fraction = ram_usage_fraction
         self.ssd_usage_fraction = ssd_usage_fraction
         self.ram_capacity_bytes = {
-            node_id: int(hardware.spec.ram_mem * ram_usage_fraction)
+            node_id: int(hardware.spec.cpu_ram * ram_usage_fraction)
             for node_id, hardware in node_hardware.items()
         }
         self.ssd_capacity_bytes = {
@@ -76,7 +76,7 @@ class Cache:
         """Raise if a node cannot store a minimal 512-token KV item in RAM/SSD."""
         min_item_bytes = self.kv_size(self.model, 512)
         for node_id, hardware in self.node_hardware.items():
-            ram_cap = int(hardware.spec.ram_mem * self.ram_usage_fraction)
+            ram_cap = int(hardware.spec.cpu_ram * self.ram_usage_fraction)
             ssd_cap = int(hardware.spec.nvme_mem * self.ssd_usage_fraction)
             if ram_cap < min_item_bytes:
                 raise ValueError(
@@ -227,20 +227,48 @@ class Cache:
         assert layer is not None, f"Layer {layer_name} not found for node {node_id}"
         return layer
 
-    def find_cache(self, req_id: int) -> list[CacheItem]:
+    def _find_all_items(self, req_id: int) -> list[CacheItem]:
+        """Return every cached item for ``req_id`` across all nodes/tiers."""
         items: list[CacheItem] = []
-        for _, layers in self.layers.items():
-            for layer in layers:
+        for node_layers in self.layers.values():
+            for layer in node_layers:
                 for item in layer.content:
                     if item.req_id == req_id:
                         items.append(item)
-        hit_tokens = 0
-        for item in items:
-            if item.token_start > hit_tokens:
-                break
-            hit_tokens = max(hit_tokens, item.token_end)
+        return items
 
-        return [item for item in items if item.token_start < hit_tokens]
+    def _contiguous_prefix(self, items: list[CacheItem]) -> list[CacheItem]:
+        """Return the items that form the longest contiguous prefix [0, N).
+
+        Items are sorted by ``token_start``.  Overlapping and duplicate ranges
+        are handled by extending coverage to the furthest ``token_end`` seen.
+        """
+        sorted_items = sorted(items, key=lambda item: item.token_start)
+        prefix: list[CacheItem] = []
+        coverage_end = 0
+        for item in sorted_items:
+            if item.token_start > coverage_end:
+                break
+            if item.token_end <= coverage_end:
+                continue
+            prefix.append(item)
+            coverage_end = item.token_end
+        return prefix
+
+    def find_cache(self, req_id: int, node_id: int | None = None) -> list[CacheItem]:
+        """Return the cached items forming the longest contiguous prefix [0, N).
+
+        If ``node_id`` is given, only items on that node are considered.
+        """
+        items = self._find_all_items(req_id)
+        if node_id is not None:
+            items = [
+                item
+                for item in items
+                if (layer := self.find_cache_layer(item)) is not None
+                and layer.node_id == node_id
+            ]
+        return self._contiguous_prefix(items)
 
     def find_cache_layer(self, item: CacheItem) -> CacheLayer | None:
         for _, layers in self.layers.items():
@@ -260,56 +288,87 @@ class Cache:
             return
         raise ValueError("Item not found in cache")
 
-    def cost_move_tokens(
-        self, item: CacheItem, dest_node_id: int, layer_name: str
-    ) -> None:
-        """Move an item logically to ``dest_node_id``/``layer_name``.
-
-        This only updates cache bookkeeping. The physical transfer legs are
-        generated separately by the caller that knows the original location.
-        """
-        found_at_layer = self.find_cache_layer(item)
-        if not found_at_layer:
-            raise ValueError("Item not found in cache")
-
-        if found_at_layer.name == "RAM":
-            self.ram_usage_bytes[found_at_layer.node_id] -= self._item_size(item)
-        elif found_at_layer.name == "SSD":
-            self.ssd_usage_bytes[found_at_layer.node_id] -= self._item_size(item)
-
-        found_at_layer.content.remove(item)
-
-        layer = self.get_layer(dest_node_id, layer_name)
-        if layer.name == "RAM":
-            # Note: destination RAM eviction legs are handled by the caller.
-            self.ram_usage_bytes[dest_node_id] += self._item_size(item)
-        elif layer.name == "SSD":
-            self.ssd_usage_bytes[dest_node_id] += self._item_size(item)
-
-        layer.content.append(item)
-        self._touch(item)
-
-    def cost_move_cache(
-        self, req_id: int, node_id: int, layer_name: str
+    def _merge_into_ram(
+        self, req_id: int, node_id: int, token_start: int, token_end: int
     ) -> list[TransferLeg]:
-        """Move all cache items for ``req_id`` to the destination layer.
+        """Create a single contiguous RAM item, deleting overlapping local copies.
 
+        Local source items (same node) are removed because their data becomes
+        part of the new merged RAM item.  Source copies on other nodes are kept.
         Returns any destination-RAM eviction legs produced while making room.
         """
-        items = sorted(self.find_cache(req_id), key=lambda x: -x.token_start)
+        for layer in (self._ram_layer(node_id), self._ssd_layer(node_id)):
+            for existing in list(layer.content):
+                if existing.req_id != req_id:
+                    continue
+                if (
+                    existing.token_end <= token_start
+                    or existing.token_start >= token_end
+                ):
+                    continue
+                self.delete_item(existing)
 
-        eviction_legs: list[TransferLeg] = []
-        hit_tokens = 0
-        for item in items:
-            if item.token_start > hit_tokens:
+        merged = CacheItem(req_id, token_start, token_end)
+        return self.insert_cache_item(merged, node_id)
+
+    def _find_download_segments(
+        self, req_id: int, dest_node_id: int, required_end: int
+    ) -> tuple[int, list[tuple[int, int, int, str]]]:
+        """Find source segments needed to assemble [0, required_end) on ``dest_node_id``.
+
+        Returns ``(effective_end, segments)`` where each segment is
+        ``(start, end, source_node_id, source_layer_name)``.  ``effective_end``
+        is the largest token index that can actually be downloaded given the
+        globally cached contiguous prefix.  Local SSD items on ``dest_node_id``
+        are promoted; remote items are copied.
+        """
+        all_items = self._find_all_items(req_id)
+        global_prefix = self._contiguous_prefix(all_items)
+        if not global_prefix:
+            return 0, []
+        effective_end = min(required_end, global_prefix[-1].token_end)
+
+        local_items = [
+            item
+            for item in all_items
+            if (layer := self.find_cache_layer(item)) is not None
+            and layer.node_id == dest_node_id
+        ]
+        local_prefix = self._contiguous_prefix(local_items)
+        local_end = local_prefix[-1].token_end if local_prefix else 0
+        local_end = min(local_end, effective_end)
+
+        segments: list[tuple[int, int, int, str]] = []
+
+        # Promote local SSD portions that are already on the destination node.
+        for item in local_prefix:
+            layer = self.find_cache_layer(item)
+            if layer is None or layer.name != "SSD":
+                continue
+            seg_end = min(item.token_end, effective_end)
+            segments.append((item.token_start, seg_end, layer.node_id, layer.name))
+
+        # Fetch any remaining ranges from remote sources.
+        miss_start = local_end
+        while miss_start < effective_end:
+            source: tuple[CacheItem, CacheLayer] | None = None
+            for item in all_items:
+                layer = self.find_cache_layer(item)
+                if layer is None or layer.node_id == dest_node_id:
+                    continue
+                if item.token_start <= miss_start < item.token_end:
+                    source = (item, layer)
+                    break
+            if source is None:
+                # Coverage gap: stop at what we can satisfy.
+                effective_end = miss_start
                 break
-            if layer_name == "RAM" and node_id in self.ram_capacity_bytes:
-                eviction_legs.extend(
-                    self._make_room_ram(node_id, self._item_size(item))
-                )
-            self.cost_move_tokens(item, node_id, layer_name)
+            item, layer = source
+            seg_end = min(item.token_end, effective_end)
+            segments.append((miss_start, seg_end, layer.node_id, layer.name))
+            miss_start = seg_end
 
-        return eviction_legs
+        return effective_end, segments
 
     def insert_cache_item(self, item: CacheItem, node_id: int) -> list[TransferLeg]:
         """Insert an item into a node's RAM layer, evicting to SSD if needed.
@@ -342,7 +401,12 @@ class Cache:
         dest_node_id: int,
         bytes_to_transfer: int,
     ) -> list[TransferLeg]:
-        """Build physical transfer legs for moving KV from its cache location."""
+        """Build physical transfer legs for moving KV from its cache location.
+
+        A remote read from RAM does not need a source-side RAM staging leg: the
+        data is already in the source node's host RAM.  A remote read from SSD
+        still needs SSD_LOCAL to model reading the SSD into source RAM.
+        """
         legs: list[TransferLeg] = []
 
         if source_layer_name == "SSD":
@@ -354,22 +418,20 @@ class Cache:
             )
 
         if source_node_id != dest_node_id:
-            # Source-side RAM staging for network egress.
-            legs.append(
-                TransferLeg(
-                    bytes_to_transfer, source_node_id, source_node_id, "RAM_LOCAL"
+            if source_layer_name == "SSD":
+                # SSD -> source RAM before network egress.
+                legs.append(
+                    TransferLeg(
+                        bytes_to_transfer,
+                        source_node_id,
+                        source_node_id,
+                        "RAM_LOCAL",
+                    )
                 )
-            )
-            # Inter-node transfer.
+            # Inter-node transfer and destination-side placement.
             legs.append(
                 TransferLeg(bytes_to_transfer, source_node_id, dest_node_id, "NETWORK")
             )
-            # Destination-side RAM placement from network ingress.
-            legs.append(
-                TransferLeg(bytes_to_transfer, dest_node_id, dest_node_id, "RAM_LOCAL")
-            )
-        else:
-            # Local transfer: just place into RAM.
             legs.append(
                 TransferLeg(bytes_to_transfer, dest_node_id, dest_node_id, "RAM_LOCAL")
             )
@@ -377,8 +439,14 @@ class Cache:
         return legs
 
     def upload_kv(self, node_id: int, request: Request) -> UploadRequest:
-        """Move KV from GPU RAM to RAM and insert into cache."""
-        prior_cache = self.find_cache(request.id)
+        """Move KV from GPU RAM to RAM and insert into cache.
+
+        Only the incremental KV bytes (new tokens beyond what was already cached
+        on this node) are uploaded. If the node already has the full KV in its
+        RAM, no upload transfer is generated.
+        """
+        prior_cache = self.find_cache(request.id, node_id=node_id)
+        prior_cached_tokens = 0
         if prior_cache:
             cache_layer = self.find_cache_layer(prior_cache[-1])
 
@@ -387,9 +455,10 @@ class Cache:
                 f"Cache layer node_id should match the provided node_id for request {request.id}"
             )
             assert cache_layer.name == "RAM", "Cache layer name should be 'RAM'"
+            prior_cached_tokens = prior_cache[-1].token_end
             cache_item = CacheItem(
                 request.id,
-                prior_cache[-1].token_end,
+                prior_cached_tokens,
                 request.prefilled_tokens + request.decoded_tokens,
             )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
@@ -399,48 +468,61 @@ class Cache:
             )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
 
-        bytes_to_transfer = self.kv_size(
-            self.model, request.prefilled_tokens + request.decoded_tokens
-        )
+        current_total_tokens = request.prefilled_tokens + request.decoded_tokens
+        new_tokens = max(0, current_total_tokens - prior_cached_tokens)
+        bytes_to_transfer = self.kv_size(self.model, new_tokens)
+
         log(
             LOG_CACHE,
             f"Uploading KV for request {request.id} to node {node_id}, "
-            f"bytes: {bytes_to_transfer}, cache size: {request.prefilled_tokens + request.decoded_tokens} tokens",
+            f"bytes: {bytes_to_transfer}, cache size: {current_total_tokens} tokens, "
+            f"new tokens uploaded: {new_tokens}",
         )
+
+        if bytes_to_transfer <= 0:
+            return UploadRequest(request, eviction_legs)
 
         upload_leg = TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")
         return UploadRequest(request, [*eviction_legs, upload_leg])
 
     def download_kv(self, node_id: int, request: Request) -> DownloadRequest:
-        """Move KV from current location to node RAM."""
-        current_cache = self.find_cache(request.id)
-        if not current_cache:
+        """Assemble KV for ``request`` on ``node_id`` RAM from all cached sources.
+
+        The destination receives one contiguous RAM item covering the longest
+        cached prefix that can be satisfied.  Source copies on other nodes are
+        retained; local SSD sources are promoted (removed from SSD).
+        """
+        required_end = request.isl
+        effective_end, segments = self._find_download_segments(
+            request.id, node_id, required_end
+        )
+        if effective_end == 0:
             log(LOG_CACHE, f"No cache found for request {request.id}")
             return DownloadRequest(request, [])
 
-        source_layer = self.find_cache_layer(current_cache[-1])
-        assert source_layer is not None, "Cache layer should not be None"
-        source_node_id = source_layer.node_id
-        source_layer_name = source_layer.name
+        # Optimistically update cache state: merge everything into one RAM item.
+        eviction_legs = self._merge_into_ram(request.id, node_id, 0, effective_end)
 
-        bytes_to_transfer = self.kv_size(self.model, request.isl)
-
-        # Build physical transfer legs from the *original* cache location.
-        data_legs = self._build_data_legs(
-            source_layer_name, source_node_id, node_id, bytes_to_transfer
-        )
-
-        # Move cache items logically to destination RAM. This may produce
-        # destination-RAM eviction legs that must complete first.
-        dest_eviction_legs = self.cost_move_cache(request.id, node_id, "RAM")
+        data_legs: list[TransferLeg] = []
+        for start, end, source_node_id, source_layer_name in segments:
+            if source_node_id == node_id and source_layer_name == "RAM":
+                # Already in destination RAM; no physical transfer needed.
+                continue
+            bytes_to_transfer = self.kv_size(self.model, end - start)
+            data_legs.extend(
+                self._build_data_legs(
+                    source_layer_name, source_node_id, node_id, bytes_to_transfer
+                )
+            )
 
         log(
             LOG_CACHE,
-            f"Downloading KV for request {request.id} to node {node_id} "
-            f"from node {source_node_id} {source_layer_name}, bytes: {bytes_to_transfer}, "
-            f"legs: {[leg.bottleneck for leg in dest_eviction_legs + data_legs]}",
+            f"Downloading KV for request {request.id} to node {node_id}, "
+            f"effective tokens: {effective_end}/{required_end}, "
+            f"segments: {segments}, "
+            f"legs: {[leg.bottleneck for leg in eviction_legs + data_legs]}",
         )
-        return DownloadRequest(request, dest_eviction_legs + data_legs)
+        return DownloadRequest(request, eviction_legs + data_legs)
 
     def kv_size(self, model: Model, tokens: int) -> int:
         return model.kv_size_per_token * tokens
