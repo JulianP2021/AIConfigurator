@@ -35,6 +35,7 @@ class TransferLeg:
     bottleneck: str
     bandwidth_bytes_per_ms: float = 0.0
     remaining_latency_ms: float = 0.0
+    processed_time_ms: float = 0.0  # scheduler time spent advancing this leg
 
     _DEFAULT_LATENCY_MS: ClassVar[dict[str, float]] = {
         "RAM_LOCAL": 0.0,
@@ -118,6 +119,19 @@ class _MultiTrackTransfer:
         """True when every track has been exhausted."""
         return not self.active_legs
 
+    @property
+    def active_transfer_duration_ms(self) -> float:
+        """Total scheduler-processed time for the longest parallel track.
+
+        Because tracks run in parallel, the transfer wall-clock time is the
+        maximum sum of per-leg processed times across tracks.  This includes
+        startup latency and byte-transfer time, but excludes any queueing time
+        at the instance level.
+        """
+        if not self.tracks:
+            return 0.0
+        return max(sum(leg.processed_time_ms for leg in track) for track in self.tracks)
+
 
 class UploadRequest(_MultiTrackTransfer):
     """Tracks for an upload.  Eviction and upload tracks run in parallel."""
@@ -140,10 +154,44 @@ class Request:
 
     kv_download_time_ms: float = 0
     kv_upload_time_ms: float = 0
+
+    # Phase-level timing (active / wait / total) for detailed analytics.
+    # Active time is compute or scheduler-processed transfer time. Wait time is
+    # queueing time before that phase becomes active. Total = active + wait.
+    prefill_wait_ms: float = 0.0
+
+    prefill_download_total_ms: float = 0.0
+    prefill_download_active_ms: float = 0.0
+    prefill_download_wait_ms: float = 0.0
+
+    prefill_upload_total_ms: float = 0.0
+    prefill_upload_active_ms: float = 0.0
+    prefill_upload_wait_ms: float = 0.0
+
+    decode_download_total_ms: float = 0.0
+    decode_download_active_ms: float = 0.0
+    decode_download_wait_ms: float = 0.0
+
+    decode_total_ms: float = 0.0
+    decode_wait_ms: float = 0.0
+
+    decode_upload_total_ms: float = 0.0
+    decode_upload_active_ms: float = 0.0
+    decode_upload_wait_ms: float = 0.0
+
+    # Derived user-facing metrics
+    clean_ttft_ms: float = 0.0
+    wait_inclusive_ttft_ms: float = 0.0
+    clean_latency_ms: float = 0.0
+    wait_inclusive_latency_ms: float = 0.0
+
     id: int
     user_id: int
+    session_id: int
 
-    def __init__(self, isl: int, osl: int, cached: int, user_id: int = -1):
+    def __init__(
+        self, isl: int, osl: int, cached: int, user_id: int = -1, session_id: int = -1
+    ):
         global request_id_counter
         self.isl = isl
         self.osl = osl
@@ -151,12 +199,13 @@ class Request:
         self.prefilled_tokens = cached
         self.id = request_id_counter
         self.user_id = user_id
+        self.session_id = session_id
         request_id_counter += 1
 
         assert self.isl >= 0, "ISL must be non-negative"
         assert self.osl >= 0, "OSL must be non-negative"
-        assert self.prefilled_tokens < self.isl, (
-            "Prefilled tokens must be less than ISL"
+        assert self.prefilled_tokens <= self.isl, (
+            "Prefilled tokens must be less than or equal to ISL"
         )
 
     @property
@@ -175,10 +224,9 @@ class Request:
 @dataclass
 class TokenDistribution:
     min_input_tokens: int
-    min_output_tokens: int
     max_input_tokens: int
+    min_output_tokens: int
     max_output_tokens: int
-    cache_percentage: float
 
 
 @dataclass
@@ -187,12 +235,14 @@ class RequestScenario:
     total_requests: int
     min_users: int
     max_users: int
+    max_session_turns: int
     req_s: float
 
 
 @dataclass
 class RequestGenerator:
     req_rate: float
+    max_session_turns: int = 5
 
     def time_till_next_request(self) -> float:
         return random.expovariate(self.req_rate)
@@ -210,16 +260,55 @@ class RequestGenerator:
         users = current_users.union(finished_users)
 
         if len(finished_users) < request_scenario.min_users:
-            user_id = max(users) + 1 if users else 0
+            # Need more finished users; create a brand-new user not in flight.
+            user_id = max(users, default=-1) + 1
         else:
-            if len(finished_users) < request_scenario.max_users:
+            if len(users) < request_scenario.max_users:
                 if random.random() < 0.5:
-                    user_id = max(finished_users) + 1
+                    # New user must not collide with an in-flight user.
+                    user_id = max(users, default=-1) + 1
                 else:
-                    user_id = random.choice(list(finished_users))
+                    user_id = (
+                        random.choice(list(finished_users))
+                        if finished_users
+                        else max(users, default=-1) + 1
+                    )
             else:
+                if not finished_users:
+                    raise ValueError(
+                        "No finished users available to select from, but already at maximum user limit."
+                    )
                 user_id = random.choice(list(finished_users))
         return user_id
+
+    def _get_session_id(
+        self,
+        user_id: int,
+        current_requests: list[Request],
+        finished_requests: list[Request],
+    ) -> int:
+        """Return a session id for the user, creating a new one if needed.
+
+        A session is retired once it has reached ``max_session_turns`` requests
+        (counted among finished requests). Requests that are still in flight are
+        not counted.
+        """
+        all_user_requests = [
+            r for r in current_requests + finished_requests if r.user_id == user_id
+        ]
+        if not all_user_requests:
+            return 0
+
+        # Group finished requests by session and retire the most recent session
+        # if it has reached the turn limit.
+        sessions: dict[int, int] = {}
+        for r in all_user_requests:
+            sessions[r.session_id] = sessions.get(r.session_id, 0) + 1
+
+        latest_session = max(sessions.keys())
+        if sessions[latest_session] >= self.max_session_turns:
+            return latest_session + 1
+        return latest_session
 
     def generate_request(
         self,
@@ -230,10 +319,17 @@ class RequestGenerator:
         user_id = self._get_random_user_id(
             request_scenario, current_requests, finished_requests
         )
-        past_requests = [r for r in current_requests if r.user_id == user_id]
+        session_id = self._get_session_id(user_id, current_requests, finished_requests)
+
+        # Within a session, the input is the cumulative conversation length so far.
+        past_session_requests = [
+            r
+            for r in current_requests + finished_requests
+            if r.user_id == user_id and r.session_id == session_id
+        ]
         min_input_tokens = max(
             0,
-            max((r.isl + r.osl for r in past_requests), default=0),
+            max((r.isl + r.osl for r in past_session_requests), default=0),
         )
 
         input_tokens = min_input_tokens + random.randint(
@@ -246,11 +342,13 @@ class RequestGenerator:
             request_scenario.token_distribution.max_output_tokens,
         )
 
-        cached = min(
-            min_input_tokens,
-            int(input_tokens * request_scenario.token_distribution.cache_percentage),
-        )
+        # All prior session tokens are considered prefetched from cache.
+        cached = min_input_tokens
 
         return Request(
-            isl=input_tokens, osl=output_tokens, cached=cached, user_id=user_id
+            isl=input_tokens,
+            osl=output_tokens,
+            cached=cached,
+            user_id=user_id,
+            session_id=session_id,
         )

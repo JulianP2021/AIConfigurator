@@ -1,11 +1,14 @@
 """FastAPI webserver for the Configurator Simulator."""
 
+import asyncio
 import base64
+import concurrent.futures
 import io
 import sys
 import uuid
 
-from contextlib import redirect_stdout
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, redirect_stdout
 from pathlib import Path
 
 import matplotlib
@@ -18,7 +21,8 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 # Ensure project root is on sys.path when running the script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import Hardware, S3Spec
+from src.hardware.scraper import fetch_machine_hardware
 from src.logger import set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -32,14 +36,34 @@ from src.utils.env_reader import load_env
 
 matplotlib.use("Agg")
 
-app = FastAPI(title="Configurator Simulator")
-
 # Load .env configuration (including LOG_MASK) at startup.
 _env = load_env()
 set_log_mask(_env.log_mask)
 
 # In-memory storage for plots (keyed by UUID)
 _plot_store: dict[str, str] = {}  # id -> base64 PNG
+
+# Process pool used to isolate CPU-bound simulations. Each simulation has
+# module-level mutable state (request IDs, caches, schedulers); running them in
+# separate processes keeps results deterministic and prevents cross-run state
+# leakage. Concurrency is capped at 8 workers.
+_executor: concurrent.futures.ProcessPoolExecutor | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Start the process pool at server startup and shut it down cleanly."""
+    global _executor
+    _executor = concurrent.futures.ProcessPoolExecutor(max_workers=8)
+    try:
+        yield
+    finally:
+        if _executor is not None:
+            _executor.shutdown(wait=True, cancel_futures=True)
+            _executor = None
+
+
+app = FastAPI(title="Configurator Simulator", lifespan=lifespan)
 
 
 def _build_nodes(
@@ -50,8 +74,12 @@ def _build_nodes(
     batch_size: int,
     model: str,
 ) -> list[Node]:
-    prefill_hw = Hardware.from_name(prefill_hardware_name)
-    decode_hw = Hardware.from_name(decode_hardware_name)
+    prefill_hw = fetch_machine_hardware(prefill_hardware_name)
+    decode_hw = fetch_machine_hardware(decode_hardware_name)
+    print(
+        f"Building nodes for prefill hardware: {prefill_hw}, decode hardware: {decode_hw}"
+    )
+
     prefill_gpus_per_node = prefill_hw.spec.num_gpus
     decode_gpus_per_node = decode_hw.spec.num_gpus
     nodes: list[Node] = []
@@ -91,8 +119,13 @@ def _run_single_config(
     osl: int,
     total_requests: int,
     req_rate: float,
-    cache_pct: float,
-) -> SimulationResult:
+    max_session_turns: int,
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_enabled: bool,
+    s3_up_bw_gbps: float,
+    s3_down_bw_gbps: float,
+) -> SimulationResult | None:
     nodes = _build_nodes(
         prefill_hardware,
         decode_hardware,
@@ -110,16 +143,40 @@ def _run_single_config(
                 max_input_tokens=isl,
                 min_output_tokens=osl,
                 max_output_tokens=osl,
-                cache_percentage=cache_pct,
             ),
             total_requests=total_requests,
             min_users=1,
             max_users=10,
+            max_session_turns=max_session_turns,
             req_s=req_rate,
         ),
     )
+    print(f"Simulating scenario: {scenario}")
+
+    s3_spec = S3Spec.from_gbps(
+        enabled=s3_enabled,
+        up_gbps=s3_up_bw_gbps,
+        down_gbps=s3_down_bw_gbps,
+    )
     with io.StringIO() as buf, redirect_stdout(buf):
-        return simulate_run_distributed(scenario)
+        try:
+            print(f"Simulating scenario: {scenario}")
+
+            return simulate_run_distributed(
+                scenario,
+                ram_usage_fraction=ram_usage_fraction,
+                ssd_usage_fraction=ssd_usage_fraction,
+                s3_spec=s3_spec,
+            )
+        except Exception as exc:
+            print(f"Error during simulation for config '{label}': {exc}")
+            return None
+
+
+# Top-level function passed to the process pool.  Pickling a bound method is
+# unreliable across processes; a plain module-level function is safest.
+def _run_single_config_in_process(kwargs: dict[str, object]) -> SimulationResult | None:
+    return _run_single_config(**kwargs)
 
 
 def _metric_card(value: str, label: str) -> str:
@@ -266,7 +323,8 @@ def _results_inner_html(
 
     if results:
         # ---- Best config metric card ----
-        best = min(results, key=lambda r: r["request_latency"])
+        valid_results = [r for r in results if not r.get("has_error")]
+        best = min(valid_results or results, key=lambda r: r["request_latency"])
         html += (
             '<div class="card"><h2>Best Config (by Latency)</h2><div class="metrics">\n'
         )
@@ -281,10 +339,20 @@ def _results_inner_html(
         html += '<div class="card"><h2>Configuration Comparison</h2><table><thead><tr>'
         html += "<th>Label</th><th>Prefill HW</th><th>Decode HW</th><th>Nodes (P/D)</th><th>Batch</th>"
         html += "<th>TTFT</th><th>max TTFT</th><th>TPOT</th><th>max TPOT</th>"
-        html += "<th>Latency</th><th>max Latency</th><th>tok/s</th><th>tok/s/GPU</th><th>req/s</th>"
+        html += (
+            "<th>Latency</th><th>max Latency</th><th>KV Upload</th><th>KV Download</th>"
+        )
         html += "<th>Price/h</th>"
         html += "</tr></thead><tbody>"
         for row in results:
+            if row.get("has_error"):
+                html += (
+                    f'<tr style="opacity:0.7;">'
+                    f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
+                    f'<td colspan="13" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
+                    f"</tr>"
+                )
+                continue
             html += (
                 f"<tr>"
                 f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
@@ -298,10 +366,48 @@ def _results_inner_html(
                 f"<td>{row['max_tpot']:.2f}</td>"
                 f"<td>{row['request_latency']:.2f}</td>"
                 f"<td>{row['max_request_latency']:.2f}</td>"
-                f"<td>{row['tokens_per_second']:.2f}</td>"
-                f"<td>{row['tokens_per_second_per_gpu']:.2f}</td>"
-                f"<td>{row['request_rate']:.3f}</td>"
+                f"<td>{row['kv_upload_time']:.2f}</td>"
+                f"<td>{row['kv_download_time']:.2f}</td>"
                 f"<td>${row['price_usd_per_hour']:.2f}</td>"
+                f"</tr>"
+            )
+        html += "</tbody></table></div>\n"
+
+        # ---- Timing breakdown table ----
+        html += '<div class="card"><h2>Timing Breakdown</h2><table><thead><tr>'
+        html += "<th>Label</th><th>Prefill active</th><th>Prefill wait</th>"
+        html += "<th>Prefill dl active</th><th>Prefill dl wait</th><th>Prefill up active</th><th>Prefill up wait</th>"
+        html += "<th>Decode dl active</th><th>Decode dl wait</th><th>Decode active</th><th>Decode wait</th><th>Decode up active</th><th>Decode up wait</th>"
+        html += "<th>Clean TTFT</th><th>Wait TTFT</th><th>Clean Latency</th><th>Wait Latency</th>"
+        html += "</tr></thead><tbody>"
+        for row in results:
+            if row.get("has_error"):
+                html += (
+                    f'<tr style="opacity:0.7;">'
+                    f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
+                    f'<td colspan="17" style="text-align:center;color:var(--danger);">Simulation failed</td>'
+                    f"</tr>"
+                )
+                continue
+            html += (
+                f"<tr>"
+                f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
+                f"<td>{row['prefill_time']:.2f}</td>"
+                f"<td>{row['prefill_wait']:.2f}</td>"
+                f"<td>{row['prefill_download_active']:.2f}</td>"
+                f"<td>{row['prefill_download_wait']:.2f}</td>"
+                f"<td>{row['prefill_upload_active']:.2f}</td>"
+                f"<td>{row['prefill_upload_wait']:.2f}</td>"
+                f"<td>{row['decode_download_active']:.2f}</td>"
+                f"<td>{row['decode_download_wait']:.2f}</td>"
+                f"<td>{row['decode_time']:.2f}</td>"
+                f"<td>{row['decode_wait']:.2f}</td>"
+                f"<td>{row['decode_upload_active']:.2f}</td>"
+                f"<td>{row['decode_upload_wait']:.2f}</td>"
+                f"<td>{row['clean_ttft']:.2f}</td>"
+                f"<td>{row['ttft']:.2f}</td>"
+                f"<td>{row['clean_latency']:.2f}</td>"
+                f"<td>{row['request_latency']:.2f}</td>"
                 f"</tr>"
             )
         html += "</tbody></table></div>\n"
@@ -359,9 +465,27 @@ def _build_single_plot(
     return f"/plot/{pid}"
 
 
+async def _run_configs_parallel(
+    config_kwargs: list[dict[str, object]],
+) -> list[SimulationResult | BaseException]:
+    """Run all configs concurrently in separate processes, capped at 8 workers.
+
+    Each config gets its own process so module-level simulator state is fully
+    isolated. Exceptions are returned so the caller can handle per-config
+    failures gracefully.
+    """
+    assert _executor is not None, "Process pool is not initialized"
+    loop = asyncio.get_running_loop()
+    futures = [
+        loop.run_in_executor(_executor, _run_single_config_in_process, kwargs)
+        for kwargs in config_kwargs
+    ]
+    return await asyncio.gather(*futures, return_exceptions=True)
+
+
 def _build_comparison_plots(results: list[dict[str, float | int | str]]) -> list[str]:
     """Generate base64-encoded PNGs for multi-config comparison.
-    Returns list of plot IDs (6 plots: avg and max for TTFT, TPOT, Latency).
+    Returns list of plot IDs (8 plots: avg and max for TTFT, TPOT, Latency, KV Upload Time, KV Download Time).
     """
     return [
         # Average values
@@ -374,6 +498,15 @@ def _build_comparison_plots(results: list[dict[str, float | int | str]]) -> list
         ),
         _build_single_plot(
             results, "max_request_latency", "Max Latency (ms)", "Price vs Max Latency"
+        ),
+        _build_single_plot(
+            results, "kv_upload_time", "KV Upload Time (ms)", "Price vs KV Upload Time"
+        ),
+        _build_single_plot(
+            results,
+            "kv_download_time",
+            "KV Download Time (ms)",
+            "Price vs KV Download Time",
         ),
     ]
 
@@ -409,13 +542,18 @@ async def simulate(
     osl: int = Form(...),
     requests: int = Form(...),
     req_rate: float = Form(...),
-    cache_pct: float = Form(...),
+    max_session_turns: int = Form(_env.max_session_turns),
     cfg_prefill_hardware: list[str] = Form(...),
     cfg_decode_hardware: list[str] = Form(...),
     cfg_prefill_nodes: list[str] = Form(...),
     cfg_decode_nodes: list[str] = Form(...),
     cfg_batch: list[str] = Form(...),
     cfg_label: list[str] = Form(...),
+    ram_usage_fraction: float = Form(_env.ram_usage_fraction),
+    ssd_usage_fraction: float = Form(_env.ssd_usage_fraction),
+    s3_enabled: str = Form("true" if _env.s3_enabled else "false"),
+    s3_up_bw_gbps: float = Form(_env.s3_up_bw_gbps),
+    s3_down_bw_gbps: float = Form(_env.s3_down_bw_gbps),
     xhr: str = Form("0"),
 ):
     try:
@@ -431,8 +569,22 @@ async def simulate(
         ):
             raise ValueError("Configuration arrays must all have the same length.")
 
-        results_data: list[dict[str, float | int | str]] = []
-        skipped_labels: list[str] = []
+        s3_on = s3_enabled.strip().lower() in {"true", "1", "yes", "on"}
+        common = {
+            "model": model,
+            "isl": isl,
+            "osl": osl,
+            "total_requests": requests,
+            "req_rate": req_rate,
+            "max_session_turns": max_session_turns,
+            "ram_usage_fraction": ram_usage_fraction,
+            "ssd_usage_fraction": ssd_usage_fraction,
+            "s3_enabled": s3_on,
+            "s3_up_bw_gbps": s3_up_bw_gbps,
+            "s3_down_bw_gbps": s3_down_bw_gbps,
+        }
+
+        config_kwargs: list[dict[str, object]] = []
         for i in range(n):
             prefill_hw = cfg_prefill_hardware[i]
             decode_hw = cfg_decode_hardware[i]
@@ -446,36 +598,47 @@ async def simulate(
                     f"Config '{label}' must have at least one prefill or decode node."
                 )
 
-            try:
-                result = _run_single_config(
-                    label=label,
-                    prefill_hardware=prefill_hw,
-                    decode_hardware=decode_hw,
-                    prefill_nodes=prefill_n,
-                    decode_nodes=decode_n,
-                    batch_size=batch,
-                    model=model,
-                    isl=isl,
-                    osl=osl,
-                    total_requests=requests,
-                    req_rate=req_rate,
-                    cache_pct=cache_pct,
-                )
-            except AssertionError as exc:
-                if "Too many requests in prefill queue" in str(exc):
-                    skipped_labels.append(label)
-                    print(f"Skipping config '{label}' due to prefill queue overflow.")
-                    continue
-                raise
-
-            results_data.append({
+            kwargs: dict[str, object] = {
                 "label": label,
                 "prefill_hardware": prefill_hw,
                 "decode_hardware": decode_hw,
                 "prefill_nodes": prefill_n,
                 "decode_nodes": decode_n,
                 "batch_size": batch,
+                **common,
+            }
+            config_kwargs.append((label, kwargs, i))
+
+        results_raw = await _run_configs_parallel([
+            kwargs for _, kwargs, _ in config_kwargs
+        ])
+
+        results_data: list[dict[str, float | int | str]] = []
+        skipped_labels: list[str] = []
+        error_labels: list[str] = []
+        for (label, kwargs, i), result in zip(config_kwargs, results_raw, strict=False):
+            if isinstance(
+                result, AssertionError
+            ) and "Too many requests in prefill queue" in str(result):
+                skipped_labels.append(label)
+                print(f"Skipping config '{label}' due to prefill queue overflow.")
+                continue
+            if isinstance(result, BaseException):
+                error_labels.append(label)
+                print(f"Config '{label}' failed: {result}")
+                continue
+
+            assert isinstance(result, SimulationResult)
+            results_data.append({
+                "label": label,
+                "prefill_hardware": kwargs["prefill_hardware"],
+                "decode_hardware": kwargs["decode_hardware"],
+                "prefill_nodes": kwargs["prefill_nodes"],
+                "decode_nodes": kwargs["decode_nodes"],
+                "batch_size": kwargs["batch_size"],
                 "ttft": result.ttft,
+                "kv_upload_time": result.kv_upload_time,
+                "kv_download_time": result.kv_download_time,
                 "max_ttft": result.max_ttft,
                 "tpot": result.tpot,
                 "max_tpot": result.max_tpot,
@@ -483,14 +646,60 @@ async def simulate(
                 "max_request_latency": result.max_request_latency,
                 "tokens_per_second": result.tokens_per_second,
                 "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
-                "request_rate": result.request_rate,
+                "request_rate": result.seq_per_second,
                 "price_usd_per_hour": result.price_usd_per_hour,
                 "color": COLORS[i % len(COLORS)],
+                "has_error": False,
+                # Timing breakdown fields
+                "prefill_time": result.avg_prefill_time_ms,
+                "prefill_wait": result.avg_prefill_wait_ms,
+                "prefill_download_active": result.avg_prefill_download_active_ms,
+                "prefill_download_wait": result.avg_prefill_download_wait_ms,
+                "prefill_upload_active": result.avg_prefill_upload_active_ms,
+                "prefill_upload_wait": result.avg_prefill_upload_wait_ms,
+                "decode_download_active": result.avg_decode_download_active_ms,
+                "decode_download_wait": result.avg_decode_download_wait_ms,
+                "decode_time": result.avg_decode_time_ms,
+                "decode_wait": result.avg_decode_wait_ms,
+                "decode_upload_active": result.avg_decode_upload_active_ms,
+                "decode_upload_wait": result.avg_decode_upload_wait_ms,
+                "clean_ttft": result.avg_clean_ttft_ms,
+                "clean_latency": result.avg_clean_latency_ms,
             })
 
         error_msg = None
+        errors: list[str] = []
         if skipped_labels:
-            error_msg = f"Skipped configs (too many requests in prefill queue): {', '.join(skipped_labels)}"
+            errors.append(
+                f"Skipped (too many requests in prefill queue): {', '.join(skipped_labels)}"
+            )
+        if error_labels:
+            errors.append(f"Failed: {', '.join(error_labels)}")
+        if errors:
+            error_msg = "; ".join(errors)
+
+        for label in error_labels:
+            results_data.append({
+                "label": label,
+                "prefill_hardware": "",
+                "decode_hardware": "",
+                "prefill_nodes": 0,
+                "decode_nodes": 0,
+                "batch_size": 0,
+                "ttft": 0.0,
+                "kv_upload_time": 0.0,
+                "kv_download_time": 0.0,
+                "max_ttft": 0.0,
+                "tpot": 0.0,
+                "max_tpot": 0.0,
+                "request_latency": float("inf"),
+                "max_request_latency": float("inf"),
+                "tokens_per_second": 0.0,
+                "tokens_per_second_per_gpu": 0.0,
+                "request_rate": 0.0,
+                "price_usd_per_hour": 0.0,
+                "has_error": True,
+            })
 
         plot_urls = _build_comparison_plots(results_data)
         if xhr == "1":

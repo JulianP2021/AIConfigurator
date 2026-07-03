@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
 
@@ -45,7 +46,7 @@ for noisy in ("aiconfigurator", "transformers", "urllib3"):
 SYSTEM = "h200_sxm"
 BACKEND = "vllm"
 # Default hardware from our dynamically-loaded presets (single GPU)
-DEFAULT_HARDWARE = "H200 NVL x1 #25533289"
+DEFAULT_HARDWARE = "H200 NVL x1 #0b4c87a9"
 
 
 def run_your_simulator(
@@ -332,7 +333,7 @@ def main():
         print("Debug logging enabled.")
 
     # Run your simulator
-    _sim_result = run_your_simulator(
+    sim_result = run_your_simulator(
         model=args.model,
         isl=args.isl,
         osl=args.osl,
@@ -346,61 +347,61 @@ def main():
         hardware=args.hardware,
     )
 
-    # # Run NVIDIA estimates across all requested database modes
-    # nvidia_results: list[EstimateResult] = []
-    # for db_mode in args.database_modes:
-    #     try:
-    #         nvidia_results.append(
-    #             run_nvidia_disagg(
-    #                 model=args.model,
-    #                 isl=args.isl,
-    #                 osl=args.osl,
-    #                 batch_size=args.batch_size,
-    #                 prefill_workers=args.prefill_workers,
-    #                 decode_workers=args.decode_workers,
-    #                 database_mode=db_mode,
-    #             )
-    #         )
-    #     except Exception as exc:
-    #         print(f"WARNING: NVIDIA disagg estimate failed ({db_mode}): {exc}")
+    # Run NVIDIA estimates across all requested database modes
+    nvidia_results: list[EstimateResult] = []
+    for db_mode in args.database_modes:
+        try:
+            nvidia_results.append(
+                run_nvidia_disagg(
+                    model=args.model,
+                    isl=args.isl,
+                    osl=args.osl,
+                    batch_size=args.batch_size,
+                    prefill_workers=args.prefill_workers,
+                    decode_workers=args.decode_workers,
+                    database_mode=db_mode,
+                )
+            )
+        except Exception as exc:
+            print(f"WARNING: NVIDIA disagg estimate failed ({db_mode}): {exc}")
 
-    # if not nvidia_results:
-    #     print("ERROR: No NVIDIA estimates succeeded. Nothing to compare.")
-    #     sys.exit(1)
+    if not nvidia_results:
+        print("ERROR: No NVIDIA estimates succeeded. Nothing to compare.")
+        sys.exit(1)
 
-    # # Print comparison
-    # print_comparison_table(sim_result, nvidia_results)
+    # Print comparison
+    print_comparison_table(sim_result, nvidia_results)
 
-    # for est in nvidia_results:
-    #     print(
-    #         f"NVIDIA ({est.mode}, {getattr(est, 'database_mode', 'SILICON')}) raw output:"
-    #     )
-    #     print(json.dumps(est.raw, indent=2))
-    #     print()
+    for est in nvidia_results:
+        print(
+            f"NVIDIA ({est.mode}, {getattr(est, 'database_mode', 'SILICON')}) raw output:"
+        )
+        print(json.dumps(est.raw, indent=2))
+        print()
 
-    # # Optional JSON save
-    # if args.save:
-    #     payload = {
-    #         "your_simulator": sim_result.to_dict(),
-    #         "nvidia": [nvidia_estimate_to_dict(est) for est in nvidia_results],
-    #         "settings": {
-    #             "model": args.model,
-    #             "system": SYSTEM,
-    #             "backend": BACKEND,
-    #             "isl": args.isl,
-    #             "osl": args.osl,
-    #             "total_requests": args.requests,
-    #             "req_rate": args.req_rate,
-    #             "unique_users": args.unique_users,
-    #             "batch_size": args.batch_size,
-    #             "prefill_workers": args.prefill_workers,
-    #             "decode_workers": args.decode_workers,
-    #             "cache_pct": args.cache_pct,
-    #         },
-    #     }
-    #     with Path(args.save).open("w") as fh:
-    #         json.dump(payload, fh, indent=2)
-    #     print(f"Saved comparison to {args.save}")
+    # Optional JSON save
+    if args.save:
+        payload = {
+            "your_simulator": sim_result.to_dict(),
+            "nvidia": [nvidia_estimate_to_dict(est) for est in nvidia_results],
+            "settings": {
+                "model": args.model,
+                "system": SYSTEM,
+                "backend": BACKEND,
+                "isl": args.isl,
+                "osl": args.osl,
+                "total_requests": args.requests,
+                "req_rate": args.req_rate,
+                "unique_users": args.unique_users,
+                "batch_size": args.batch_size,
+                "prefill_workers": args.prefill_workers,
+                "decode_workers": args.decode_workers,
+                "cache_pct": args.cache_pct,
+            },
+        }
+        with Path(args.save).open("w") as fh:
+            json.dump(payload, fh, indent=2)
+        print(f"Saved comparison to {args.save}")
 
 
 if __name__ == "__main__":

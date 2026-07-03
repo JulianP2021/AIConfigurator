@@ -75,9 +75,11 @@ class TestRequest:
         req.prefilled_tokens = 10
         assert req.stage == "decode"
 
-    def test_prefilled_tokens_must_be_less_than_isl(self):
+    def test_prefilled_tokens_must_be_less_than_or_equal_to_isl(self):
+        # cached == isl is allowed (full prefix hit)
+        Request(isl=10, osl=2, cached=10)
         with pytest.raises(AssertionError):
-            Request(isl=10, osl=2, cached=10)
+            Request(isl=10, osl=2, cached=11)
 
     def test_ids_increment_globally(self):
         from src.request import request

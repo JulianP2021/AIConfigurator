@@ -87,7 +87,7 @@ class TestCacheValidation:
 
 class TestCacheInsertion:
     def test_insert_adds_item_to_ram(self, cache_with_fake_model: Cache):
-        item = CacheItem(1, 0, 100)
+        item = CacheItem((1, 0), 0, 100)
         cache_with_fake_model.insert_cache_item(item, 0)
 
         assert item in cache_with_fake_model._ram_layer(0).content
@@ -95,13 +95,13 @@ class TestCacheInsertion:
         assert cache_with_fake_model.ssd_usage_bytes[0] == 0
 
     def test_insert_evicts_to_ssd_when_ram_full(self, small_cache: Cache):
-        item1 = CacheItem(1, 0, 512)
+        item1 = CacheItem((1, 0), 0, 512)
         small_cache.insert_cache_item(item1, 0)
 
         # Force eviction: capacity is 240_000 bytes, each item is 51_200 bytes.
-        item2 = CacheItem(2, 0, 512)
-        item3 = CacheItem(3, 0, 512)
-        item4 = CacheItem(4, 0, 512)
+        item2 = CacheItem((2, 0), 0, 512)
+        item3 = CacheItem((3, 0), 0, 512)
+        item4 = CacheItem((4, 0), 0, 512)
         small_cache.insert_cache_item(item2, 0)
         small_cache.insert_cache_item(item3, 0)
         eviction_legs = small_cache.insert_cache_item(item4, 0)
@@ -116,9 +116,9 @@ class TestCacheInsertion:
         # item evicts the RAM LRU to SSD. When SSD is full, its LRU is deleted
         # first to make room for the next eviction.
         small_cache.ssd_capacity_bytes[0] = 51_300
-        item1 = CacheItem(1, 0, 512)
-        item2 = CacheItem(2, 0, 512)
-        item3 = CacheItem(3, 0, 512)
+        item1 = CacheItem((1, 0), 0, 512)
+        item2 = CacheItem((2, 0), 0, 512)
+        item3 = CacheItem((3, 0), 0, 512)
         small_cache.insert_cache_item(item1, 0)
         small_cache.insert_cache_item(item2, 0)
         small_cache.insert_cache_item(item3, 0)
@@ -140,9 +140,8 @@ class TestCacheDownload:
         assert dr.active_legs == []
 
     def test_download_from_ram_local(self, cache_with_fake_model: Cache):
-        req = Request(128, 8, 0, 1)
-        req.id = 10
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
+        req = Request(128, 8, 0, 1, session_id=10)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 10), 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(0, req)
         assert dr.tracks == []
@@ -150,36 +149,33 @@ class TestCacheDownload:
     def test_download_from_ram_local_replaces_existing_item(
         self, cache_with_fake_model: Cache
     ):
-        req = Request(128, 8, 0, 1)
-        req.id = 10
-        old_item = CacheItem(req.id, 0, 128)
+        req = Request(128, 8, 0, 1, session_id=10)
+        old_item = CacheItem((1, 10), 0, 128)
         cache_with_fake_model.insert_cache_item(old_item, 0)
         original_tick = old_item.last_access_tick
 
         dr = cache_with_fake_model.download_kv(0, req)
         assert dr.tracks == []
 
-        ram_items = cache_with_fake_model.find_cache(req.id)
+        ram_items = cache_with_fake_model.find_cache((1, 10))
         assert len(ram_items) == 1
         assert ram_items[0].last_access_tick > original_tick
         assert old_item not in cache_with_fake_model._ram_layer(0).content
 
     def test_download_from_ram_remote(self, cache_with_fake_model: Cache):
-        req = Request(128, 8, 0, 1)
-        req.id = 11
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 128), 0)
+        req = Request(128, 8, 0, 1, session_id=11)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 11), 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(1, req)
         assert bottleneck_names(dr.tracks) == ["NETWORK", "RAM_LOCAL"]
 
     def test_download_from_ssd_remote(self, small_cache: Cache):
-        req = Request(512, 8, 0, 1)
-        req.id = 12
-        small_cache.insert_cache_item(CacheItem(req.id, 0, 512), 0)
+        req = Request(512, 8, 0, 1, session_id=12)
+        small_cache.insert_cache_item(CacheItem((1, 12), 0, 512), 0)
         # Evict request 12 to SSD by inserting another item.
-        small_cache.insert_cache_item(CacheItem(13, 0, 512), 0)
+        small_cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
 
-        source_layer = small_cache.find_cache_layer(small_cache.find_cache(req.id)[-1])
+        source_layer = small_cache.find_cache_layer(small_cache.find_cache((1, 12))[-1])
         assert source_layer is not None
         assert source_layer.name == "SSD"
 
@@ -194,17 +190,16 @@ class TestCacheDownload:
     def test_download_merges_local_ssd_and_remote_ram(
         self, cache_with_fake_model: Cache
     ):
-        req = Request(200, 8, 0, 1)
-        req.id = 30
+        req = Request(200, 8, 0, 1, session_id=30)
         # Node 0 SSD has 0-100.
-        ssd_item = CacheItem(req.id, 0, 100)
+        ssd_item = CacheItem((1, 30), 0, 100)
         ssd_layer = cache_with_fake_model._ssd_layer(0)
         ssd_layer.content.append(ssd_item)
         cache_with_fake_model.ssd_usage_bytes[0] += cache_with_fake_model._item_size(
             ssd_item
         )
         # Node 1 RAM has 100-200.
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 30), 100, 200), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
         assert [bottleneck_names([track]) for track in dr.tracks] == [
@@ -218,48 +213,50 @@ class TestCacheDownload:
             cache_with_fake_model.model, 100
         )
 
-        local_items = cache_with_fake_model.find_cache(req.id, node_id=0)
+        local_items = cache_with_fake_model.find_cache((1, 30), node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 200
         # Remote source copy is retained.
         remote_items = cache_with_fake_model._ram_layer(1).content
         assert any(
-            item.req_id == req.id and item.token_start == 100 and item.token_end == 200
+            item.session_id == (1, 30)
+            and item.token_start == 100
+            and item.token_end == 200
             for item in remote_items
         )
         # Local SSD copy was promoted, so SSD is empty.
         assert cache_with_fake_model.ssd_usage_bytes[0] == 0
 
     def test_download_skips_local_ram_segment(self, cache_with_fake_model: Cache):
-        req = Request(200, 8, 0, 1)
-        req.id = 31
+        req = Request(200, 8, 0, 1, session_id=31)
         # Node 0 RAM already has 0-100.
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 100), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 31), 0, 100), 0)
         # Node 1 RAM has 100-200.
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 100, 200), 1)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 31), 100, 200), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
         assert bottleneck_names(dr.tracks) == ["NETWORK", "RAM_LOCAL"]
 
-        local_items = cache_with_fake_model.find_cache(req.id, node_id=0)
+        local_items = cache_with_fake_model.find_cache((1, 31), node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 200
 
     def test_download_merges_local_ssd_and_remote_ssd(self, small_cache: Cache):
-        req = Request(512, 8, 0, 1)
-        req.id = 33
+        req = Request(512, 8, 0, 1, session_id=33)
         # Node 0 SSD has 0-256 (insert then evict to SSD).
-        small_cache.insert_cache_item(CacheItem(req.id, 0, 256), 0)
-        small_cache.insert_cache_item(CacheItem(99, 0, 512), 0)
+        small_cache.insert_cache_item(CacheItem((1, 33), 0, 256), 0)
+        small_cache.insert_cache_item(CacheItem((99, 0), 0, 512), 0)
         # Node 1 SSD has 256-512.
-        small_cache.insert_cache_item(CacheItem(req.id, 256, 512), 1)
-        small_cache.insert_cache_item(CacheItem(98, 0, 512), 1)
+        small_cache.insert_cache_item(CacheItem((1, 33), 256, 512), 1)
+        small_cache.insert_cache_item(CacheItem((98, 0), 0, 512), 1)
 
         # Make room on node 0 RAM so the merged item inserts without eviction.
         item99 = next(
-            item for item in small_cache._ram_layer(0).content if item.req_id == 99
+            item
+            for item in small_cache._ram_layer(0).content
+            if item.session_id == (99, 0)
         )
         small_cache.delete_item(item99)
 
@@ -269,7 +266,7 @@ class TestCacheDownload:
             ["SSD_LOCAL", "RAM_LOCAL", "NETWORK", "RAM_LOCAL"],
         ]
 
-        local_items = small_cache.find_cache(req.id, node_id=0)
+        local_items = small_cache.find_cache((1, 33), node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 512
@@ -288,15 +285,15 @@ class TestCacheS3:
             s3_spec=s3_enabled,
         )
 
-        req = Request(512, 8, 0, 1)
-        req.id = 40
-        cache.insert_cache_item(CacheItem(req.id, 0, 512), 0)
+        cache.insert_cache_item(CacheItem((1, 40), 0, 512), 0)
         # First insertion: req 40 evicted to SSD.
-        cache.insert_cache_item(CacheItem(41, 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
         # Second insertion: SSD full, req 40 uploaded to S3 to make room.
-        cache.insert_cache_item(CacheItem(42, 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
 
-        s3_items = [item for item in cache._s3_layer().content if item.req_id == req.id]
+        s3_items = [
+            item for item in cache._s3_layer().content if item.session_id == (1, 40)
+        ]
         assert len(s3_items) == 1
         assert s3_items[0].token_start == 0
         assert s3_items[0].token_end == 512
@@ -313,16 +310,15 @@ class TestCacheS3:
             s3_spec=s3_enabled,
         )
 
-        req = Request(512, 8, 0, 1)
-        req.id = 42
+        req = Request(512, 8, 0, 1, session_id=42)
         # Place a copy only in S3.
         s3_layer = cache._s3_layer()
-        s3_layer.content.append(CacheItem(req.id, 0, 512))
+        s3_layer.content.append(CacheItem((1, 42), 0, 512))
 
         dr = cache.download_kv(0, req)
         assert [bottleneck_names([track]) for track in dr.tracks] == [["S3_DOWNLOAD"]]
 
-        local_items = cache.find_cache(req.id, node_id=0)
+        local_items = cache.find_cache((1, 42), node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 512
@@ -346,8 +342,8 @@ class TestCacheS3:
 
 class TestCacheLRU:
     def test_touch_updates_order(self, cache_with_fake_model: Cache):
-        item1 = CacheItem(1, 0, 100)
-        item2 = CacheItem(2, 0, 100)
+        item1 = CacheItem((1, 0), 0, 100)
+        item2 = CacheItem((2, 0), 0, 100)
         cache_with_fake_model.insert_cache_item(item1, 0)
         cache_with_fake_model.insert_cache_item(item2, 0)
 
@@ -357,9 +353,9 @@ class TestCacheLRU:
         assert item1.last_access_tick > item2.last_access_tick
 
     def test_eviction_picks_lru_item(self, medium_cache: Cache):
-        item1 = CacheItem(1, 0, 512)
-        item2 = CacheItem(2, 0, 512)
-        item3 = CacheItem(3, 0, 512)
+        item1 = CacheItem((1, 0), 0, 512)
+        item2 = CacheItem((2, 0), 0, 512)
+        item3 = CacheItem((3, 0), 0, 512)
         medium_cache.insert_cache_item(item1, 0)
         medium_cache.insert_cache_item(item2, 0)
         medium_cache.insert_cache_item(item3, 0)
@@ -367,7 +363,7 @@ class TestCacheLRU:
         # Touch item1 so it is more recently used than item2 and item3.
         medium_cache._touch(item1)
 
-        item4 = CacheItem(4, 0, 512)
+        item4 = CacheItem((4, 0), 0, 512)
         medium_cache.insert_cache_item(item4, 0)
 
         # item2 should have been evicted because it was LRU; item1 stays in RAM
@@ -390,7 +386,7 @@ class TestCacheUpload:
     def test_upload_appends_to_existing_cache(self, cache_with_fake_model: Cache):
         req = Request(128, 8, 0, 1)
         req.id = 21
-        cache_with_fake_model.insert_cache_item(CacheItem(req.id, 0, 64), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 21), 0, 64), 0)
         req.prefilled_tokens = 128
         req.decoded_tokens = 0
 

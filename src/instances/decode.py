@@ -140,24 +140,48 @@ class DecodeInstance:
 
         finished_requests: list[Request] = []
 
+        # Accumulate total time for every request currently in a decode-side
+        # transfer queue. Active time is reconciled when the transfer pops.
+        for download_request, _ in self.download_queue:
+            download_request.request.decode_download_total_ms += time_ms
+        for upload_request, _ in self.upload_queue:
+            upload_request.request.decode_upload_total_ms += time_ms
+
         # Drain transfers that the global scheduler has fully completed.  The
         # transfer objects are shared between the instance queue and the
         # scheduler; a finished transfer has no active leg left.
         while self.download_queue and not self.download_queue[0][0].active_legs:
             download_request, _ = self.download_queue.pop(0)
-            self.queue.append((download_request.request, 0))
+            request = download_request.request
+            request.decode_download_active_ms = (
+                download_request.active_transfer_duration_ms
+            )
+            request.decode_download_wait_ms = (
+                request.decode_download_total_ms - request.decode_download_active_ms
+            )
+            request.kv_download_time_ms += request.decode_download_active_ms
+            self.queue.append((request, 0))
 
         while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
-            finished_requests.append(upload_request.request)
-
-        # Active download. Count elapsed transfer time for the request stats.
-        if self.download_queue:
-            download_request, _ = self.download_queue[0]
-            download_request.request.kv_download_time_ms += time_ms
+            request = upload_request.request
+            request.decode_upload_active_ms = upload_request.active_transfer_duration_ms
+            request.decode_upload_wait_ms = (
+                request.decode_upload_total_ms - request.decode_upload_active_ms
+            )
+            finished_requests.append(request)
 
         # Active decode batch
         self._ensure_batch()
+        in_batch_ids = (
+            {id(r) for r in self.current_batch} if self.current_batch else set()
+        )
+        # Requests in the decode queue but not in the current batch are waiting.
+        for request, _ in self.queue:
+            request.decode_total_ms += time_ms
+            if id(request) not in in_batch_ids:
+                request.decode_wait_ms += time_ms
+
         finished_in_batch: list[Request] = []
         if self.current_batch:
             if self.current_batch_decode_time_ms is None:
@@ -187,7 +211,7 @@ class DecodeInstance:
                 self.remaining_batch_time_ms += next_decode_time
                 self.current_batch_decode_time_ms = next_decode_time
 
-            # Apply the elapsed wall-clock time to every request's total
+            # Apply the elapsed wall-clock time to every request's active
             # decode time. Requests that completed a token already had their
             # decoded_tokens incremented above.
             for request in self.current_batch:
@@ -200,8 +224,11 @@ class DecodeInstance:
                     )
                     finished_in_batch.append(request)
                     ur = self.cache.upload_kv(self.node_id, request)
-                    if ur.active_legs:
-                        self.scheduler.register(ur)
+                    assert ur.active_legs, (
+                        f"Decode upload for request {request.id} (user {request.user_id}, "
+                        f"session {request.session_id}) on node {self.node_id} has no active legs"
+                    )
+                    self.scheduler.register(ur)
                     self.upload_queue.append((ur, 0))
 
             # Remove finished requests from the queue and the frozen batch.
@@ -221,11 +248,6 @@ class DecodeInstance:
                 self.remaining_batch_time_ms = None
                 self.current_batch_decode_time_ms = None
 
-        # Active upload. Count elapsed transfer time for the request stats.
-        if self.upload_queue:
-            upload_request, _ = self.upload_queue[0]
-            upload_request.request.kv_upload_time_ms += time_ms
-
         return finished_requests
 
     def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> float:
@@ -242,6 +264,12 @@ class DecodeInstance:
             batch_size=len(batch),
             stride=10,
         )
+        if result is None or "decode_latency_ms" not in result:
+            raise ValueError(
+                f"Decode latency not found in result for batch "
+                f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
+                f"of size {len(batch)}, result: {result}, hardware: {self.hardware}, model: {self.model}"
+            )
         time_ms = result["decode_latency_ms"]
 
         log(

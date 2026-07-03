@@ -12,13 +12,15 @@ S3_NODE_ID = -1
 
 @dataclass
 class CacheItem:
-    req_id: int
+    session_id: tuple[int, int]
     token_start: int
     token_end: int = 0
     last_access_tick: int = 0
 
-    def __init__(self, req_id: int, token_start: int, token_end: int = 0):
-        self.req_id = req_id
+    def __init__(
+        self, session_id: tuple[int, int], token_start: int, token_end: int = 0
+    ):
+        self.session_id = session_id
         self.token_start = token_start
         self.token_end = token_end
         self.last_access_tick = 0
@@ -32,7 +34,7 @@ class CacheItem:
 class CacheLayer:
     node_id: int
     name: str
-    # list req_id, tokens
+    # list session_id, tokens
     content: list[CacheItem]
 
 
@@ -130,7 +132,7 @@ class Cache:
             return False
         s3_layer = self._s3_layer()
         return any(
-            existing.req_id == item.req_id
+            existing.session_id == item.session_id
             and existing.token_start == item.token_start
             and existing.token_end == item.token_end
             for existing in s3_layer.content
@@ -154,19 +156,19 @@ class Cache:
         s3_leg: TransferLeg | None = None
         if self.s3_spec.enabled and not self._has_s3_equivalent(victim):
             s3_layer = self._s3_layer()
-            copied = CacheItem(victim.req_id, victim.token_start, victim.token_end)
+            copied = CacheItem(victim.session_id, victim.token_start, victim.token_end)
             s3_layer.content.append(copied)
             self._touch(copied)
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
             log(
                 LOG_CACHE,
-                f"Uploaded SSD-evicted KV for request {victim.req_id} "
+                f"Uploaded SSD-evicted KV for request {victim.session_id} "
                 f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
             )
 
         log(
             LOG_CACHE,
-            f"Deleted SSD LRU KV for request {victim.req_id} "
+            f"Deleted SSD LRU KV for request {victim.session_id} "
             f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} SSD",
         )
         return s3_leg
@@ -204,7 +206,7 @@ class Cache:
         self._touch(victim)
         log(
             LOG_CACHE,
-            f"Evicted RAM LRU KV for request {victim.req_id} "
+            f"Evicted RAM LRU KV for request {victim.session_id} "
             f"({victim.tokens} tokens, {victim_size} bytes) to node {node_id} SSD",
         )
         return victim, s3_legs
@@ -282,13 +284,13 @@ class Cache:
         assert layer is not None, f"Layer {layer_name} not found for node {node_id}"
         return layer
 
-    def _find_all_items(self, req_id: int) -> list[CacheItem]:
-        """Return every cached item for ``req_id`` across all nodes/tiers."""
+    def _find_all_items(self, session_id: tuple[int, int]) -> list[CacheItem]:
+        """Return every cached item for ``session_id`` across all nodes/tiers."""
         items: list[CacheItem] = []
         for node_layers in self.layers.values():
             for layer in node_layers:
                 for item in layer.content:
-                    if item.req_id == req_id:
+                    if item.session_id == session_id:
                         items.append(item)
         return items
 
@@ -310,12 +312,14 @@ class Cache:
             coverage_end = item.token_end
         return prefix
 
-    def find_cache(self, req_id: int, node_id: int | None = None) -> list[CacheItem]:
+    def find_cache(
+        self, session_id: tuple[int, int], node_id: int | None = None
+    ) -> list[CacheItem]:
         """Return the cached items forming the longest contiguous prefix [0, N).
 
         If ``node_id`` is given, only items on that node are considered.
         """
-        items = self._find_all_items(req_id)
+        items = self._find_all_items(session_id)
         if node_id is not None:
             items = [
                 item
@@ -344,7 +348,11 @@ class Cache:
         raise ValueError("Item not found in cache")
 
     def _merge_into_ram(
-        self, req_id: int, node_id: int, token_start: int, token_end: int
+        self,
+        session_id: tuple[int, int],
+        node_id: int,
+        token_start: int,
+        token_end: int,
     ) -> list[TransferLeg]:
         """Create a single contiguous RAM item, deleting overlapping local copies.
 
@@ -354,7 +362,7 @@ class Cache:
         """
         for layer in (self._ram_layer(node_id), self._ssd_layer(node_id)):
             for existing in list(layer.content):
-                if existing.req_id != req_id:
+                if existing.session_id != session_id:
                     continue
                 if (
                     existing.token_end <= token_start
@@ -363,14 +371,14 @@ class Cache:
                     continue
                 self.delete_item(existing)
 
-        merged = CacheItem(req_id, token_start, token_end)
+        merged = CacheItem(session_id, token_start, token_end)
         eviction_legs = self.insert_cache_item(merged, node_id)
 
         # If S3 is enabled and this node does not already have an equivalent
         # copy in S3, push the merged item to S3 in parallel.
         if self.s3_spec.enabled and not self._has_s3_equivalent(merged):
             s3_layer = self._s3_layer()
-            copied = CacheItem(merged.req_id, merged.token_start, merged.token_end)
+            copied = CacheItem(merged.session_id, merged.token_start, merged.token_end)
             s3_layer.content.append(copied)
             self._touch(copied)
             eviction_legs.append(
@@ -378,14 +386,14 @@ class Cache:
             )
             log(
                 LOG_CACHE,
-                f"Uploaded merged KV for request {merged.req_id} from node {node_id} to S3 "
+                f"Uploaded merged KV for request {merged.session_id} from node {node_id} to S3 "
                 f"({merged.tokens} tokens)",
             )
 
         return eviction_legs
 
     def _find_download_segments(
-        self, req_id: int, dest_node_id: int, required_end: int
+        self, session_id: tuple[int, int], dest_node_id: int, required_end: int
     ) -> tuple[int, list[tuple[int, int, int, str]]]:
         """Find source segments needed to assemble [0, required_end) on ``dest_node_id``.
 
@@ -395,7 +403,7 @@ class Cache:
         globally cached contiguous prefix.  Local SSD items on ``dest_node_id``
         are promoted; remote items and the shared S3 tier are copied.
         """
-        all_items = self._find_all_items(req_id)
+        all_items = self._find_all_items(session_id)
         global_prefix = self._contiguous_prefix(all_items)
         if not global_prefix:
             return 0, []
@@ -476,7 +484,7 @@ class Cache:
 
         log(
             LOG_CACHE,
-            f"Inserted cache item for request {item.req_id} on node {node_id} "
+            f"Inserted cache item for request {item.session_id} on node {node_id} "
             f"({item.tokens} tokens, {item_size} bytes), "
             f"RAM usage: {self.ram_usage_bytes[node_id]} / "
             f"{self.ram_capacity_bytes[node_id]} bytes, "
@@ -542,7 +550,8 @@ class Cache:
         on this node) are uploaded. If the node already has the full KV in its
         RAM, no upload transfer is generated.
         """
-        prior_cache = self.find_cache(request.id, node_id=node_id)
+        cache_key = (request.user_id, request.session_id)
+        prior_cache = self.find_cache(cache_key, node_id=node_id)
         prior_cached_tokens = 0
         if prior_cache:
             cache_layer = self.find_cache_layer(prior_cache[-1])
@@ -554,14 +563,14 @@ class Cache:
             assert cache_layer.name == "RAM", "Cache layer name should be 'RAM'"
             prior_cached_tokens = prior_cache[-1].token_end
             cache_item = CacheItem(
-                request.id,
+                cache_key,
                 prior_cached_tokens,
                 request.prefilled_tokens + request.decoded_tokens,
             )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
         else:
             cache_item = CacheItem(
-                request.id, 0, request.prefilled_tokens + request.decoded_tokens
+                cache_key, 0, request.prefilled_tokens + request.decoded_tokens
             )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
 
@@ -571,9 +580,14 @@ class Cache:
 
         log(
             LOG_CACHE,
-            f"Uploading KV for request {request.id} to node {node_id}, "
+            f"Uploading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
             f"bytes: {bytes_to_transfer}, cache size: {current_total_tokens} tokens, "
             f"new tokens uploaded: {new_tokens}",
+        )
+
+        assert bytes_to_transfer > 0, (
+            f"Zero-byte upload for request {request.id} (user {request.user_id}, session {request.session_id}): "
+            f"node {node_id} already has {prior_cached_tokens} tokens, current total {current_total_tokens}"
         )
 
         if bytes_to_transfer <= 0:
@@ -590,16 +604,20 @@ class Cache:
         cached prefix that can be satisfied.  Source copies on other nodes are
         retained; local SSD sources are promoted (removed from SSD).
         """
+        cache_key = (request.user_id, request.session_id)
         required_end = request.isl
         effective_end, segments = self._find_download_segments(
-            request.id, node_id, required_end
+            cache_key, node_id, required_end
         )
         if effective_end == 0:
-            log(LOG_CACHE, f"No cache found for request {request.id}")
+            log(
+                LOG_CACHE,
+                f"No cache found for request {request.id} (user {request.user_id}, session {request.session_id})",
+            )
             return DownloadRequest(request, [])
 
         # Optimistically update cache state: merge everything into one RAM item.
-        eviction_legs = self._merge_into_ram(request.id, node_id, 0, effective_end)
+        eviction_legs = self._merge_into_ram(cache_key, node_id, 0, effective_end)
 
         tracks: list[list[TransferLeg]] = []
         if eviction_legs:
@@ -617,7 +635,7 @@ class Cache:
 
         log(
             LOG_CACHE,
-            f"Downloading KV for request {request.id} to node {node_id}, "
+            f"Downloading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
             f"effective tokens: {effective_end}/{required_end}, "
             f"segments: {segments}, "
             f"tracks: {[[leg.bottleneck for leg in track] for track in tracks]}",

@@ -28,7 +28,9 @@ def fake_decode_instance() -> DecodeInstance:
     instance.download_queue = []
     instance.upload_queue = []
     instance.cache = MagicMock(spec=Cache)
-    instance.cache.upload_kv.return_value = MagicMock(active_legs=[])
+    instance.cache.upload_kv.return_value = MagicMock(
+        active_legs=[MagicMock()], tracks=[[MagicMock()]]
+    )
     instance.cache.download_kv.return_value = MagicMock(
         active_legs=[], tracks=[], remaining_bytes=0
     )
@@ -116,8 +118,9 @@ class TestDecodeBatchLifecycle:
             finished = inst.process_queue(3.0)
             assert inst.current_batch is None
             assert req.decoded_tokens == 1
-            assert len(finished) == 0  # upload has no active leg in this mock
+            assert len(finished) == 0  # upload stays in queue, drained later
             assert len(inst.queue) == 0
+            assert len(inst.upload_queue) == 1
 
     def test_batch_continues_with_remaining_requests(
         self, fake_decode_instance: DecodeInstance

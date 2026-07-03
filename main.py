@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Run the distributed simulator with configurable CLI parameters.
 
-Defaults are read from ``.env`` at the project root. CLI arguments override
-``.env`` values, and shell environment variables override ``.env`` values.
-
 Usage examples:
     # Default scenario (from .env)
     python main.py
@@ -83,6 +80,12 @@ def build_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Maximum number of users (default: {env.max_users})",
     )
     parser.add_argument(
+        "--max-session-turns",
+        type=int,
+        default=env.max_session_turns,
+        help=f"Max requests per user session before starting a new session (default: {env.max_session_turns})",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=env.batch_size,
@@ -121,12 +124,6 @@ def build_parser(env: EnvConfig) -> argparse.ArgumentParser:
             "bit 2 (4)=router,  bit 3 (8)=simulation, bit 4 (16)=bandwidth. 0=none, 31=all "
             f"(default: {env.log_mask})"
         ),
-    )
-    parser.add_argument(
-        "--cache-pct",
-        type=float,
-        default=env.cache_pct,
-        help=f"Cache percentage for prefix caching (default: {env.cache_pct})",
     )
     parser.add_argument(
         "--ram-usage-fraction",
@@ -192,7 +189,6 @@ def main():
         max_input_tokens=args.isl,
         min_output_tokens=args.osl,
         max_output_tokens=args.osl,
-        cache_percentage=args.cache_pct,
     )
 
     hardware = fetch_machine_hardware("H200 x1 #8a0e41af")
@@ -224,6 +220,7 @@ def main():
             total_requests=args.requests,
             min_users=min_users,
             max_users=max_users,
+            max_session_turns=args.max_session_turns,
             req_s=args.req_rate,
         ),
     )

@@ -15,6 +15,8 @@ import requests
 
 from bs4 import BeautifulSoup
 
+from src.hardware.hardware import Hardware
+
 
 _PRICING_PAGE = "https://vast.ai/pricing/gpu"
 _MARKET_API = "https://vast.ai/api/v0/bundles"
@@ -325,7 +327,7 @@ def lookup_machine(machine_name: str) -> dict[str, Any]:
         raise KeyError(msg) from None
 
 
-def fetch_machine_hardware(machine_name: str) -> "Hardware":  # noqa: F821, UP037
+def fetch_machine_hardware(machine_name: str) -> Hardware:
     """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache."""
     from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 

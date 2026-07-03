@@ -9,8 +9,8 @@ etc.) on top of NVIDIA's compute latency math.
 """
 
 from __future__ import annotations
+import hashlib
 import logging
-import os
 import tempfile
 
 from pathlib import Path
@@ -46,9 +46,15 @@ def _create_custom_system_dir(
     mem_bw_scaling: float = 0.8,
     mem_constant_latency: float = 0.000003,
 ) -> str:
-    """Create a temporary systems directory with a YAML + empty perf files for SOL."""
-    tmpdir = tempfile.mkdtemp(prefix="aic_systems_")
-    systems_dir = Path(tmpdir, "systems")
+    """Create a systems directory with a YAML + empty perf files for SOL.
+
+    The directory path is derived from *system_name* so that repeated calls for
+    the same hardware spec reuse the same filesystem location. This lets
+    aiconfigurator's in-memory ``databases_cache`` hit across calls (its cache
+    key includes the systems root path).
+    """
+    base_dir = Path(tempfile.gettempdir()) / "aic_systems_cache"
+    systems_dir = base_dir / system_name / "systems"
     systems_dir.mkdir(parents=True, exist_ok=True)
 
     yaml_content = f"""data_dir: data/{system_name}
@@ -188,7 +194,13 @@ def _resolve_system_and_db(
     if mem_bw is not None:
         assert mem_capacity is not None
         assert bfloat16_tc_flops is not None
-        system_name = f"custom_{os.urandom(4).hex()}"
+        # Use a deterministic name derived from the hardware spec so that
+        # repeated simulations (including those run in separate process-pool
+        # workers) hit the aiconfigurator in-memory database cache instead of
+        # reloading the perf DB from disk every time.
+        spec_key = f"{mem_bw:g}:{mem_capacity:g}:{bfloat16_tc_flops:g}:{sm_version}"
+        hash_suffix = hashlib.sha256(spec_key.encode()).hexdigest()[:12]
+        system_name = f"custom_{hash_suffix}"
         systems_dir = _create_custom_system_dir(
             system_name=system_name,
             mem_bw=mem_bw,
@@ -313,7 +325,7 @@ def run_static_inference(
     batch_size: int = 1,
     stride: int = 1,
     latency_correction_scale: float = 1.0,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Run raw static inference and return per-op latency + memory breakdown.
 
     This is the low-level path.  It runs prefill and decode **independently**

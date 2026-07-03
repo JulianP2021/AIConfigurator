@@ -24,6 +24,7 @@ class EnvConfig:
     unique_users: bool = False
     min_users: int = 1
     max_users: int = 10
+    max_session_turns: int = 5
 
     # Topology
     batch_size: int = 10
@@ -32,7 +33,6 @@ class EnvConfig:
     gpus_per_node: int = 1
 
     # Cache
-    cache_pct: float = 0.0
     ram_usage_fraction: float = 0.8
     ssd_usage_fraction: float = 0.8
 
@@ -60,11 +60,11 @@ _DEFAULTS = {
     "UNIQUE_USERS": "false",
     "MIN_USERS": "1",
     "MAX_USERS": "10",
+    "MAX_SESSION_TURNS": "5",
     "BATCH_SIZE": "10",
     "PREFILL_WORKERS": "1",
     "DECODE_WORKERS": "1",
     "GPUS_PER_NODE": "1",
-    "CACHE_PCT": "0.0",
     "RAM_USAGE_FRACTION": "0.8",
     "SSD_USAGE_FRACTION": "0.8",
     "S3_ENABLED": "true",
@@ -96,7 +96,6 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         return int(value)
     if key in {
         "REQ_RATE",
-        "CACHE_PCT",
         "RAM_USAGE_FRACTION",
         "SSD_USAGE_FRACTION",
         "S3_UP_BW_GBPS",
@@ -107,6 +106,8 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         return int(value, 0)
     if key in {"UNIQUE_USERS", "DEBUG", "S3_ENABLED"}:
         return _parse_bool(value)
+    if key == "MAX_SESSION_TURNS":
+        return int(value)
     return value
 
 
@@ -161,11 +162,11 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         unique_users=_parse_bool(merged["UNIQUE_USERS"]),
         min_users=int(merged["MIN_USERS"]),
         max_users=int(merged["MAX_USERS"]),
+        max_session_turns=int(merged["MAX_SESSION_TURNS"]),
         batch_size=int(merged["BATCH_SIZE"]),
         prefill_workers=int(merged["PREFILL_WORKERS"]),
         decode_workers=int(merged["DECODE_WORKERS"]),
         gpus_per_node=int(merged["GPUS_PER_NODE"]),
-        cache_pct=float(merged["CACHE_PCT"]),
         ram_usage_fraction=float(merged["RAM_USAGE_FRACTION"]),
         ssd_usage_fraction=float(merged["SSD_USAGE_FRACTION"]),
         s3_enabled=_parse_bool(merged["S3_ENABLED"]),

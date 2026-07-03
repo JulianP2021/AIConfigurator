@@ -174,8 +174,39 @@
                     <input type="number" id="req_rate" name="req_rate" value="2.0" step="0.1" min="0.1" form="simForm" required>
                 </div>
                 <div>
-                    <label for="cache_pct">Cache Percentage</label>
-                    <input type="number" id="cache_pct" name="cache_pct" value="0.0" step="0.1" min="0" max="1" form="simForm" required>
+                    <label for="max_session_turns">Max Session Turns</label>
+                    <input type="number" id="max_session_turns" name="max_session_turns" value="5" min="1" form="simForm" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Cache &amp; Shared Storage (S3)</h2>
+            <p style="font-size:0.85rem;color:var(--text-secondary);margin-top:-0.5rem;margin-bottom:1rem;">
+                Tune the two-tier node cache and an optional S3 fallback. S3 is only used when a KV block is evicted from SSD.
+            </p>
+            <div class="form-grid">
+                <div>
+                    <label for="ram_usage_fraction">RAM Cache Fraction</label>
+                    <input type="number" id="ram_usage_fraction" name="ram_usage_fraction" value="0.8" step="0.05" min="0" max="1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="ssd_usage_fraction">SSD Cache Fraction</label>
+                    <input type="number" id="ssd_usage_fraction" name="ssd_usage_fraction" value="0.8" step="0.05" min="0" max="1" form="simForm" required>
+                </div>
+                <div style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
+                    <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                        <input type="checkbox" id="s3_enabled" name="s3_enabled" value="true" form="simForm" checked onchange="updateS3DisabledState()">
+                        Enable S3 fallback
+                    </label>
+                </div>
+                <div>
+                    <label for="s3_up_bw_gbps">S3 Upload Bandwidth (Gbps)</label>
+                    <input type="number" id="s3_up_bw_gbps" name="s3_up_bw_gbps" value="25.0" step="1" min="0" form="simForm" required>
+                </div>
+                <div>
+                    <label for="s3_down_bw_gbps">S3 Download Bandwidth (Gbps)</label>
+                    <input type="number" id="s3_down_bw_gbps" name="s3_down_bw_gbps" value="25.0" step="1" min="0" form="simForm" required>
                 </div>
             </div>
         </div>
@@ -276,7 +307,17 @@
                 osl: fd.get('osl') || '',
                 requests: fd.get('requests') || '',
                 req_rate: fd.get('req_rate') || '',
-                cache_pct: fd.get('cache_pct') || '',
+                max_session_turns: fd.get('max_session_turns') || '',
+                ram_usage_fraction: fd.get('ram_usage_fraction') || '',
+                ssd_usage_fraction: fd.get('ssd_usage_fraction') || '',
+                s3_enabled: (() => {
+                    const v = fd.get('s3_enabled');
+                    if (v === 'true' || v === true) return true;
+                    if (v === 'false' || v === false) return false;
+                    return v;
+                })(),
+                s3_up_bw_gbps: fd.get('s3_up_bw_gbps') || '',
+                s3_down_bw_gbps: fd.get('s3_down_bw_gbps') || '',
                 configs: []
             };
             // Collect configs by index
@@ -305,7 +346,13 @@
             document.getElementById('osl').value = state.osl || '100';
             document.getElementById('requests').value = state.requests || '10';
             document.getElementById('req_rate').value = state.req_rate || '2.0';
-            document.getElementById('cache_pct').value = state.cache_pct || '0.0';
+            document.getElementById('max_session_turns').value = state.max_session_turns || '5';
+            document.getElementById('ram_usage_fraction').value = state.ram_usage_fraction || '0.8';
+            document.getElementById('ssd_usage_fraction').value = state.ssd_usage_fraction || '0.8';
+            document.getElementById('s3_enabled').checked = state.s3_enabled === true || state.s3_enabled === 'true';
+            document.getElementById('s3_up_bw_gbps').value = state.s3_up_bw_gbps || '25.0';
+            document.getElementById('s3_down_bw_gbps').value = state.s3_down_bw_gbps || '25.0';
+            updateS3DisabledState();
 
             const list = document.getElementById('configList');
             list.innerHTML = '';
@@ -418,9 +465,19 @@
             showToast('Cleared saved config', true);
         }
 
+        function updateS3DisabledState() {
+            const enabled = document.getElementById('s3_enabled').checked;
+            document.getElementById('s3_up_bw_gbps').disabled = !enabled;
+            document.getElementById('s3_down_bw_gbps').disabled = !enabled;
+            document.getElementById('s3_up_bw_gbps').style.opacity = enabled ? '1' : '0.5';
+            document.getElementById('s3_down_bw_gbps').style.opacity = enabled ? '1' : '0.5';
+        }
+
         // ---- Auto-restore on page load ----
         window.addEventListener('DOMContentLoaded', async () => {
             await loadPresets();
+            document.getElementById('s3_enabled').addEventListener('change', updateS3DisabledState);
+            updateS3DisabledState();
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
                 try {

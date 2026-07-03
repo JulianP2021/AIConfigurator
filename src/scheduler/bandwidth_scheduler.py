@@ -198,6 +198,10 @@ class BandwidthScheduler:
                         f"transfering {leg.bandwidth_bytes_per_ms * time_ms:.3f} bytes",
                     )
                     leg.remaining_bytes -= leg.bandwidth_bytes_per_ms * time_ms
+                # Credit the leg with scheduler-processed time regardless of
+                # whether this step consumed latency or bytes.  This is the
+                # active transfer duration used for analytics.
+                leg.processed_time_ms += time_ms
 
             # A leg is considered complete when no bytes remain.  Use a tiny
             # tolerance so floating-point drift does not leave near-zero slivers.
