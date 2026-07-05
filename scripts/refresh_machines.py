@@ -16,7 +16,7 @@ from pathlib import Path
 # Allow importing ``src`` when the script is executed from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.hardware.scraper import _load_machine_db, refresh_machines_file
+from src.hardware.scraper import load_machine_db, refresh_machines_file
 
 
 def _cli() -> int:
@@ -33,7 +33,7 @@ def _cli() -> int:
 
     if args.list:
         try:
-            db = _load_machine_db()
+            db = load_machine_db()
         except RuntimeError as exc:
             print(exc, file=sys.stderr)
             return 1
@@ -75,7 +75,7 @@ def _cli() -> int:
 
     print("Refreshing machines from Vast.ai...")
     refresh_machines_file()
-    db = _load_machine_db()
+    db = load_machine_db()
     print(f"Done. {len(db)} machine(s) written to src/hardware/_machine_db.json")
     return 0
 

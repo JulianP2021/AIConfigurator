@@ -97,27 +97,44 @@
             color: var(--success);
         }
         .btn-success:hover { background: var(--success); color: #fff; }
-        .config-row {
-            display: grid;
-            grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1.5fr auto;
-            gap: 0.75rem;
-            align-items: end;
-            padding: 0.75rem;
+        .config-block {
             background: var(--bg);
             border: 1px solid var(--border);
             border-radius: 8px;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.75rem;
+            overflow: hidden;
+        }
+        .config-row {
+            display: grid;
+            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.9fr 1.2fr auto;
+            gap: 0.75rem;
+            align-items: end;
+            padding: 0.75rem;
+        }
+        .config-row.sub {
+            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.7fr 0.7fr 1.2fr auto;
+            padding-top: 0;
+            border-top: 1px dashed var(--border);
         }
         .config-row .field { min-width: 0; }
+        .config-row label.field-label {
+            display: block;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.2rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
         .config-header {
             display: grid;
-            grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1.5fr auto;
+            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.9fr 1.2fr auto;
             gap: 0.75rem;
             padding: 0 0.75rem 0.4rem;
             font-size: 0.75rem;
             color: var(--text-secondary);
             font-weight: 600;
         }
+        .config-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .toolbar {
             display: flex;
             gap: 0.5rem;
@@ -140,8 +157,8 @@
         .toast.ok { background: var(--success); color: #fff; }
         .toast.err { background: var(--danger); color: #fff; }
         #importBox { display: none; margin-top: 1rem; }
-        @media (max-width: 800px) {
-            .config-row, .config-header { grid-template-columns: 1fr 1fr 1fr auto; }
+        @media (max-width: 900px) {
+            .config-row, .config-row.sub, .config-header { grid-template-columns: 1fr 1fr 1fr auto; }
         }
     </style>
 </head>
@@ -216,6 +233,7 @@
             <div class="toolbar">
                 <button type="button" class="btn btn-success" onclick="exportConfig()">Export JSON</button>
                 <button type="button" class="btn btn-outline" onclick="toggleImport()">Import / Inject JSON</button>
+                <button type="button" class="btn btn-outline" onclick="toggleImportResults()">Import Results</button>
                 <button type="button" class="btn btn-outline" onclick="saveToStorage()">Save to Browser</button>
                 <button type="button" class="btn btn-outline" onclick="loadFromStorage()">Load from Browser</button>
                 <button type="button" class="btn btn-danger" onclick="clearStorage()">Clear Saved</button>
@@ -225,32 +243,72 @@
                 <textarea id="importArea" placeholder="Paste JSON here…"></textarea>
                 <button type="button" class="btn btn-block" onclick="importConfig()" style="margin-top:0.5rem;">Apply JSON</button>
             </div>
+            <div id="importResultsBox" style="display:none; margin-top:1rem;">
+                <label>Paste previously exported results JSON here</label>
+                <textarea id="importResultsArea" placeholder="Paste results JSON here…" style="min-height:8rem;"></textarea>
+                <button type="button" class="btn btn-block" onclick="importResults()" style="margin-top:0.5rem;">Render Results</button>
+            </div>
             <div class="config-header">
-                <div>Prefill HW</div>
-                <div>Decode HW</div>
-                <div>Prefill Nodes</div>
-                <div>Decode Nodes</div>
-                <div>Batch Size</div>
-                <div>Label</div>
-                <div></div>
+                <span>Prefill HW</span>
+                <span>Decode HW</span>
+                <span title="Number of prefill nodes">Pre Nodes</span>
+                <span title="Number of decode nodes">Dec Nodes</span>
+                <span title="GPUs assigned to prefill / decode per node">GPU split</span>
+                <span>Batch / Label</span>
+                <span></span>
             </div>
             <div id="configList">
-                <div class="config-row" data-idx="0">
-                    <div class="field">
-                        <select name="cfg_prefill_hardware" form="simForm">
-                            <!-- populated dynamically -->
-                        </select>
+                <div class="config-block" data-idx="0">
+                    <div class="config-row">
+                        <div class="field">
+                            <span class="field-label">Prefill HW</span>
+                            <select name="cfg_prefill_hardware" form="simForm" onchange="onHardwareChange(this)">
+                                <!-- populated dynamically -->
+                            </select>
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Decode HW</span>
+                            <select name="cfg_decode_hardware" form="simForm" onchange="onHardwareChange(this)">
+                                <!-- populated dynamically -->
+                            </select>
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Pre Nodes</span>
+                            <input type="number" name="cfg_prefill_nodes" value="1" min="0" form="simForm" oninput="syncPrefillNodes(this)">
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Dec Nodes</span>
+                            <input type="number" name="cfg_decode_nodes" value="1" min="0" form="simForm">
+                        </div>
+                        <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
+                            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
+                                <input type="checkbox" name="cfg_colocated" value="true" form="simForm" onchange="syncColocatedNodes(this)">
+                                same nodes
+                            </label>
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Batch / Label</span>
+                            <div style="display:flex;gap:0.4rem;">
+                                <input type="number" name="cfg_batch" value="10" min="1" form="simForm" style="width:55px;">
+                                <input type="text" name="cfg_label" value="Config 1" placeholder="Label" form="simForm" style="flex:1;">
+                            </div>
+                        </div>
+                        <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
                     </div>
-                    <div class="field">
-                        <select name="cfg_decode_hardware" form="simForm">
-                            <!-- populated dynamically -->
-                        </select>
+                    <div class="config-row sub">
+                        <div class="field">
+                            <span class="field-label">Prefill GPUs / node</span>
+                            <input type="number" name="cfg_prefill_gpus" value="" min="0" placeholder="all" form="simForm" oninput="syncDecodeGpus(this)">
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Decode GPUs / node</span>
+                            <input type="number" name="cfg_decode_gpus" value="" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
+                        </div>
+                        <div class="field" style="grid-column: span 2; color:var(--text-secondary);font-size:0.75rem;align-self:center;">
+                            <span class="colocated-hint" style="display:none;">In colocated mode, prefill and decode share each node using the GPU split above.</span>
+                        </div>
+                        <div class="field" style="grid-column: span 3;"></div>
                     </div>
-                    <div class="field"><input type="number" name="cfg_prefill_nodes" value="1" min="0" form="simForm"></div>
-                    <div class="field"><input type="number" name="cfg_decode_nodes" value="1" min="0" form="simForm"></div>
-                    <div class="field"><input type="number" name="cfg_batch" value="10" min="1" form="simForm"></div>
-                    <div class="field"><input type="text" name="cfg_label" value="Config 1" placeholder="Label" form="simForm"></div>
-                    <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
                 </div>
             </div>
             <button type="button" class="btn btn-outline" onclick="addConfig()">+ Add Configuration</button>
@@ -321,22 +379,29 @@
                 configs: []
             };
             // Collect configs by index
-            const preHw = fd.getAll('cfg_prefill_hardware');
-            const decHw = fd.getAll('cfg_decode_hardware');
-            const pre = fd.getAll('cfg_prefill_nodes');
-            const dec = fd.getAll('cfg_decode_nodes');
-            const bat = fd.getAll('cfg_batch');
-            const lab = fd.getAll('cfg_label');
-            for (let i = 0; i < preHw.length; i++) {
+            const blocks = document.querySelectorAll('.config-block');
+            blocks.forEach((block) => {
+                const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
+                const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
+                const preNodes = block.querySelector('[name="cfg_prefill_nodes"]')?.value || '1';
+                const decNodes = block.querySelector('[name="cfg_decode_nodes"]')?.value || '1';
+                const preGpus = block.querySelector('[name="cfg_prefill_gpus"]')?.value || '';
+                const decGpus = block.querySelector('[name="cfg_decode_gpus"]')?.value || '';
+                const colocated = block.querySelector('[name="cfg_colocated"]')?.checked || false;
+                const batch = block.querySelector('[name="cfg_batch"]')?.value || '10';
+                const label = block.querySelector('[name="cfg_label"]')?.value || ('Config ' + (state.configs.length + 1));
                 state.configs.push({
-                    prefill_hardware: preHw[i] || '',
-                    decode_hardware: decHw[i] || '',
-                    prefill_nodes: pre[i] || '1',
-                    decode_nodes: dec[i] || '1',
-                    batch: bat[i] || '10',
-                    label: lab[i] || ('Config ' + (i + 1))
+                    prefill_hardware: preHw,
+                    decode_hardware: decHw,
+                    prefill_nodes: preNodes,
+                    decode_nodes: decNodes,
+                    prefill_gpus_per_node: preGpus,
+                    decode_gpus_per_node: decGpus,
+                    colocated: colocated,
+                    batch_size: batch,
+                    label: label
                 });
-            }
+            });
             return state;
         }
 
@@ -358,50 +423,177 @@
             list.innerHTML = '';
             const configs = state.configs || [];
             if (configs.length === 0) {
-                configs.push({ prefill_hardware: (PRESETS[0] || ''), decode_hardware: (PRESETS[0] || ''), prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config 1' });
+                configs.push({ prefill_hardware: (PRESETS[0] || ''), decode_hardware: (PRESETS[0] || ''), prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', batch_size: '10', label: 'Config 1' });
             }
             configs.forEach((cfg, idx) => addConfigRow(cfg, idx));
         }
 
         function addConfigRow(cfg, idx) {
             const list = document.getElementById('configList');
-            const row = document.createElement('div');
-            row.className = 'config-row';
-            row.dataset.idx = idx;
+            const block = document.createElement('div');
+            block.className = 'config-block';
+            block.dataset.idx = idx;
             const color = COLORS[idx % COLORS.length];
-            row.style.borderLeft = `4px solid ${color}`;
+            block.style.borderLeft = `4px solid ${color}`;
             const preHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.prefill_hardware ? ' selected' : ''}>${p}</option>`).join('');
             const decHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.decode_hardware ? ' selected' : ''}>${p}</option>`).join('');
-            row.innerHTML = `
-                <div class="field"><select name="cfg_prefill_hardware" form="simForm">${preHwOpts}</select></div>
-                <div class="field"><select name="cfg_decode_hardware" form="simForm">${decHwOpts}</select></div>
-                <div class="field"><input type="number" name="cfg_prefill_nodes" value="${cfg.prefill_nodes || 1}" min="0" form="simForm"></div>
-                <div class="field"><input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || 1}" min="0" form="simForm"></div>
-                <div class="field"><input type="number" name="cfg_batch" value="${cfg.batch || 10}" min="1" form="simForm"></div>
-                <div class="field"><input type="text" name="cfg_label" value="${cfg.label || ('Config ' + (idx + 1))}" placeholder="Label" form="simForm"></div>
-                <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
+            const colocated = cfg.colocated === true || cfg.colocated === 'true';
+            block.innerHTML = `
+                <div class="config-row">
+                    <div class="field">
+                        <span class="field-label">Prefill HW</span>
+                        <select name="cfg_prefill_hardware" form="simForm">${preHwOpts}</select>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">Decode HW</span>
+                        <select name="cfg_decode_hardware" form="simForm">${decHwOpts}</select>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">Pre Nodes</span>
+                        <input type="number" name="cfg_prefill_nodes" value="${cfg.prefill_nodes || 1}" min="0" form="simForm" oninput="syncPrefillNodes(this)">
+                    </div>
+                        <div class="field">
+                            <span class="field-label">Dec Nodes</span>
+                            <input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || 1}" min="0" form="simForm" oninput="syncDecodeNodes(this)">
+                        </div>
+                        <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
+                            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
+                                <input type="checkbox" name="cfg_colocated" value="true" form="simForm" ${colocated ? 'checked' : ''} onchange="syncColocatedNodes(this)">
+                                same nodes
+                            </label>
+                        </div>
+                    <div class="field">
+                        <span class="field-label">Batch / Label</span>
+                        <div style="display:flex;gap:0.4rem;">
+                            <input type="number" name="cfg_batch" value="${cfg.batch_size || 10}" min="1" form="simForm" style="width:55px;">
+                            <input type="text" name="cfg_label" value="${cfg.label || ('Config ' + (idx + 1))}" placeholder="Label" form="simForm" style="flex:1;">
+                        </div>
+                    </div>
+                    <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
+                </div>
+                    <div class="config-row sub">
+                        <div class="field">
+                            <span class="field-label">Prefill GPUs / node</span>
+                            <input type="number" name="cfg_prefill_gpus" value="${cfg.prefill_gpus_per_node || ''}" min="0" placeholder="all" form="simForm" oninput="syncDecodeGpus(this)">
+                        </div>
+                        <div class="field">
+                            <span class="field-label">Decode GPUs / node</span>
+                            <input type="number" name="cfg_decode_gpus" value="${cfg.decode_gpus_per_node || ''}" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
+                        </div>
+                    <div class="field" style="grid-column: span 2; color:var(--text-secondary);font-size:0.75rem;align-self:center;">
+                        <span class="colocated-hint" style="display:${colocated ? 'inline' : 'none'};">In colocated mode, prefill and decode share each node using the GPU split above.</span>
+                    </div>
+                    <div class="field" style="grid-column: span 3;"></div>
+                </div>
             `;
-            list.appendChild(row);
+            list.appendChild(block);
+            syncColocatedNodes(block.querySelector('[name="cfg_colocated"]'));
         }
 
         function addConfig() {
             const list = document.getElementById('configList');
             const idx = list.children.length;
-            addConfigRow({ prefill_hardware: PRESETS[0] || '', decode_hardware: PRESETS[0] || '', prefill_nodes: '1', decode_nodes: '1', batch: '10', label: 'Config ' + (idx + 1) }, idx);
+            addConfigRow({ prefill_hardware: PRESETS[0] || '', decode_hardware: PRESETS[0] || '', prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', batch_size: '10', label: 'Config ' + (idx + 1) }, idx);
         }
 
         function removeConfig(btn) {
-            const row = btn.closest('.config-row');
+            const block = btn.closest('.config-block');
             const list = document.getElementById('configList');
             if (list.children.length <= 1) {
                 alert('At least one configuration is required.');
                 return;
             }
-            row.remove();
-            Array.from(list.children).forEach((r, i) => {
-                r.dataset.idx = i;
-                r.style.borderLeft = `4px solid ${COLORS[i % COLORS.length]}`;
+            block.remove();
+            Array.from(list.children).forEach((b, i) => {
+                b.dataset.idx = i;
+                b.style.borderLeft = `4px solid ${COLORS[i % COLORS.length]}`;
             });
+        }
+
+        function parseGpusFromKey(name) {
+            const match = name.match(/\bx(\d+)\b/);
+            return match ? parseInt(match[1], 10) : 1;
+        }
+
+        function updateDecodeGpus(block) {
+            const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
+            const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
+            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
+            const preGpusEl = block.querySelector('[name="cfg_prefill_gpus"]');
+            const decGpusEl = block.querySelector('[name="cfg_decode_gpus"]');
+            const totalGpus = colocated ? parseGpusFromKey(preHw) : parseGpusFromKey(decHw);
+            const preGpus = parseInt(preGpusEl.value, 10);
+            if (!isNaN(preGpus) && preGpus > 0 && preGpus < totalGpus) {
+                decGpusEl.value = totalGpus - preGpus;
+            } else if (preGpusEl.value === '' || preGpusEl.value === '0') {
+                decGpusEl.value = totalGpus;
+            } else {
+                decGpusEl.value = Math.max(0, totalGpus - preGpus);
+            }
+        }
+
+        function onHardwareChange(el) {
+            const block = el.closest('.config-block');
+            const colocated = block.querySelector('[name="cfg_colocated"]');
+            if (colocated.checked) {
+                const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
+                const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
+                if (preHw !== decHw) {
+                    showToast('Colocated mode requires identical prefill and decode hardware.', false);
+                    colocated.checked = false;
+                    syncColocatedNodes(colocated);
+                }
+            }
+            updateDecodeGpus(block);
+        }
+
+        function syncColocatedNodes(el) {
+            const block = el.closest('.config-block');
+            const checked = el.checked;
+            const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
+            const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
+            if (checked && preHw !== decHw) {
+                showToast('Colocated mode requires identical prefill and decode hardware.', false);
+                el.checked = false;
+                return;
+            }
+            const preNodes = block.querySelector('[name="cfg_prefill_nodes"]');
+            const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
+            const hint = block.querySelector('.colocated-hint');
+            if (checked) {
+                decNodes.value = preNodes.value;
+                decNodes.readOnly = true;
+                decNodes.style.opacity = '0.5';
+                hint.style.display = 'inline';
+            } else {
+                decNodes.readOnly = false;
+                decNodes.style.opacity = '1';
+                hint.style.display = 'none';
+            }
+            updateDecodeGpus(block);
+        }
+
+        function syncDecodeNodes(el) {
+            const block = el.closest('.config-block');
+            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
+            if (colocated) {
+                const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
+                decNodes.value = el.value;
+            }
+        }
+
+        function syncDecodeGpus(el) {
+            const block = el.closest('.config-block');
+            updateDecodeGpus(block);
+        }
+
+        function syncPrefillNodes(el) {
+            const block = el.closest('.config-block');
+            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
+            if (colocated) {
+                const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
+                decNodes.value = el.value;
+            }
         }
 
         // ---- Export / Import / localStorage ----
@@ -422,6 +614,15 @@
 
         function toggleImport() {
             const box = document.getElementById('importBox');
+            const resBox = document.getElementById('importResultsBox');
+            resBox.style.display = 'none';
+            box.style.display = box.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function toggleImportResults() {
+            const box = document.getElementById('importResultsBox');
+            const cfgBox = document.getElementById('importBox');
+            cfgBox.style.display = 'none';
             box.style.display = box.style.display === 'none' ? 'block' : 'none';
         }
 
@@ -436,6 +637,37 @@
                 saveToStorage();
             } catch (e) {
                 showToast('Invalid JSON: ' + e.message, false);
+            }
+        }
+
+        async function importResults() {
+            const text = document.getElementById('importResultsArea').value.trim();
+            if (!text) return;
+            let payload;
+            try {
+                payload = JSON.parse(text);
+            } catch (e) {
+                showToast('Invalid JSON: ' + e.message, false);
+                return;
+            }
+            const results = Array.isArray(payload) ? payload : payload.results;
+            if (!Array.isArray(results)) {
+                showToast('JSON must be an array of result rows or {"results": [...]}', false);
+                return;
+            }
+            try {
+                const response = await fetch('/import_results', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({results: results})
+                });
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                const html = await response.text();
+                document.open();
+                document.write(html);
+                document.close();
+            } catch (e) {
+                showToast('Import failed: ' + e.message, false);
             }
         }
 

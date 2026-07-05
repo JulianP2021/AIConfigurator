@@ -21,8 +21,13 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 # Ensure project root is on sys.path when running the script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.hardware.hardware import Hardware, S3Spec
-from src.hardware.scraper import fetch_machine_hardware
+from src.hardware.hardware import S3Spec
+from src.hardware.scraper import (
+    fetch_machine_hardware,
+    load_machine_db,
+    parse_gpu_count,
+    resolve_machine_name,
+)
 from src.logger import set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -71,38 +76,74 @@ def _build_nodes(
     decode_hardware_name: str,
     prefill_nodes: int,
     decode_nodes: int,
+    prefill_gpus_per_node: int,
+    decode_gpus_per_node: int,
     batch_size: int,
     model: str,
+    colocated: bool = False,
 ) -> list[Node]:
-    prefill_hw = fetch_machine_hardware(prefill_hardware_name)
-    decode_hw = fetch_machine_hardware(decode_hardware_name)
+    prefill_hw_name = resolve_machine_name(prefill_hardware_name)
+    decode_hw_name = resolve_machine_name(decode_hardware_name)
+    prefill_total_gpus = parse_gpu_count(prefill_hw_name)
+    decode_total_gpus = parse_gpu_count(decode_hw_name)
+    # Use explicit counts if provided, otherwise infer from the machine key.
+    if prefill_gpus_per_node == 0:
+        prefill_gpus_per_node = prefill_total_gpus
+    if decode_gpus_per_node == 0:
+        decode_gpus_per_node = decode_total_gpus
+
+    prefill_hw = fetch_machine_hardware(prefill_hw_name)
+    decode_hw = fetch_machine_hardware(decode_hw_name)
     print(
-        f"Building nodes for prefill hardware: {prefill_hw}, decode hardware: {decode_hw}"
+        f"Building nodes for prefill hardware: {prefill_hw}, decode hardware: {decode_hw}, colocated={colocated}"
     )
 
-    prefill_gpus_per_node = prefill_hw.spec.num_gpus
-    decode_gpus_per_node = decode_hw.spec.num_gpus
     nodes: list[Node] = []
-    for _ in range(prefill_nodes):
-        nodes.append(
-            Node(
-                hardware=prefill_hw,
-                model_name=model,
-                batch_size=batch_size,
-                prefill_instances=prefill_gpus_per_node,
-                decode_instances=0,
+    if colocated:
+        if prefill_nodes != decode_nodes:
+            raise ValueError(
+                f"Colocated config requires prefill_nodes ({prefill_nodes}) == decode_nodes ({decode_nodes})."
             )
-        )
-    for _ in range(decode_nodes):
-        nodes.append(
-            Node(
-                hardware=decode_hw,
-                model_name=model,
-                batch_size=batch_size,
-                prefill_instances=0,
-                decode_instances=decode_gpus_per_node,
+        if prefill_hw_name != decode_hw_name:
+            raise ValueError(
+                "Colocated config requires identical prefill and decode hardware."
             )
-        )
+        if prefill_gpus_per_node + decode_gpus_per_node != prefill_total_gpus:
+            raise ValueError(
+                f"GPU split {prefill_gpus_per_node}+{decode_gpus_per_node} does not equal "
+                f"total GPUs per node ({prefill_total_gpus})."
+            )
+        for _ in range(prefill_nodes):
+            nodes.append(
+                Node(
+                    hardware=prefill_hw,
+                    model_name=model,
+                    batch_size=batch_size,
+                    prefill_instances=prefill_gpus_per_node,
+                    decode_instances=decode_gpus_per_node,
+                )
+            )
+    else:
+        for _ in range(prefill_nodes):
+            nodes.append(
+                Node(
+                    hardware=prefill_hw,
+                    model_name=model,
+                    batch_size=batch_size,
+                    prefill_instances=prefill_gpus_per_node,
+                    decode_instances=0,
+                )
+            )
+        for _ in range(decode_nodes):
+            nodes.append(
+                Node(
+                    hardware=decode_hw,
+                    model_name=model,
+                    batch_size=batch_size,
+                    prefill_instances=0,
+                    decode_instances=decode_gpus_per_node,
+                )
+            )
     return nodes
 
 
@@ -113,6 +154,8 @@ def _run_single_config(
     decode_hardware: str,
     prefill_nodes: int,
     decode_nodes: int,
+    prefill_gpus_per_node: int,
+    decode_gpus_per_node: int,
     batch_size: int,
     model: str,
     isl: int,
@@ -125,14 +168,18 @@ def _run_single_config(
     s3_enabled: bool,
     s3_up_bw_gbps: float,
     s3_down_bw_gbps: float,
+    colocated: bool = False,
 ) -> SimulationResult | None:
     nodes = _build_nodes(
         prefill_hardware,
         decode_hardware,
         prefill_nodes,
         decode_nodes,
+        prefill_gpus_per_node,
+        decode_gpus_per_node,
         batch_size,
         model,
+        colocated,
     )
     scenario = DistributedScenario(
         name=label,
@@ -467,7 +514,7 @@ def _build_single_plot(
 
 async def _run_configs_parallel(
     config_kwargs: list[dict[str, object]],
-) -> list[SimulationResult | BaseException]:
+) -> list[SimulationResult | BaseException | None]:
     """Run all configs concurrently in separate processes, capped at 8 workers.
 
     Each config gets its own process so module-level simulator state is fully
@@ -547,6 +594,9 @@ async def simulate(
     cfg_decode_hardware: list[str] = Form(...),
     cfg_prefill_nodes: list[str] = Form(...),
     cfg_decode_nodes: list[str] = Form(...),
+    cfg_prefill_gpus: list[str] = Form(...),
+    cfg_decode_gpus: list[str] = Form(...),
+    cfg_colocated: list[str] = Form(...),
     cfg_batch: list[str] = Form(...),
     cfg_label: list[str] = Form(...),
     ram_usage_fraction: float = Form(_env.ram_usage_fraction),
@@ -563,11 +613,21 @@ async def simulate(
             len(cfg_decode_hardware)
             == len(cfg_prefill_nodes)
             == len(cfg_decode_nodes)
+            == len(cfg_prefill_gpus)
+            == len(cfg_decode_gpus)
             == len(cfg_batch)
             == len(cfg_label)
             == n
         ):
             raise ValueError("Configuration arrays must all have the same length.")
+
+        # Unchecked checkboxes are not submitted, so normalize colocated to a
+        # boolean per config using a set of submitted indices.
+        colocated_set = {
+            i
+            for i, v in enumerate(cfg_colocated)
+            if v.strip().lower() in {"true", "1", "yes", "on"}
+        }
 
         s3_on = s3_enabled.strip().lower() in {"true", "1", "yes", "on"}
         common = {
@@ -589,7 +649,19 @@ async def simulate(
             prefill_hw = cfg_prefill_hardware[i]
             decode_hw = cfg_decode_hardware[i]
             prefill_n = int(cfg_prefill_nodes[i])
-            decode_n = int(cfg_decode_nodes[i])
+            colocated = i in colocated_set
+            # In colocated mode decode_nodes mirrors prefill_nodes.
+            decode_n = int(cfg_decode_nodes[i]) if cfg_decode_nodes[i] else prefill_n
+            prefill_gpus = (
+                int(cfg_prefill_gpus[i])
+                if cfg_prefill_gpus[i]
+                else parse_gpu_count(prefill_hw)
+            )
+            decode_gpus = (
+                int(cfg_decode_gpus[i])
+                if cfg_decode_gpus[i]
+                else parse_gpu_count(decode_hw)
+            )
             batch = int(cfg_batch[i])
             label = cfg_label[i] or f"Config {i + 1}"
 
@@ -604,7 +676,10 @@ async def simulate(
                 "decode_hardware": decode_hw,
                 "prefill_nodes": prefill_n,
                 "decode_nodes": decode_n,
+                "prefill_gpus_per_node": prefill_gpus,
+                "decode_gpus_per_node": decode_gpus,
                 "batch_size": batch,
+                "colocated": colocated,
                 **common,
             }
             config_kwargs.append((label, kwargs, i))
@@ -635,7 +710,10 @@ async def simulate(
                 "decode_hardware": kwargs["decode_hardware"],
                 "prefill_nodes": kwargs["prefill_nodes"],
                 "decode_nodes": kwargs["decode_nodes"],
+                "prefill_gpus_per_node": kwargs.get("prefill_gpus_per_node", 0),
+                "decode_gpus_per_node": kwargs.get("decode_gpus_per_node", 0),
                 "batch_size": kwargs["batch_size"],
+                "colocated": kwargs.get("colocated", False),
                 "ttft": result.ttft,
                 "kv_upload_time": result.kv_upload_time,
                 "kv_download_time": result.kv_download_time,
@@ -685,7 +763,10 @@ async def simulate(
                 "decode_hardware": "",
                 "prefill_nodes": 0,
                 "decode_nodes": 0,
+                "prefill_gpus_per_node": 0,
+                "decode_gpus_per_node": 0,
                 "batch_size": 0,
+                "colocated": False,
                 "ttft": 0.0,
                 "kv_upload_time": 0.0,
                 "kv_download_time": 0.0,
@@ -719,10 +800,38 @@ async def simulate(
         return HTMLResponse(content=_build_results_page([], None, err))
 
 
+@app.post("/import_results", response_class=HTMLResponse)
+async def import_results(payload: dict[str, list[dict[str, float | int | str]]]):
+    """Render a results page from a previously exported results_data JSON.
+
+    This lets users import the raw results list produced by compare.py or the
+    webserver's /simulate handler and regenerate the comparison plots/table.
+    """
+    try:
+        results = payload.get("results", payload)
+        if not isinstance(results, list):
+            raise ValueError(
+                "Payload must be a list of result rows or {'results': [...]}"
+            )
+
+        # Ensure every row has a plot color.
+        for i, row in enumerate(results):
+            if "color" not in row:
+                row["color"] = COLORS[i % len(COLORS)]
+
+        plot_urls = _build_comparison_plots(results)
+        return HTMLResponse(content=_build_results_page(results, plot_urls, None))
+    except Exception as exc:
+        import traceback
+
+        err = f"{exc}\n{traceback.format_exc()}"
+        return HTMLResponse(content=_build_results_page([], None, err))
+
+
 @app.get("/api/hardware")
 async def hardware_options():
     """Return the list of available hardware preset names."""
-    return {"hardware": list(Hardware.PRESETS.keys())}
+    return {"hardware": list(load_machine_db().keys())}
 
 
 @app.get("/plot/{plot_id}")

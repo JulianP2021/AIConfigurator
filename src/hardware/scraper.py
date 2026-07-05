@@ -24,6 +24,21 @@ _MARKET_API = "https://vast.ai/api/v0/bundles"
 _DB_PATH = pathlib.Path(__file__).parent / "_gpu_db.json"
 
 
+def _to_url_slug(gpu_name: str) -> str:
+    """Convert a raw GPU name into the slug used by vast.ai pricing URLs.
+
+    Examples:
+        >>> _to_url_slug("Tesla V100")
+        'TESLA-V100'
+        >>> _to_url_slug("RTX PRO 6000 WS")
+        'RTX-PRO-6000-WS'
+    """
+    slug = gpu_name.upper().replace(" ", "-").replace("_", "-")
+    slug = re.sub(r"[^A-Z0-9-]", "", slug)
+    slug = re.sub(r"-+", "-", slug)
+    return slug.strip("-")
+
+
 def _parse_number_with_unit(value: str) -> tuple[float, str]:
     """Parse a numeric value with a unit suffix.
 
@@ -88,7 +103,7 @@ def _to_flops(value: str) -> int:
 
 def _fetch_specs(gpu_name: str) -> dict[str, Any]:
     """Pull static hardware specs from the GPU detail page."""
-    url = f"{_PRICING_PAGE}/{gpu_name}"
+    url = f"{_PRICING_PAGE}/{_to_url_slug(gpu_name)}"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -205,7 +220,7 @@ def refresh_file(gpu_names: list[str]) -> None:
     _DB_PATH.write_text(json.dumps(db, indent=2), encoding="utf-8")
 
 
-def _load_db() -> dict[str, dict[str, Any]]:
+def load_gpu_db() -> dict[str, dict[str, Any]]:
     if not _DB_PATH.exists():
         msg = f"GPU database not found at {_DB_PATH}. Run refresh_file([...]) first."
         raise RuntimeError(msg)
@@ -214,7 +229,7 @@ def _load_db() -> dict[str, dict[str, Any]]:
 
 def lookup(gpu_name: str) -> dict[str, Any]:
     """Return cached specs for *gpu_name* from ``_gpu_db.json``."""
-    db = _load_db()
+    db = load_gpu_db()
     try:
         return db[gpu_name]
     except KeyError:
@@ -307,7 +322,7 @@ def refresh_machines_file() -> None:
     _MACHINE_DB_PATH.write_text(json.dumps(db, indent=2), encoding="utf-8")
 
 
-def _load_machine_db() -> dict[str, dict[str, Any]]:
+def load_machine_db() -> dict[str, dict[str, Any]]:
     if not _MACHINE_DB_PATH.exists():
         msg = (
             f"Machine database not found at {_MACHINE_DB_PATH}. "
@@ -317,9 +332,51 @@ def _load_machine_db() -> dict[str, dict[str, Any]]:
     return json.loads(_MACHINE_DB_PATH.read_text(encoding="utf-8"))
 
 
+def parse_gpu_count(machine_name: str) -> int:
+    """Extract the GPU count from a machine key like ``RTX 5090 x2 #...``.
+
+    Returns the integer after ``x`` in the key. Falls back to 1 when the
+    pattern is not present.
+    """
+    match = re.search(r"\bx(\d+)\b", machine_name)
+    if match:
+        return int(match.group(1))
+    return 1
+
+
+def resolve_machine_name(machine_name: str) -> str:
+    """Resolve ``machine_name`` to an exact machine key from the local cache.
+
+    * If ``machine_name`` is already an exact key, return it unchanged.
+    * Otherwise search entries whose ``gpu_name`` contains ``machine_name`` as a
+      case-insensitive substring.  A single match is returned; zero or multiple
+      matches raise ``ValueError`` with helpful context.
+    """
+    db = load_machine_db()
+    if machine_name in db:
+        return machine_name
+
+    query = machine_name.lower()
+    matches = [
+        key for key, config in db.items() if query in config.get("gpu_name", "").lower()
+    ]
+    if not matches:
+        available = sorted({config.get("gpu_name", key) for key, config in db.items()})
+        raise ValueError(
+            f"No machine matching {machine_name!r} found in local database. "
+            f"Available GPU names: {available}"
+        )
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple machines match {machine_name!r}: {sorted(matches)}. "
+            "Please pass an exact instance name."
+        )
+    return matches[0]
+
+
 def lookup_machine(machine_name: str) -> dict[str, Any]:
     """Return cached machine config from ``_machine_db.json``."""
-    db = _load_machine_db()
+    db = load_machine_db()
     try:
         return db[machine_name]
     except KeyError:
