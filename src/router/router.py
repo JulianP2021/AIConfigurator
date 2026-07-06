@@ -17,16 +17,10 @@ class Router:
             log(LOG_ROUTER, f"Routing request {req.id} with stage {req.stage}")
             # route to prefill or decode instance based on req.stage
             if req.stage == "prefill":
-                print(
-                    f"Routing request {req.id} to prefill instance, {req.prefilled_tokens},  {req.isl}"
-                )
                 # find prefill instance with shortest queue
                 instance = min(self.prefill_instances, key=lambda x: len(x.queue))
                 instance.add_request(req)
             else:
-                print(
-                    f"Routing request {req.id} to decode instance, {req.decoded_tokens},  {req.osl}"
-                )
                 # route to decode instance with shortest queue
                 instance = min(self.decode_instances, key=lambda x: len(x.queue))
                 instance.add_request(req)

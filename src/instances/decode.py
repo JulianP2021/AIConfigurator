@@ -155,7 +155,7 @@ class DecodeInstance:
         assert time_ms >= 0, "Time to process queue should be non-negative"
         kv_cache = 0
         for req, _ in self.queue:
-            kv_cache += self.model.kv_size_per_token * req.isl
+            kv_cache += self.model.kv_size_per_token * req.cache_length
         assert kv_cache <= self.hardware.gpu_mem, (
             "KV cache exceeds GPU memory, too many requests in decode queue"
         )

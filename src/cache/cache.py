@@ -8,6 +8,7 @@ from src.request.request import DownloadRequest, Request, TransferLeg, UploadReq
 
 # Sentinel node id used for the shared S3/object-store tier.
 S3_NODE_ID = -1
+CHUNK_SIZE = 4096
 
 
 @dataclass
@@ -163,15 +164,12 @@ class Cache:
             self._touch(copied)
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
             self.cost_usd += (
-                float(victim_size)
-                / 1024
-                / 1024
-                / 1024
-                * self.s3_spec.S3_DOWNLOAD_COST_GB
+                float(victim_size) / 1024 / 1024 / 1024 * self.s3_spec.S3_UPLOAD_COST_GB
             )
             self.cost_usd += (
-                self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * victim.tokens / 256 * 16
+                self.s3_spec.S3_UPLOAD_REQ_COSTS / 1000 * victim.tokens / CHUNK_SIZE
             )
+
             log(
                 LOG_CACHE,
                 f"Uploaded SSD-evicted KV for request {victim.session_id} "
@@ -454,6 +452,19 @@ class Cache:
                 if item.token_start <= miss_start < item.token_end:
                     seg_end = min(item.token_end, effective_end)
                     segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
+
+                    tokens = seg_end - miss_start
+                    bytes_to_transfer = self.kv_size(self.model, tokens)
+                    self.cost_usd += (
+                        float(bytes_to_transfer)
+                        / 1024
+                        / 1024
+                        / 1024
+                        * self.s3_spec.S3_DOWNLOAD_COST_GB
+                    )
+                    self.cost_usd += (
+                        self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * tokens / CHUNK_SIZE
+                    )
                     miss_start = seg_end
                     break
 
@@ -507,7 +518,6 @@ class Cache:
             return [
                 TransferLeg(bytes_to_transfer, S3_NODE_ID, dest_node_id, "S3_DOWNLOAD")
             ]
-
         if source_layer_name == "SSD":
             # SSD -> source RAM
             legs.append(
@@ -515,7 +525,6 @@ class Cache:
                     bytes_to_transfer, source_node_id, source_node_id, "SSD_LOCAL"
                 )
             )
-
         if source_node_id != dest_node_id:
             if source_layer_name == "SSD":
                 # SSD -> source RAM before network egress.

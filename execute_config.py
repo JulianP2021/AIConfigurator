@@ -454,8 +454,9 @@ def main() -> None:
                         config["label"],
                         result,
                     ))
-
                     successful.append((i, config))
+                    print(f"Config '{config['label']}' succeeded", file=sys.stdout)
+
                 except Exception as exc:
                     failed.append((i, config))
                     print(f"Config '{config['label']}' failed: {exc}", file=sys.stderr)

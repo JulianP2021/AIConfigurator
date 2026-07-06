@@ -182,27 +182,12 @@ def simulate_run_distributed(
 
     log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
 
-    print("Finished generating requests, now draining remaining instance queues...")
-    print(router.queue)
-    for instance in prefill_instances:
-        print(
-            f"Prefill instance {instance.node_id} queue length: {len(instance.queue)}, "
-            f"download queue length: {len(instance.download_queue)}, "
-            f"upload queue length: {len(instance.upload_queue)}"
-        )
-    for instance in decode_instances:
-        print(
-            f"Decode instance {instance.node_id} queue length: {len(instance.queue)}, "
-            f"download queue length: {len(instance.download_queue)}, "
-            f"upload queue length: {len(instance.upload_queue)}"
-        )
     # Drain any remaining instance upload queues.  When a decode request finishes
     # during the final event step it appends its KV upload to the instance's
     # upload queue, but the main loop may have already decided there were no
     # more events and exited.  Keep stepping until all pending uploads are
     # flushed and requests are moved to finished_requests.
     while len(finished_requests) < scenario.requests.total_requests:
-        print(len(finished_requests))
         transfer_event_ms = scheduler.next_event_ms()
         compute_event_ms = min(
             [instance.time_to_next_completion() for instance in prefill_instances]
