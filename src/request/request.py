@@ -1,6 +1,7 @@
 import random
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import ClassVar
 
 
@@ -208,11 +209,15 @@ class Request:
             "Prefilled tokens must be less than or equal to ISL"
         )
 
-    @property
+    @cached_property
+    def cache_length(self):
+        return self.prefilled_tokens + self.decoded_tokens
+
+    @cached_property
     def remaining_tokens_prefill(self):
         return self.isl - self.prefilled_tokens
 
-    @property
+    @cached_property
     def remaining_tokens_decode(self):
         return self.osl - self.decoded_tokens
 

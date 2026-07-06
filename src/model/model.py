@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import Any, cast
 
 # Third Party
@@ -22,7 +23,7 @@ class Model:
             return 4.0
         raise ValueError(f"Unsupported data type: {dtype}")
 
-    @property
+    @cached_property
     def kv_size_per_token(self) -> int:
         # KV Calculation based on lmcache kv calculator:
         dtype = self.config.get("dtype", "float32")
@@ -87,6 +88,35 @@ class Model:
             )
 
         return total_elements * dtype_size
+
+    @cached_property
+    def cost_constants(self) -> dict[str, float | int]:
+        cfg = self.config
+
+        d_kv = cfg.get(
+            "head_dim",
+            cfg["hidden_size"] // cfg["num_attention_heads"],
+        )
+
+        return {
+            "hidden_size": int(cfg["hidden_size"]),
+            "intermediate_size": int(cfg["intermediate_size"]),
+            "num_hidden_layers": int(cfg["num_hidden_layers"]),
+            "num_key_value_heads": int(cfg["num_key_value_heads"]),
+            "vocab_size": int(cfg["vocab_size"]),
+            "d_kv": int(d_kv),
+            "dtype_size": float(self.dtype_size),
+            # FLOPs
+            "output_flops": int(2 * cfg["hidden_size"] * cfg["vocab_size"]),
+            # Memory
+            "matrices": int(
+                2 * self.dtype_size * cfg["hidden_size"] ** 2
+                + 3 * self.dtype_size * cfg["intermediate_size"] * cfg["hidden_size"]
+            ),
+            "embedding_memory": int(
+                2 * self.dtype_size * cfg["hidden_size"] * cfg["vocab_size"]
+            ),
+        }
 
 
 def fetch_architecture(model_name: str) -> dict[str, Any]:

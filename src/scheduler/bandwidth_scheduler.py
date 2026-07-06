@@ -6,6 +6,7 @@ from typing import Any
 from src.hardware.hardware import HardwareSpec, S3Spec
 from src.logger import LOG_BANDWIDTH, log
 from src.request.request import DownloadRequest, UploadRequest
+from src.scheduler.global_clock import GlobalClock
 
 
 # Minimum time granularity for transfer-driven event steps.  Steps smaller than
@@ -33,27 +34,41 @@ class BandwidthScheduler:
     node_specs: dict[int, HardwareSpec]
     s3_spec: S3Spec
     transfers: list[DownloadRequest | UploadRequest]
+    clock: GlobalClock
 
-    def __init__(self, nodes: list[Any], s3_spec: S3Spec | None = None):
+    def __init__(
+        self,
+        nodes: list[Any],
+        s3_spec: S3Spec | None = None,
+        clock: GlobalClock | None = None,
+    ):
         from src.hardware.hardware import S3Spec
 
         self.node_specs = {}
         for node in nodes:
             self.node_specs[node.id] = node.hardware.spec
-            print(
+            log(
+                LOG_BANDWIDTH,
                 f"Node {node.id} bandwidths: "
                 f"RAM {node.hardware.spec.pcie_bw / 1e6:.2f} MB/s, "
                 f"SSD {node.hardware.spec.nvme_bw / 1e6:.2f} MB/s, "
                 f"Network Up {node.hardware.spec.network_inet_up / 1e6:.2f} MB/s, "
-                f"Network Down {node.hardware.spec.network_inet_down / 1e6:.2f} MB/s"
+                f"Network Down {node.hardware.spec.network_inet_down / 1e6:.2f} MB/s",
             )
         self.s3_spec = s3_spec or S3Spec.from_gbps(enabled=False)
         if self.s3_spec.enabled:
-            print(
+            log(
+                LOG_BANDWIDTH,
                 f"S3 bandwidths: Up {self.s3_spec.up_bw_bytes_per_s / 1e6:.2f} MB/s, "
-                f"Down {self.s3_spec.down_bw_bytes_per_s / 1e6:.2f} MB/s"
+                f"Down {self.s3_spec.down_bw_bytes_per_s / 1e6:.2f} MB/s",
             )
         self.transfers = []
+        self.clock = clock or GlobalClock()
+
+    @property
+    def time_ms(self) -> float:
+        """Return the current simulation time from the shared clock."""
+        return self.clock.time_ms
 
     def register(self, transfer: DownloadRequest | UploadRequest) -> None:
         """Register an active transfer so it receives a bandwidth share."""
@@ -163,6 +178,7 @@ class BandwidthScheduler:
         are advanced to the next leg in that track; a transfer is returned as
         completed only once every track has been exhausted.
         """
+        self.clock.advance(time_ms)
         self.update_shares()
         completed: list[DownloadRequest | UploadRequest] = []
 

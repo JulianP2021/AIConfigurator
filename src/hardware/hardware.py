@@ -20,6 +20,11 @@ class S3Spec:
     up_bw_bytes_per_s: int
     down_bw_bytes_per_s: int
 
+    S3_DOWNLOAD_REQ_COSTS = 0.0004  # USD per 1k requests
+    S3_DOWNLOAD_COST_GB = 0.09  # USD per GB
+    S3_UPLOAD_REQ_COSTS = 0.0005  # USD per 1k requests
+    S3_UPLOAD_COST_GB = 0.09  # USD per GB
+
     @classmethod
     def from_gbps(
         cls, enabled: bool = True, up_gbps: float = 25.0, down_gbps: float = 25.0

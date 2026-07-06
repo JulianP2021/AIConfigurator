@@ -10,15 +10,23 @@ import os
 #   2  (0010) : instances only
 #   4  (0100) : router only
 #   8  (1000) : simulation only
-#   15 (1111) : everything
 LOG_NONE = 0
 LOG_CACHE = 1 << 0
 LOG_INSTANCE = 1 << 1
 LOG_ROUTER = 1 << 2
 LOG_SIMULATION = 1 << 3
 LOG_BANDWIDTH = 1 << 4
+LOG_CONFIG_EXECUTOR = 1 << 5
 
-LOG_ALL = LOG_CACHE | LOG_INSTANCE | LOG_ROUTER | LOG_SIMULATION | LOG_BANDWIDTH
+
+LOG_ALL = (
+    LOG_CACHE
+    | LOG_INSTANCE
+    | LOG_ROUTER
+    | LOG_SIMULATION
+    | LOG_BANDWIDTH
+    | LOG_CONFIG_EXECUTOR
+)
 
 _COMPONENT_NAMES: dict[int, str] = {
     LOG_CACHE: "CACHE",
@@ -26,6 +34,7 @@ _COMPONENT_NAMES: dict[int, str] = {
     LOG_ROUTER: "ROUTER",
     LOG_SIMULATION: "SIMULATION",
     LOG_BANDWIDTH: "BANDWIDTH",
+    LOG_CONFIG_EXECUTOR: "CONFIG_EXECUTOR",
 }
 
 
@@ -46,12 +55,12 @@ def _mask_from_env() -> int:
     """Read LOG_MASK from the environment as an integer."""
     raw = os.environ.get("LOG_MASK", "")
     if not raw:
-        return LOG_ALL
+        return 0
     try:
         # Support both decimal and hex strings (e.g. 15 or 0xF)
         return int(raw, 0)
     except ValueError:
-        return LOG_ALL
+        return 0
 
 
 def set_log_mask(mask: int) -> None:
@@ -108,4 +117,6 @@ def debug_print(msg: str) -> None:
 
 
 # Initialise from environment so `.env` / shell exports work out of the box.
-set_log_mask(_mask_from_env())
+# Keep the default LOG_ALL when no LOG_MASK environment variable is provided.
+if os.environ.get("LOG_MASK", ""):
+    set_log_mask(_mask_from_env())

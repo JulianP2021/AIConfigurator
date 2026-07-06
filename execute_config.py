@@ -59,8 +59,10 @@ import concurrent.futures
 import json
 import sys
 
+from collections.abc import Callable
+from itertools import zip_longest
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 
 # Ensure project root is on sys.path when running the script directly
@@ -68,7 +70,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from src.hardware.hardware import S3Spec
 from src.hardware.scraper import resolve_machine_name
-from src.logger import set_log_mask
+from src.logger import LOG_CONFIG_EXECUTOR, get_log_mask, log, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.result import SimulationResult
@@ -198,6 +200,26 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     )
 
 
+T = TypeVar("T")
+K = TypeVar("K")
+
+
+def binary_search_order[T](
+    arr: list[T],
+    key: Callable[[T], Any],
+) -> list[T]:
+    arr = sorted(arr, key=key)
+    print(f"binary_search_order: {[key(x) for x in arr]}")
+
+    def build(nums: list[T]) -> list[T]:
+        if not nums:
+            return []
+        mid = len(nums) // 2
+        return [nums[mid], *build(nums[:mid]), *build(nums[mid + 1 :])]
+
+    return build(arr)
+
+
 def _run_single_config(
     common: dict[str, Any],
     cfg: dict[str, Any],
@@ -212,10 +234,11 @@ def _run_single_config(
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
+        should_print=False,
     )
 
 
-def print_table(results: list[tuple[str, SimulationResult]]) -> None:
+def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
     """Print a simple comparison table to stdout."""
     header = (
         f"{'Label':<20} {'TTFT':>10} {'TPOT':>10} {'Latency':>10} "
@@ -223,7 +246,7 @@ def print_table(results: list[tuple[str, SimulationResult]]) -> None:
     )
     print(header)
     print("-" * len(header))
-    for label, result in results:
+    for _, label, result in results:
         print(
             f"{label:<20} "
             f"{result.ttft:>10.2f} "
@@ -235,13 +258,13 @@ def print_table(results: list[tuple[str, SimulationResult]]) -> None:
 
 
 def build_results_data(
-    results: list[tuple[str, SimulationResult]],
+    results: list[tuple[str, str, SimulationResult]],
     configs: list[dict[str, Any]],
     colors: list[str],
 ) -> list[dict[str, Any]]:
     """Convert simulation results into the webserver results JSON schema."""
     results_data: list[dict[str, Any]] = []
-    for i, (label, result) in enumerate(results):
+    for i, (_, label, result) in enumerate(results):
         cfg = configs[i]
         results_data.append({
             "label": label,
@@ -287,8 +310,6 @@ def build_results_data(
 
 def main() -> None:
     env = load_env()
-    set_log_mask(0)
-
     parser = argparse.ArgumentParser(
         description="Run multi-config distributed simulator comparisons"
     )
@@ -307,6 +328,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    set_log_mask(LOG_CONFIG_EXECUTOR)
 
     common = {
         "model": config.get("model", env.model),
@@ -326,34 +348,163 @@ def main() -> None:
 
     configs = config.get("configs", [])
     if not configs:
-        print("No configs found in JSON.")
-        sys.exit(1)
+        raise ValueError("No configs found in the input JSON file.")
 
     # Validate hardware names up front for clearer errors.
     for cfg in configs:
         resolve_machine_name(cfg["prefill_hardware"])
         resolve_machine_name(cfg["decode_hardware"])
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
-        futures = {
-            executor.submit(
-                _run_single_config,
-                common,
-                cfg,
-                ram_usage_fraction,
-                ssd_usage_fraction,
-                s3_spec,
-            ): cfg["label"]
-            for cfg in configs
-        }
-        results: list[tuple[str, SimulationResult]] = []
-        for future in concurrent.futures.as_completed(futures):
-            label = futures[future]
-            try:
-                result = future.result()
-                results.append((label, result))
-            except Exception as exc:
-                print(f"Config '{label}' failed: {exc}", file=sys.stderr)
+    # split configs, so that every batch only runs configs with different hardware.
+    results: list[tuple[str, str, SimulationResult]] = []
+    config_splitted: list[list[dict[str, Any]]] = []
+
+    for config in configs:
+        # Check if this config can be added to an existing batch.
+        for batch in config_splitted:
+            if all(
+                (
+                    config["prefill_hardware"] == c["prefill_hardware"]
+                    and config["decode_hardware"] == c["decode_hardware"]
+                )
+                for c in batch
+            ):
+                batch.append(config)
+                break
+        else:
+            # No existing batch found, create a new one.
+            config_splitted.append([config])
+
+    for i, batch in enumerate(config_splitted):
+        log(
+            LOG_CONFIG_EXECUTOR,
+            f"B{i}: {[cfg['label'] for cfg in batch]}, {[cfg['prefill_nodes'] for cfg in batch]}",
+        )
+        print(get_log_mask())
+        config_splitted[i] = binary_search_order(
+            batch,
+            key=lambda c: (
+                int(c["prefill_nodes"]) * 10000
+                + int(c["decode_nodes"]) * 10000
+                + int(c["prefill_gpus_per_node"]) * 100
+                + int(c["batch_size"])
+            ),
+        )
+        log(LOG_CONFIG_EXECUTOR, (""))
+        log(LOG_CONFIG_EXECUTOR, (""))
+        log(LOG_CONFIG_EXECUTOR, (""))
+        log(LOG_CONFIG_EXECUTOR, (""))
+        log(LOG_CONFIG_EXECUTOR, (""))
+        log(
+            LOG_CONFIG_EXECUTOR,
+            f"A{i}: {[cfg['label'] for cfg in config_splitted[i]]}, {[cfg['prefill_nodes'] for cfg in config_splitted[i]]}",
+        )
+
+    for i, batch in enumerate(config_splitted):
+        log(
+            LOG_CONFIG_EXECUTOR,
+            f"B{i}: {batch[0]['label']}, {batch[0]['prefill_nodes']}",
+        )
+
+    print("logmask", get_log_mask())
+
+    config_batches: list[list[tuple[str, dict[str, Any]]]] = [
+        [("valid", x) for x in group if x is not None]
+        for group in zip_longest(*config_splitted)
+    ]
+
+    log(
+        LOG_CONFIG_EXECUTOR,
+        f"Running {len(configs)} configs in {len(config_batches)} batches...",
+    )
+
+    while config_batches:
+        batch = config_batches.pop(0)
+
+        log(LOG_CONFIG_EXECUTOR, f"\nRunning batch of {len(batch)} configs:")
+        for status, cfg in batch:
+            if status == "valid":
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"  {cfg['label']} (prefill: {cfg['prefill_hardware']} x{cfg['prefill_nodes']}, "
+                    f"decode: {cfg['decode_hardware']} x{cfg['decode_nodes']})",
+                )
+        successful: list[tuple[int, dict[str, Any]]] = []
+        failed: list[tuple[int, dict[str, Any]]] = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(
+                    _run_single_config,
+                    common,
+                    cfg,
+                    ram_usage_fraction,
+                    ssd_usage_fraction,
+                    s3_spec,
+                ): (i, cfg)
+                for (i, (status, cfg)) in enumerate(batch)
+                if status == "valid"
+            }
+
+            for future in concurrent.futures.as_completed(futures):
+                (i, config) = futures[future]
+                try:
+                    result = future.result()
+                    results.append((
+                        config["prefill_hardware"],
+                        config["label"],
+                        result,
+                    ))
+
+                    successful.append((i, config))
+                except Exception as exc:
+                    failed.append((i, config))
+                    print(f"Config '{config['label']}' failed: {exc}", file=sys.stderr)
+
+            for next_batch in config_batches:
+                if len(next_batch) == 0:
+                    config_batches.remove(next_batch)
+                    continue
+                for i, failed_config in failed:
+                    assert len(next_batch) > i, (
+                        f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
+                    )
+                    (status, cfg) = next_batch[i]
+                    if status != "valid":
+                        continue
+                    assert (
+                        cfg["prefill_hardware"] == failed_config["prefill_hardware"]
+                    ), f"Config mismatch for failed config {failed_config['label']}"
+                    assert cfg["decode_hardware"] == failed_config["decode_hardware"], (
+                        f"Config mismatch for failed config {failed_config['label']}"
+                    )
+                    if (
+                        cfg["prefill_nodes"] < failed_config["prefill_nodes"]
+                        and cfg["decode_nodes"] < failed_config["decode_nodes"]
+                    ):
+                        next_batch[i] = ("invalid", cfg)
+
+                for i, successful_config in successful:
+                    assert len(next_batch) > i, (
+                        f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
+                    )
+                    (status, cfg) = next_batch[i]
+                    if status != "valid":
+                        continue
+                    assert (
+                        cfg["prefill_hardware"] == successful_config["prefill_hardware"]
+                    ), (
+                        f"Config mismatch for successful config {successful_config['label']}"
+                    )
+                    assert (
+                        cfg["decode_hardware"] == successful_config["decode_hardware"]
+                    ), (
+                        f"Config mismatch for successful config {successful_config['label']}"
+                    )
+                    if (
+                        cfg["prefill_nodes"] > successful_config["prefill_nodes"]
+                        and cfg["decode_nodes"] > successful_config["decode_nodes"]
+                    ):
+                        next_batch[i] = ("invalid", cfg)
 
     results.sort(key=lambda x: x[0])
     print_table(results)

@@ -54,8 +54,8 @@ if __name__ == "__main__":
 
     for prefill_machine_name, prefill_machine in possible_machines:
         for prefill_nodes in [1, 2, 4, 8]:
-            for batch_size in [16, 32, 64, 128]:
-                for prefill_gpus_per_node in [8, 6, 4]:
+            for batch_size in [64, 128]:
+                for prefill_gpus_per_node in [6, 4]:
                     decode_gpus_per_node = (
                         int(prefill_machine["num_gpus"]) - prefill_gpus_per_node
                     )
@@ -69,27 +69,27 @@ if __name__ == "__main__":
                             "prefill_gpus_per_node": str(prefill_gpus_per_node),
                             "decode_gpus_per_node": str(decode_gpus_per_node),
                             "prefill_nodes": str(prefill_nodes),
-                            "decode_nodes": "1",  # only so it passes, not used
+                            "decode_nodes": str(prefill_nodes),
                             "batch_size": str(batch_size),
-                            "label": f"Colocated: {prefill_machine_name} - {prefill_nodes} - batch {batch_size}",
+                            "label": f"Colocated: {prefill_machine_name} - {prefill_nodes} - {prefill_gpus_per_node}- batch {batch_size}",
                         },
                     )
 
-        for decode_machine_name, _ in possible_machines:
-            for prefill_nodes in [1, 2, 4, 8]:
-                for decode_nodes in [1, 2, 4, 8]:
-                    for batch_size in [16, 32, 64, 128]:
-                        single_node_configs.append(
-                            {
-                                "colocated": "false",
-                                "prefill_hardware": prefill_machine_name,
-                                "decode_hardware": decode_machine_name,
-                                "prefill_nodes": str(prefill_nodes),
-                                "decode_nodes": str(decode_nodes),
-                                "batch_size": str(batch_size),
-                                "label": f"Single Node: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
-                            },
-                        )
+        # for decode_machine_name, _ in possible_machines:
+        #     for prefill_nodes in [1, 2, 4, 8]:
+        #         for decode_nodes in [1, 2, 4, 8]:
+        #             for batch_size in [64, 128]:
+        #                 single_node_configs.append(
+        #                     {
+        #                         "colocated": "false",
+        #                         "prefill_hardware": prefill_machine_name,
+        #                         "decode_hardware": decode_machine_name,
+        #                         "prefill_nodes": str(prefill_nodes),
+        #                         "decode_nodes": str(decode_nodes),
+        #                         "batch_size": str(batch_size),
+        #                         "label": f"Single Node: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
+        #                     },
+        #                 )
 
     print(
         f"Generated {len(colocation_configs)} colocation configs and {len(single_node_configs)} single node configs."

@@ -1,16 +1,17 @@
 from typing import Any
 
-from src.aiconfigurator_lib.estimator import (
-    build_session,
-    get_meta,
-    run_static_inference,
-)
+# from src.aiconfigurator_lib.estimator import (
+#     build_session,
+#     get_meta,
+#     run_static_inference,
+# )
 from src.cache.cache import Cache
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, UploadRequest
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
+from src.utils.utils import calculate_flops, calculate_memory
 
 
 class PrefillInstance:
@@ -35,19 +36,19 @@ class PrefillInstance:
         self.scheduler = None
         self.model = model
 
-        system_name, backend_version = get_meta(
-            backend_version="",
-            mem_bw=self.hardware.gpu_bw,
-            mem_capacity=self.hardware.gpu_mem,
-            bfloat16_tc_flops=self.hardware.flops,
-        )
-        self.session = build_session(
-            model_name=self.model.name,
-            system_name=system_name,
-            backend_name="vllm",
-            backend_version=backend_version,
-            database_mode="SOL",
-        )
+        # system_name, backend_version = get_meta(
+        #     backend_version="",
+        #     mem_bw=self.hardware.gpu_bw,
+        #     mem_capacity=self.hardware.gpu_mem,
+        #     bfloat16_tc_flops=self.hardware.flops,
+        # )
+        # self.session = build_session(
+        #     model_name=self.model.name,
+        #     system_name=system_name,
+        #     backend_name="vllm",
+        #     backend_version=backend_version,
+        #     database_mode="SOL",
+        # )
 
     def set_cache(self, cache: Cache):
         self.cache = cache
@@ -176,24 +177,38 @@ class PrefillInstance:
 
         return finished_requests
 
-    def calculate_prefill_time(self, request: Request) -> float:
-        result = run_static_inference(
-            mode="prefill",
-            built_session=self.session,
-            isl=request.isl,
-            osl=1,
-            prefix=request.prefilled_tokens,
+    def calculate_prefill_time(self, request: Request) -> int:
+        flops = calculate_flops(self.model, [request], "prefill")
+        memory = calculate_memory(self.model, [request], "prefill")
+
+        time_ms: int = int(
+            float(flops) / self.hardware.flops * 1000
+            + float(memory) / self.hardware.gpu_bw * 1000
         )
-        if result is None or "prefill_latency_ms" not in result:
-            raise ValueError(
-                f"Prefill latency not found in result for request with id: {request.id}, result: {result}, hardware: {self.hardware}, model: {self.model}"
-            )
-        time_ms = result["prefill_latency_ms"]
         log(
             LOG_INSTANCE,
             f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
         )
         return time_ms
+
+    # def calculate_prefill_time(self, request: Request) -> float:
+    #     result = run_static_inference(
+    #         mode="prefill",
+    #         built_session=self.session,
+    #         isl=request.isl,
+    #         osl=1,
+    #         prefix=request.prefilled_tokens,
+    #     )
+    #     if result is None or "prefill_latency_ms" not in result:
+    #         raise ValueError(
+    #             f"Prefill latency not found in result for request with id: {request.id}, result: {result}, hardware: {self.hardware}, model: {self.model}"
+    #         )
+    #     time_ms = result["prefill_latency_ms"]
+    #     log(
+    #         LOG_INSTANCE,
+    #         f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
+    #     )
+    #     return time_ms
 
     def log(self):
         log(

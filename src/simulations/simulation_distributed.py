@@ -24,6 +24,7 @@ def simulate_run_distributed(
     ram_usage_fraction: float = 0.8,
     ssd_usage_fraction: float = 0.8,
     s3_spec: S3Spec | None = None,
+    should_print: bool = True,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -154,7 +155,10 @@ def simulate_run_distributed(
             if time_to_next_completion == float("inf"):
                 break
 
-        if num_reqs < scenario.requests.total_requests:
+        if (
+            num_reqs < scenario.requests.total_requests
+            and time_till_next_ms == time_to_next_completion
+        ):
             new_request = request_generator.generate_request(
                 scenario.requests, current_requests, finished_requests
             )
@@ -171,12 +175,27 @@ def simulate_run_distributed(
 
     log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
 
+    print("Finished generating requests, now draining remaining instance queues...")
+    print(router.queue)
+    for instance in prefill_instances:
+        print(
+            f"Prefill instance {instance.node_id} queue length: {len(instance.queue)}, "
+            f"download queue length: {len(instance.download_queue)}, "
+            f"upload queue length: {len(instance.upload_queue)}"
+        )
+    for instance in decode_instances:
+        print(
+            f"Decode instance {instance.node_id} queue length: {len(instance.queue)}, "
+            f"download queue length: {len(instance.download_queue)}, "
+            f"upload queue length: {len(instance.upload_queue)}"
+        )
     # Drain any remaining instance upload queues.  When a decode request finishes
     # during the final event step it appends its KV upload to the instance's
     # upload queue, but the main loop may have already decided there were no
     # more events and exited.  Keep stepping until all pending uploads are
     # flushed and requests are moved to finished_requests.
     while len(finished_requests) < scenario.requests.total_requests:
+        print(len(finished_requests))
         transfer_event_ms = scheduler.next_event_ms()
         compute_event_ms = min(
             [instance.time_to_next_completion() for instance in prefill_instances]
@@ -391,7 +410,10 @@ def simulate_run_distributed(
     )
 
     # Pricing (hourly rate only)
-    total_price_per_hour = sum(node.hardware.spec.dph_base for node in scenario.nodes)
+    total_price_per_hour = (
+        sum(node.hardware.spec.dph_base for node in scenario.nodes)
+        + cache.cost_usd * 3600.0 / total_time_s
+    )
 
     result = SimulationResult(
         scenario_name=scenario.name,
@@ -436,6 +458,9 @@ def simulate_run_distributed(
         avg_clean_latency_ms=avg_clean_latency,
         max_clean_latency_ms=max_clean_latency,
     )
+
+    if not should_print:
+        return result
 
     # Summary print (always shown regardless of debug flag)
     print(f"\n{'=' * 60}")

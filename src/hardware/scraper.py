@@ -389,7 +389,10 @@ def fetch_machine_hardware(machine_name: str) -> Hardware:
     from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
     scraped = lookup_machine(machine_name)
-    gpu = _fetch_specs(scraped["gpu_name"])
+    gpu = lookup(scraped["gpu_name"])
+    if not gpu:
+        gpu = _fetch_specs(scraped["gpu_name"])
+
     gpu_spec = GPUHardwareSpec(
         flops=gpu["flops"],
         gpu_mem=gpu["gpu_mem"],

@@ -1,16 +1,17 @@
 from typing import Any
 
-from src.aiconfigurator_lib.estimator import (
-    build_session,
-    get_meta,
-    run_static_inference,
-)
+# from src.aiconfigurator_lib.estimator import (
+#     build_session,
+#     get_meta,
+#     run_static_inference,
+# )
 from src.cache.cache import Cache
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, UploadRequest
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
+from src.utils.utils import calculate_flops, calculate_memory
 
 
 class DecodeInstance:
@@ -47,19 +48,19 @@ class DecodeInstance:
         self.remaining_batch_time_ms = None
         self.current_batch_decode_time_ms = None
 
-        system_name, backend_version = get_meta(
-            backend_version="",
-            mem_bw=self.hardware.gpu_bw,
-            mem_capacity=self.hardware.gpu_mem,
-            bfloat16_tc_flops=self.hardware.flops,
-        )
-        self.session = build_session(
-            model_name=self.model.name,
-            system_name=system_name,
-            backend_name="vllm",
-            backend_version=backend_version,
-            database_mode="SOL",
-        )
+        # system_name, backend_version = get_meta(
+        #     backend_version="",
+        #     mem_bw=self.hardware.gpu_bw,
+        #     mem_capacity=self.hardware.gpu_mem,
+        #     bfloat16_tc_flops=self.hardware.flops,
+        # )
+        # self.session = build_session(
+        #     model_name=self.model.name,
+        #     system_name=system_name,
+        #     backend_name="vllm",
+        #     backend_version=backend_version,
+        #     database_mode="SOL",
+        # )
 
     def set_cache(self, cache: Cache):
         self.cache = cache
@@ -173,7 +174,7 @@ class DecodeInstance:
 
         # Active decode batch
         self._ensure_batch()
-        in_batch_ids = (
+        in_batch_ids: set[int] = (
             {id(r) for r in self.current_batch} if self.current_batch else set()
         )
         # Requests in the decode queue but not in the current batch are waiting.
@@ -199,17 +200,38 @@ class DecodeInstance:
             # the average ISL in the batch grows by one.
             tokens_done = 0
             while self.remaining_batch_time_ms <= 0 and self.current_batch:
-                tokens_done += 1
-                # Update the batch's average ISL before recalculating the
-                # next token's latency.
-                for req in self.current_batch:
-                    req.decoded_tokens += 1
+                old_decode_time = self.current_batch_decode_time_ms
                 # Recompute per-token time for the now-longer sequences.
                 next_decode_time = self.calculate_decode_time([
                     (r, 0) for r in self.current_batch
                 ])
-                self.remaining_batch_time_ms += next_decode_time
                 self.current_batch_decode_time_ms = next_decode_time
+
+                # Try to stride multiple completed tokens at once, but only
+                # when the decode time is stable.  If the per-token latency
+                # changed, striding with the old rate would miscount how many
+                # tokens actually fit in the surplus time.
+                remaining_tokens = min(
+                    r.osl - r.decoded_tokens for r in self.current_batch
+                )
+                if (
+                    old_decode_time is not None
+                    and abs(next_decode_time - old_decode_time) < 1e-9
+                ):
+                    stride = int(-self.remaining_batch_time_ms / next_decode_time) + 1
+                    stride = min(32, remaining_tokens, max(1, stride))
+                    # Charge all strided tokens at the stable per-token rate.
+                    self.remaining_batch_time_ms += next_decode_time * stride
+                else:
+                    # Decode time changed (or this is the first token in the
+                    # batch).  Complete exactly one token at the old rate and
+                    # let the next iteration re-evaluate with the new rate.
+                    stride = 1
+                    self.remaining_batch_time_ms += old_decode_time or next_decode_time
+
+                for req in self.current_batch:
+                    req.decoded_tokens += stride
+                tokens_done += stride
 
             # Apply the elapsed wall-clock time to every request's active
             # decode time. Requests that completed a token already had their
@@ -250,28 +272,14 @@ class DecodeInstance:
 
         return finished_requests
 
-    def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> float:
-        avg_isl = int(
-            sum(req.prefilled_tokens + req.decoded_tokens for req, _ in batch)
-            / len(batch)
-        )
-        result = run_static_inference(
-            mode="decode",
-            built_session=self.session,
-            isl=avg_isl,
-            osl=2,
-            prefix=avg_isl,
-            batch_size=len(batch),
-            stride=10,
-        )
-        if result is None or "decode_latency_ms" not in result:
-            raise ValueError(
-                f"Decode latency not found in result for batch "
-                f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
-                f"of size {len(batch)}, result: {result}, hardware: {self.hardware}, model: {self.model}"
-            )
-        time_ms = result["decode_latency_ms"]
+    def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> int:
+        flops = calculate_flops(self.model, [req for req, _ in batch], "decode")
+        memory = calculate_memory(self.model, [req for req, _ in batch], "decode")
 
+        time_ms: int = int(
+            (float(flops) / self.hardware.flops + float(memory) / self.hardware.gpu_bw)
+            * 1000
+        )
         log(
             LOG_INSTANCE,
             f"Calculated decode time for batch"
@@ -279,6 +287,39 @@ class DecodeInstance:
             f"of size {len(batch)}: {time_ms} ms",
         )
         return time_ms
+
+    # def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> float:
+    #     avg_isl = int(
+    #         sum(req.prefilled_tokens + req.decoded_tokens for req, _ in batch)
+    #         / len(batch)
+    #     )
+
+    #     time_ms = 0
+
+    #     # result = run_static_inference(
+    #     #     mode="decode",
+    #     #     built_session=self.session,
+    #     #     isl=avg_isl,
+    #     #     osl=2,
+    #     #     prefix=avg_isl,
+    #     #     batch_size=len(batch),
+    #     #     stride=10,
+    #     # )
+    #     # if result is None or "decode_latency_ms" not in result:
+    #     #     raise ValueError(
+    #     #         f"Decode latency not found in result for batch "
+    #     #         f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
+    #     #         f"of size {len(batch)}, result: {result}, hardware: {self.hardware}, model: {self.model}"
+    #     #     )
+    #     # time_ms = result["decode_latency_ms"]
+
+    #     log(
+    #         LOG_INSTANCE,
+    #         f"Calculated decode time for batch"
+    #         f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
+    #         f"of size {len(batch)}: {time_ms} ms",
+    #     )
+    #     return time_ms
 
     def log(self):
         log(

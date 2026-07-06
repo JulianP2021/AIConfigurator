@@ -52,6 +52,8 @@ class Cache:
     ssd_usage_bytes: dict[int, int]
     _access_tick: int
 
+    cost_usd: float = 0.0
+
     def __init__(
         self,
         layers: dict,
@@ -160,6 +162,16 @@ class Cache:
             s3_layer.content.append(copied)
             self._touch(copied)
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
+            self.cost_usd += (
+                float(victim_size)
+                / 1024
+                / 1024
+                / 1024
+                * self.s3_spec.S3_DOWNLOAD_COST_GB
+            )
+            self.cost_usd += (
+                self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * victim.tokens / 256 * 16
+            )
             log(
                 LOG_CACHE,
                 f"Uploaded SSD-evicted KV for request {victim.session_id} "
@@ -384,6 +396,7 @@ class Cache:
             eviction_legs.append(
                 TransferLeg(self._item_size(merged), node_id, S3_NODE_ID, "S3_UPLOAD")
             )
+
             log(
                 LOG_CACHE,
                 f"Uploaded merged KV for request {merged.session_id} from node {node_id} to S3 "
