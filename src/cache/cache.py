@@ -384,26 +384,7 @@ class Cache:
                 self.delete_item(existing)
 
         merged = CacheItem(session_id, token_start, token_end)
-        eviction_legs = self.insert_cache_item(merged, node_id)
-
-        # If S3 is enabled and this node does not already have an equivalent
-        # copy in S3, push the merged item to S3 in parallel.
-        if self.s3_spec.enabled and not self._has_s3_equivalent(merged):
-            s3_layer = self._s3_layer()
-            copied = CacheItem(merged.session_id, merged.token_start, merged.token_end)
-            s3_layer.content.append(copied)
-            self._touch(copied)
-            eviction_legs.append(
-                TransferLeg(self._item_size(merged), node_id, S3_NODE_ID, "S3_UPLOAD")
-            )
-
-            log(
-                LOG_CACHE,
-                f"Uploaded merged KV for request {merged.session_id} from node {node_id} to S3 "
-                f"({merged.tokens} tokens)",
-            )
-
-        return eviction_legs
+        return self.insert_cache_item(merged, node_id)
 
     def _find_download_segments(
         self, session_id: tuple[int, int], dest_node_id: int, required_end: int

@@ -68,11 +68,20 @@ class DecodeInstance:
     def set_scheduler(self, scheduler: BandwidthScheduler):
         self.scheduler = scheduler
 
+    def _global_time_ms(self) -> float:
+        """Return the scheduler's global time, or 0.0 if unavailable."""
+        if self.scheduler is None:
+            return 0.0
+        raw = self.scheduler.time_ms
+        return float(raw)
+
     def add_request(self, request: Request):
         assert self.cache is not None, "Cache must be set before adding requests"
         assert self.scheduler is not None, (
             "Scheduler must be set before adding requests"
         )
+        now = self._global_time_ms()
+        request.decode_download_start_ms = now
         dt = self.cache.download_kv(self.node_id, request)
         log(
             LOG_INSTANCE,
@@ -83,6 +92,10 @@ class DecodeInstance:
             self.scheduler.register(dt)
             self.download_queue.append((dt, -1))
         else:
+            request.decode_download_end_ms = now
+            request.decode_queue_start_ms = now
+            if not self.queue and not self.current_batch:
+                request.decode_start_ms = now
             self.queue.append((request, -1))
 
     def _ensure_batch(self) -> None:
@@ -91,6 +104,12 @@ class DecodeInstance:
             self.current_batch = [req for req, _ in self.queue[: self.max_batch_size]]
             self.remaining_batch_time_ms = None
             self.current_batch_decode_time_ms = None
+            now = self._global_time_ms()
+            for req in self.current_batch:
+                if req.decode_start_ms is None:
+                    req.decode_start_ms = now
+                if req.decode_queue_start_ms is None:
+                    req.decode_queue_start_ms = now
 
     def time_to_next_completion(self) -> float:
         """Return a lower-bound time until one request in the batch finishes.
@@ -126,9 +145,11 @@ class DecodeInstance:
             "Scheduler must be set before processing queue"
         )
 
+        now = self._global_time_ms()
         log(
             LOG_INSTANCE,
-            f"Processing decode queue for node {self.node_id} with time_ms: {time_ms}",
+            f"[t={now:.3f} ms] Processing decode queue for node {self.node_id} "
+            f"with time_ms: {time_ms}",
         )
 
         assert time_ms >= 0, "Time to process queue should be non-negative"
@@ -141,48 +162,27 @@ class DecodeInstance:
 
         finished_requests: list[Request] = []
 
-        # Accumulate total time for every request currently in a decode-side
-        # transfer queue. Active time is reconciled when the transfer pops.
-        for download_request, _ in self.download_queue:
-            download_request.request.decode_download_total_ms += time_ms
-        for upload_request, _ in self.upload_queue:
-            upload_request.request.decode_upload_total_ms += time_ms
-
-        # Drain transfers that the global scheduler has fully completed.  The
-        # transfer objects are shared between the instance queue and the
-        # scheduler; a finished transfer has no active leg left.
+        # Drain completed decode downloads.
         while self.download_queue and not self.download_queue[0][0].active_legs:
             download_request, _ = self.download_queue.pop(0)
             request = download_request.request
+            request.decode_download_end_ms = now
             request.decode_download_active_ms = (
                 download_request.active_transfer_duration_ms
             )
-            request.decode_download_wait_ms = (
-                request.decode_download_total_ms - request.decode_download_active_ms
-            )
-            request.kv_download_time_ms += request.decode_download_active_ms
+            request.decode_queue_start_ms = now
             self.queue.append((request, 0))
 
+        # Drain completed decode uploads.
         while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
             request = upload_request.request
+            request.decode_upload_end_ms = now
             request.decode_upload_active_ms = upload_request.active_transfer_duration_ms
-            request.decode_upload_wait_ms = (
-                request.decode_upload_total_ms - request.decode_upload_active_ms
-            )
             finished_requests.append(request)
 
         # Active decode batch
         self._ensure_batch()
-        in_batch_ids: set[int] = (
-            {id(r) for r in self.current_batch} if self.current_batch else set()
-        )
-        # Requests in the decode queue but not in the current batch are waiting.
-        for request, _ in self.queue:
-            request.decode_total_ms += time_ms
-            if id(request) not in in_batch_ids:
-                request.decode_wait_ms += time_ms
-
         finished_in_batch: list[Request] = []
         if self.current_batch:
             if self.current_batch_decode_time_ms is None:
@@ -230,23 +230,22 @@ class DecodeInstance:
                     req.decoded_tokens += stride
                 tokens_done += stride
 
-            # Apply the elapsed wall-clock time to every request's active
-            # decode time. Requests that completed a token already had their
-            # decoded_tokens incremented above.
+            # Mark requests that finished decoding in this step.
             for request in self.current_batch:
-                request.decode_time_ms += time_ms
                 if request.decoded_tokens >= request.osl:
                     log(
                         LOG_INSTANCE,
-                        f"Finishing request decode with id: {request.id} after "
-                        f"{request.decode_time_ms / 1000} seconds + process queue",
+                        f"[t={now:.3f} ms] Finishing request decode with id: "
+                        f"{request.id}",
                     )
                     finished_in_batch.append(request)
+                    request.decode_end_ms = now
                     ur = self.cache.upload_kv(self.node_id, request)
                     assert ur.active_legs, (
                         f"Decode upload for request {request.id} (user {request.user_id}, "
                         f"session {request.session_id}) on node {self.node_id} has no active legs"
                     )
+                    request.decode_upload_start_ms = now
                     self.scheduler.register(ur)
                     self.upload_queue.append((ur, 0))
 

@@ -11,6 +11,26 @@ from src.request.request import DownloadRequest, Request, TransferLeg, UploadReq
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 
 
+class FakeScheduler:
+    """Minimal scheduler that owns a mutable global clock."""
+
+    def __init__(self):
+        self._time_ms = 0.0
+
+    @property
+    def time_ms(self):
+        return self._time_ms
+
+    def advance_time(self, delta_ms: float):
+        self._time_ms += delta_ms
+
+    def register(self, transfer):
+        pass
+
+    def unregister(self, transfer):
+        pass
+
+
 @pytest.fixture
 def fake_prefill_instance():
     model = MagicMock()
@@ -32,7 +52,7 @@ def fake_prefill_instance():
     instance.cache.upload_kv.return_value = MagicMock(
         active_legs=[MagicMock()], tracks=[[MagicMock()]]
     )
-    instance.scheduler = MagicMock()
+    instance.scheduler = FakeScheduler()
     instance.session = MagicMock()
     return instance
 
@@ -61,7 +81,7 @@ def fake_decode_instance():
     instance.cache.download_kv.return_value = MagicMock(
         active_legs=[], tracks=[], remaining_bytes=0
     )
-    instance.scheduler = MagicMock()
+    instance.scheduler = FakeScheduler()
     instance.session = MagicMock()
     instance.current_batch = None
     instance.remaining_batch_time_ms = None
@@ -85,6 +105,7 @@ class TestPrefillTiming:
         self, fake_prefill_instance: PrefillInstance
     ):
         inst = fake_prefill_instance
+        scheduler = inst.scheduler
 
         with patch.object(inst, "calculate_prefill_time", return_value=10.0):
             req_a = Request(10, 5, 0)
@@ -93,15 +114,24 @@ class TestPrefillTiming:
             inst.add_request(req_b)
 
             # Both are in queue; step 3 ms with req_a at the head.
+            scheduler.advance_time(3.0)
             inst.process_queue(3.0)
-            assert req_a.prefill_time_ms == pytest.approx(3.0)
-            assert req_a.prefill_wait_ms == pytest.approx(0.0)
-            assert req_b.prefill_wait_ms == pytest.approx(3.0)
+            assert req_a.prefill_start_ms == pytest.approx(0.0)
+            assert req_a.prefill_end_ms is None
+            assert req_b.prefill_start_ms is None
+            assert req_b.prefill_queue_start_ms == pytest.approx(0.0)
 
             # Finish req_a and continue with req_b.
+            scheduler.advance_time(7.0)
             inst.process_queue(7.0)
-            assert req_a.prefill_time_ms == pytest.approx(10.0)
-            assert req_b.prefill_wait_ms == pytest.approx(10.0)
+            assert req_a.prefill_end_ms - req_a.prefill_start_ms == pytest.approx(10.0)
+            assert req_b.prefill_start_ms == pytest.approx(10.0)
+            assert req_b.prefill_end_ms is None
+
+            # Run req_b to completion.
+            scheduler.advance_time(10.0)
+            inst.process_queue(10.0)
+            assert req_b.prefill_end_ms == pytest.approx(20.0)
 
 
 class TestDecodeTiming:
@@ -109,6 +139,7 @@ class TestDecodeTiming:
         self, fake_decode_instance: DecodeInstance
     ):
         inst = fake_decode_instance
+        scheduler = inst.scheduler
         inst.max_batch_size = 2  # keep room small so new arrivals wait
 
         with patch.object(inst, "calculate_decode_time", return_value=4.0):
@@ -117,27 +148,44 @@ class TestDecodeTiming:
             inst.add_request(req_a)
             inst.add_request(req_b)
 
-            # First full token step: batch is [req_a, req_b].
+            # Freeze the batch at t=0, just like the main simulation loop does
+            # before advancing time.
+            inst.time_to_next_completion()
+            assert req_a.decode_start_ms == pytest.approx(0.0)
+            assert req_b.decode_start_ms == pytest.approx(0.0)
+            assert req_a.decode_end_ms is None
+            assert req_b.decode_end_ms is None
+
+            # First full token step: batch is [req_a, req_b]; each completes
+            # one decode token (osl=2 means two tokens total).
+            scheduler.advance_time(4.0)
             inst.process_queue(4.0)
-            assert req_a.decode_time_ms == pytest.approx(4.0)
-            assert req_a.decode_wait_ms == pytest.approx(0.0)
-            assert req_b.decode_time_ms == pytest.approx(4.0)
-            assert req_b.decode_wait_ms == pytest.approx(0.0)
+            assert req_a.decode_end_ms is None
+            assert req_b.decode_end_ms is None
 
             # Add a third request; with max_batch_size=2 it will wait while the
             # first two finish their last token.
             req_c = Request(10, 2, 0)
             inst.add_request(req_c)
+            scheduler.advance_time(4.0)
             inst.process_queue(4.0)
-            assert req_a.decode_time_ms == pytest.approx(8.0)
-            assert req_b.decode_time_ms == pytest.approx(8.0)
-            assert req_c.decode_wait_ms == pytest.approx(4.0)
-            assert req_c.decode_time_ms == pytest.approx(0.0)
+            assert req_a.decode_end_ms == pytest.approx(8.0)
+            assert req_b.decode_end_ms == pytest.approx(8.0)
+            assert req_c.decode_start_ms is None
+            assert req_c.decode_queue_start_ms == pytest.approx(4.0)
 
-            # Next step: req_a and req_b finish, req_c gets the batch.
+            # Re-form the next batch at t=8 (mimics the main simulation loop).
+            inst.time_to_next_completion()
+            assert req_c.decode_start_ms == pytest.approx(8.0)
+
+            # req_c needs two 4 ms tokens to finish (osl=2).
+            scheduler.advance_time(4.0)
             inst.process_queue(4.0)
-            assert req_c.decode_time_ms == pytest.approx(4.0)
-            assert req_c.decode_wait_ms == pytest.approx(4.0)
+            assert req_c.decode_end_ms is None
+
+            scheduler.advance_time(4.0)
+            inst.process_queue(4.0)
+            assert req_c.decode_end_ms == pytest.approx(16.0)
 
 
 class TestSchedulerCreditsProcessedTime:

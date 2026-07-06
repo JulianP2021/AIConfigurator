@@ -56,16 +56,29 @@ class PrefillInstance:
     def set_scheduler(self, scheduler: BandwidthScheduler):
         self.scheduler = scheduler
 
+    def _global_time_ms(self) -> float:
+        """Return the scheduler's global time, or 0.0 if unavailable."""
+        if self.scheduler is None:
+            return 0.0
+        raw = self.scheduler.time_ms
+        return float(raw)
+
     def add_request(self, request: Request):
         assert self.cache is not None, "Cache must be set before adding requests"
         assert self.scheduler is not None, (
             "Scheduler must be set before adding requests"
         )
+        now = self._global_time_ms()
+        request.prefill_download_start_ms = now
         dr = self.cache.download_kv(self.node_id, request)
         if dr.active_legs:
             self.scheduler.register(dr)
             self.download_queue.append((dr, -1))
         else:
+            request.prefill_download_end_ms = now
+            request.prefill_queue_start_ms = now
+            if not self.queue:
+                request.prefill_start_ms = now
             self.queue.append((request, -1))
 
     def time_to_next_completion(self) -> float:
@@ -89,82 +102,54 @@ class PrefillInstance:
         )
         assert time_ms >= 0, "Time to process queue should be non-negative"
 
+        now = self._global_time_ms()
         log(
             LOG_INSTANCE,
-            f"Processing prefill queue for node {self.node_id} with time_ms: {time_ms}",
+            f"[t={now:.3f} ms] Processing prefill queue for node {self.node_id} "
+            f"with time_ms: {time_ms}",
         )
 
         finished_requests: list[Request] = []
 
-        # Accumulate total time for every request currently in a prefill-side
-        # transfer queue.  Active time will be reconciled when the transfer is
-        # popped, leaving wait = total - active.
-        for download_request, _ in self.download_queue:
-            download_request.request.prefill_download_total_ms += time_ms
-        for upload_request, _ in self.upload_queue:
-            upload_request.request.prefill_upload_total_ms += time_ms
-
-        # Requests in the prefill compute queue but not at the head are waiting.
-        for request, _ in self.queue[1:]:
-            request.prefill_wait_ms += time_ms
-
-        # Drain transfers that the global scheduler has fully completed.  The
-        # transfer objects are shared between the instance queue and the
-        # scheduler; a finished transfer has no active leg left.
+        # Drain completed prefill downloads. The scheduler already advanced the
+        # transfer; we just record the end timestamp and active duration.
         while self.download_queue and not self.download_queue[0][0].active_legs:
             download_request, _ = self.download_queue.pop(0)
             request = download_request.request
+            request.prefill_download_end_ms = now
             request.prefill_download_active_ms = (
                 download_request.active_transfer_duration_ms
             )
-            request.prefill_download_wait_ms = (
-                request.prefill_download_total_ms - request.prefill_download_active_ms
-            )
+            request.prefill_queue_start_ms = now
             self.queue.append((request, 0))
 
+        # Drain completed prefill uploads.
         while self.upload_queue and not self.upload_queue[0][0].active_legs:
             upload_request, _ = self.upload_queue.pop(0)
             request = upload_request.request
+            request.prefill_upload_end_ms = now
             request.prefill_upload_active_ms = (
                 upload_request.active_transfer_duration_ms
             )
-            request.prefill_upload_wait_ms = (
-                request.prefill_upload_total_ms - request.prefill_upload_active_ms
-            )
-            # Keep backward-compatible totals.
-            request.kv_upload_time_ms += request.prefill_upload_active_ms
-            finished_requests.append(request)
-
-        # Also handle the case where the head upload finished in the same step
-        # that the prefill itself finished.  In that situation the upload
-        # object is still at the head of upload_queue and has no active leg.
-        while self.upload_queue and not self.upload_queue[0][0].active_legs:
-            upload_request, _ = self.upload_queue.pop(0)
-            request = upload_request.request
-            request.prefill_upload_active_ms = (
-                upload_request.active_transfer_duration_ms
-            )
-            request.prefill_upload_wait_ms = (
-                request.prefill_upload_total_ms - request.prefill_upload_active_ms
-            )
-            request.kv_upload_time_ms += request.prefill_upload_active_ms
             finished_requests.append(request)
 
         # Active prefill
         if self.queue:
             request, _ = self.queue[0]
+            if request.prefill_start_ms is None:
+                request.prefill_start_ms = now
             if request.remaining_prefill_time_ms == -1:
                 request.remaining_prefill_time_ms = self.calculate_prefill_time(request)
-            request.prefill_time_ms += time_ms
             request.remaining_prefill_time_ms -= time_ms
             if request.remaining_prefill_time_ms <= 0:
                 request.remaining_prefill_time_ms = 0
                 request.prefilled_tokens += request.remaining_tokens_prefill
                 request.decoded_tokens = 1
+                request.prefill_end_ms = now
                 log(
                     LOG_INSTANCE,
-                    f"Finished prefill for request with id: {request.id} after "
-                    f"{request.prefill_time_ms / 1000} seconds + process queue",
+                    f"[t={now:.3f} ms] Finished prefill for request with id: "
+                    f"{request.id}",
                 )
                 self.queue.pop(0)
                 ur = self.cache.upload_kv(self.node_id, request)
@@ -172,8 +157,13 @@ class PrefillInstance:
                     f"Prefill upload for request {request.id} (user {request.user_id}, "
                     f"session {request.session_id}) on node {self.node_id} has no active legs"
                 )
+                request.prefill_upload_start_ms = now
                 self.scheduler.register(ur)
                 self.upload_queue.append((ur, 0))
+
+                # The next request in line (if any) starts prefill service now.
+                if self.queue:
+                    self.queue[0][0].prefill_start_ms = now
 
         return finished_requests
 

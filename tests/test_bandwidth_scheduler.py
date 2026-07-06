@@ -188,6 +188,6 @@ class TestBandwidthScheduler:
         scheduler.register(ur_b)
 
         scheduler.advance_time(50.0)
-        # Equal share of 25 Gbps -> each gets half.
-        expected_ms = 1_000_000_000 / (s3_spec.up_bw_bytes_per_s / 2 / 1000.0)
+        # S3 uploads use the full uplink bandwidth for each transfer.
+        expected_ms = 1_000_000_000 / (s3_spec.up_bw_bytes_per_s / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)

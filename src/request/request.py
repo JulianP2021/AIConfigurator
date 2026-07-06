@@ -1,7 +1,6 @@
 import random
 
 from dataclasses import dataclass
-from functools import cached_property
 from typing import ClassVar
 
 
@@ -150,37 +149,40 @@ class Request:
     decoded_tokens: int = 0
     remaining_prefill_time_ms: float = -1
 
-    prefill_time_ms: float = 0
-    decode_time_ms: float = 0
+    # Event timestamps for each phase, all driven by the global simulation clock.
+    prefill_queue_start_ms: float | None = None
+    prefill_start_ms: float | None = None
+    prefill_end_ms: float | None = None
 
-    kv_download_time_ms: float = 0
-    kv_upload_time_ms: float = 0
+    prefill_download_start_ms: float | None = None
+    prefill_download_end_ms: float | None = None
 
-    # Phase-level timing (active / wait / total) for detailed analytics.
-    # Active time is compute or scheduler-processed transfer time. Wait time is
-    # queueing time before that phase becomes active. Total = active + wait.
-    prefill_wait_ms: float = 0.0
+    prefill_upload_start_ms: float | None = None
+    prefill_upload_end_ms: float | None = None
 
-    prefill_download_total_ms: float = 0.0
+    decode_queue_start_ms: float | None = None
+    decode_start_ms: float | None = None
+    decode_end_ms: float | None = None
+
+    decode_download_start_ms: float | None = None
+    decode_download_end_ms: float | None = None
+
+    decode_upload_start_ms: float | None = None
+    decode_upload_end_ms: float | None = None
+
+    # Scheduler-reported active transfer durations for each phase.
     prefill_download_active_ms: float = 0.0
-    prefill_download_wait_ms: float = 0.0
-
-    prefill_upload_total_ms: float = 0.0
     prefill_upload_active_ms: float = 0.0
-    prefill_upload_wait_ms: float = 0.0
-
-    decode_download_total_ms: float = 0.0
     decode_download_active_ms: float = 0.0
-    decode_download_wait_ms: float = 0.0
-
-    decode_total_ms: float = 0.0
-    decode_wait_ms: float = 0.0
-
-    decode_upload_total_ms: float = 0.0
     decode_upload_active_ms: float = 0.0
-    decode_upload_wait_ms: float = 0.0
 
-    # Derived user-facing metrics
+    # Derived user-facing metrics (computed once at simulation end).
+    prefill_time_ms: float = 0.0
+    prefill_wait_ms: float = 0.0
+    decode_time_ms: float = 0.0
+    decode_wait_ms: float = 0.0
+    kv_download_time_ms: float = 0.0
+    kv_upload_time_ms: float = 0.0
     clean_ttft_ms: float = 0.0
     wait_inclusive_ttft_ms: float = 0.0
     clean_latency_ms: float = 0.0
@@ -209,15 +211,15 @@ class Request:
             "Prefilled tokens must be less than or equal to ISL"
         )
 
-    @cached_property
+    @property
     def cache_length(self):
         return self.prefilled_tokens + self.decoded_tokens
 
-    @cached_property
+    @property
     def remaining_tokens_prefill(self):
         return self.isl - self.prefilled_tokens
 
-    @cached_property
+    @property
     def remaining_tokens_decode(self):
         return self.osl - self.decoded_tokens
 

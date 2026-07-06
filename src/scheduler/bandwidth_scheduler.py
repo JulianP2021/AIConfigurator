@@ -134,16 +134,10 @@ class BandwidthScheduler:
                     )
                     leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 1000.0
                 elif leg.bottleneck == "S3_UPLOAD":
-                    leg.bandwidth_bytes_per_ms = (
-                        self.s3_spec.up_bw_bytes_per_s
-                        / max(s3_upload_count, 1)
-                        / 1000.0
-                    )
+                    leg.bandwidth_bytes_per_ms = self.s3_spec.up_bw_bytes_per_s / 1000.0
                 elif leg.bottleneck == "S3_DOWNLOAD":
                     leg.bandwidth_bytes_per_ms = (
-                        self.s3_spec.down_bw_bytes_per_s
-                        / max(s3_download_count, 1)
-                        / 1000.0
+                        self.s3_spec.down_bw_bytes_per_s / 1000.0
                     )
 
     def next_event_ms(self) -> float:

@@ -66,9 +66,6 @@ def simulate_run_distributed(
         req_rate=scenario.requests.req_s,
         max_session_turns=scenario.requests.max_session_turns,
     )
-    wall_time_ms = 0
-    drain_time_ms = 0
-
     finished_requests: list[Request] = []
     current_requests: list[Request] = []
     num_reqs = 0
@@ -79,7 +76,6 @@ def simulate_run_distributed(
     ):
         if num_reqs < scenario.requests.total_requests:
             time_till_next_ms = int(request_generator.time_till_next_request() * 1000)
-            wall_time_ms += time_till_next_ms
         else:
             time_till_next_ms = float("inf")
 
@@ -101,20 +97,38 @@ def simulate_run_distributed(
             )
 
             # If there are no more compute or transfer events before the next
-            # request arrival, stop the inner loop immediately without advancing
-            # time.
+            # request arrival, jump the global clock to the arrival time and
+            # stop the inner loop.
             if time_to_next_completion == float("inf"):
+                remaining_to_arrival = time_till_next_ms - passed_time
+                if remaining_to_arrival > 0 and remaining_to_arrival != float("inf"):
+                    scheduler.advance_time(remaining_to_arrival)
+                passed_time = time_till_next_ms
                 break
 
-            # Guard against zero-length steps that could stall the loop.
+            # Zero-length events can occur when a transfer/compute finishes
+            # exactly at the current wall-clock time.  Process them immediately
+            # without advancing the clock or logging a bogus 0 ms step.
             if time_to_next_completion <= 0:
-                time_to_next_completion = 1e-9
+                for instance in prefill_instances:
+                    prefilled_requests.extend(instance.process_queue(0))
+                for instance in decode_instances:
+                    decoded_requests = instance.process_queue(0)
+                    finished_requests.extend(decoded_requests)
+                    current_requests = [
+                        r for r in current_requests if r not in decoded_requests
+                    ]
+                router.queue.extend(prefilled_requests)
+                prefilled_requests = []
+                router.route_requests()
+                continue
 
             log(
                 LOG_SIMULATION,
                 f"Time to next completion: {time_to_next_completion} ms, "
                 f"passed time: {passed_time} ms, "
                 f"time till next request: {time_till_next_ms} ms, "
+                f"global_time={scheduler.time_ms:.3f} ms, "
                 f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
             )
 
@@ -150,15 +164,7 @@ def simulate_run_distributed(
             prefilled_requests = []
             router.route_requests()
 
-            # If there are no more compute or transfer events before the next
-            # request arrival, we can stop the inner loop early.
-            if time_to_next_completion == float("inf"):
-                break
-
-        if (
-            num_reqs < scenario.requests.total_requests
-            and time_till_next_ms == time_to_next_completion
-        ):
+        if num_reqs < scenario.requests.total_requests:
             new_request = request_generator.generate_request(
                 scenario.requests, current_requests, finished_requests
             )
@@ -168,10 +174,11 @@ def simulate_run_distributed(
 
             log(
                 LOG_SIMULATION,
-                f"Generated new request with id: {new_request.id} after {wall_time_ms / 1000} seconds, user_id: {new_request.user_id}, isl: {new_request.isl}, osl: {new_request.osl}, cached: {new_request.prefilled_tokens}",
+                f"Generated new request with id: {new_request.id} at "
+                f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
+                f"isl: {new_request.isl}, osl: {new_request.osl}, "
+                f"cached: {new_request.prefilled_tokens}",
             )
-        else:
-            drain_time_ms += passed_time
 
     log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
 
@@ -211,6 +218,7 @@ def simulate_run_distributed(
         log(
             LOG_SIMULATION,
             f"Drain step: time to next completion {time_to_next_completion} ms, "
+            f"global_time={scheduler.time_ms:.3f} ms, "
             f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
         )
 
@@ -223,11 +231,11 @@ def simulate_run_distributed(
             current_requests = [
                 r for r in current_requests if r not in decoded_requests
             ]
-        drain_time_ms += time_to_next_completion
 
     assert len(finished_requests) == scenario.requests.total_requests
 
-    wall_time_ms += drain_time_ms
+    # Total elapsed wall-clock time is now owned by the global scheduler clock.
+    wall_time_ms = scheduler.time_ms
     total_time_s = wall_time_ms / 1000.0
 
     # Per-request stats
@@ -257,25 +265,67 @@ def simulate_run_distributed(
     total_decode_time_ms = 0.0
     total_prefill_time_ms = 0.0
 
+    def _duration(start_ms: float | None, end_ms: float | None) -> float:
+        if start_ms is None or end_ms is None:
+            return 0.0
+        return max(0.0, end_ms - start_ms)
+
     for req in finished_requests:
-        # Derived clean/wait-inclusive metrics.
-        req.clean_ttft_ms = float(
+        # Derive all phase timings from global-clock event timestamps.
+        req.prefill_time_ms = _duration(req.prefill_start_ms, req.prefill_end_ms)
+        req.prefill_wait_ms = _duration(
+            req.prefill_queue_start_ms, req.prefill_start_ms
+        )
+
+        req.prefill_download_wait_ms = max(
+            0.0,
+            _duration(req.prefill_download_start_ms, req.prefill_download_end_ms)
+            - req.prefill_download_active_ms,
+        )
+        req.prefill_upload_wait_ms = max(
+            0.0,
+            _duration(req.prefill_upload_start_ms, req.prefill_upload_end_ms)
+            - req.prefill_upload_active_ms,
+        )
+
+        req.decode_time_ms = _duration(req.decode_start_ms, req.decode_end_ms)
+        req.decode_wait_ms = _duration(req.decode_queue_start_ms, req.decode_start_ms)
+
+        req.decode_download_wait_ms = max(
+            0.0,
+            _duration(req.decode_download_start_ms, req.decode_download_end_ms)
+            - req.decode_download_active_ms,
+        )
+        req.decode_upload_wait_ms = max(
+            0.0,
+            _duration(req.decode_upload_start_ms, req.decode_upload_end_ms)
+            - req.decode_upload_active_ms,
+        )
+
+        req.kv_download_time_ms = (
+            req.prefill_download_active_ms + req.decode_download_active_ms
+        )
+        req.kv_upload_time_ms = (
+            req.prefill_upload_active_ms + req.decode_upload_active_ms
+        )
+
+        req.clean_ttft_ms = (
             req.prefill_time_ms
             + req.prefill_download_active_ms
             + req.prefill_upload_active_ms
             + req.decode_download_active_ms
         )
-        req.wait_inclusive_ttft_ms = float(
+        req.wait_inclusive_ttft_ms = (
             req.clean_ttft_ms
             + req.prefill_wait_ms
             + req.prefill_download_wait_ms
             + req.prefill_upload_wait_ms
             + req.decode_download_wait_ms
         )
-        req.clean_latency_ms = float(req.clean_ttft_ms + req.decode_time_ms)
-        req.wait_inclusive_latency_ms = float(req.clean_latency_ms + req.decode_wait_ms)
+        req.clean_latency_ms = req.clean_ttft_ms + req.decode_time_ms
+        req.wait_inclusive_latency_ms = req.clean_latency_ms + req.decode_wait_ms
 
-        # Backward-compatible total-style TTFT / latency (wait-inclusive).
+        # Reported TTFT/latency include waiting time.
         ttft_val = req.wait_inclusive_ttft_ms
         latency_val = req.wait_inclusive_latency_ms
 
