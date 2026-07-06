@@ -214,10 +214,7 @@ class DecodeInstance:
                 remaining_tokens = min(
                     r.osl - r.decoded_tokens for r in self.current_batch
                 )
-                if (
-                    old_decode_time is not None
-                    and abs(next_decode_time - old_decode_time) < 1e-9
-                ):
+                if old_decode_time and abs(next_decode_time - old_decode_time) < 1e-9:
                     stride = int(-self.remaining_batch_time_ms / next_decode_time) + 1
                     stride = min(32, remaining_tokens, max(1, stride))
                     # Charge all strided tokens at the stable per-token rate.
