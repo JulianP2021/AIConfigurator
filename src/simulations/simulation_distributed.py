@@ -504,6 +504,9 @@ def simulate_run_distributed(
         for node in scenario.nodes
     )
 
+    # Cache usage summary at simulation end
+    cache_usage = cache.usage_summary()
+
     # Pricing (hourly rate only)
     total_price_per_hour = (
         sum(node.hardware.spec.dph_base for node in scenario.nodes)
@@ -532,6 +535,11 @@ def simulate_run_distributed(
         seq_per_second=sequence_per_second,
         concurrency=batch_size,
         memory_gb=0,
+        ram_cache_usage_bytes=cache_usage["ram_usage_bytes"],
+        ssd_cache_usage_bytes=cache_usage["ssd_usage_bytes"],
+        s3_cache_usage_bytes=cache_usage["s3_usage_bytes"],
+        ram_cache_capacity_bytes=cache_usage["ram_capacity_bytes"],
+        ssd_cache_capacity_bytes=cache_usage["ssd_capacity_bytes"],
         price_usd_per_hour=total_price_per_hour,
         per_request_stats=per_request_stats,
         avg_prefill_time_ms=avg_prefill_time,
@@ -612,6 +620,13 @@ def simulate_run_distributed(
     print(f"  concurrency:          {result.concurrency:.1f}")
     print(f"{'-' * 60}")
     print(f"  Memory (peak):        {result.memory_gb:.2f} GB")
+    print(
+        f"  RAM cache usage:      {result.ram_cache_usage_bytes:,.0f} / {result.ram_cache_capacity_bytes:,.0f} bytes"
+    )
+    print(
+        f"  SSD cache usage:      {result.ssd_cache_usage_bytes:,.0f} / {result.ssd_cache_capacity_bytes:,.0f} bytes"
+    )
+    print(f"  S3 cache usage:       {result.s3_cache_usage_bytes:,.0f} bytes")
     print(f"{'-' * 60}")
     print(f"  Price/hour:           ${result.price_usd_per_hour:.4f}")
     print(f"{'=' * 60}\n")

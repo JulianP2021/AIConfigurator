@@ -51,9 +51,7 @@ class HardwareSpec:
     cpu_ghz: float
     cpu_name: str
     cpu_ram: int
-    disk_bw: float
     disk_name: str
-    disk_space: float
     dlperf: float
     dlperf_per_dphtotal: float
     dph_base: float

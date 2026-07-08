@@ -36,9 +36,7 @@ def _tiny_hardware() -> Hardware:
         cpu_ghz=1.0,
         cpu_name="test",
         cpu_ram=1_000_000_000,
-        disk_bw=1.0,
         disk_name="test",
-        disk_space=1.0,
         dlperf=1.0,
         dlperf_per_dphtotal=1.0,
         dph_base=1.0,
@@ -139,6 +137,9 @@ def test_no_sla_does_not_raise():
     result = simulate_run_distributed(scenario, should_print=False)
     assert result is not None
     assert len(result.per_request_stats) == 2
+    assert result.ram_cache_usage_bytes >= 0
+    assert result.ssd_cache_usage_bytes >= 0
+    assert result.s3_cache_usage_bytes >= 0
 
 
 def test_inf_sla_does_not_raise():
@@ -150,6 +151,8 @@ def test_inf_sla_does_not_raise():
     )
     assert result is not None
     assert len(result.per_request_stats) == 2
+    assert result.ram_cache_capacity_bytes > 0
+    assert result.ssd_cache_capacity_bytes > 0
 
 
 def test_ttft_sla_violation_raises():

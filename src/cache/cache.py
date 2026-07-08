@@ -129,6 +129,45 @@ class Cache:
     def _s3_layer(self) -> CacheLayer:
         return self.get_layer(S3_NODE_ID, "S3")
 
+    def usage_summary(self) -> dict[str, int]:
+        """Return aggregate cache usage across all nodes/tiers.
+
+        Keys:
+            ram_usage_bytes, ssd_usage_bytes, s3_usage_bytes,
+            ram_capacity_bytes, ssd_capacity_bytes
+        """
+        ram_usage = sum(
+            self._item_size(item)
+            for node_id, layers in self.layers.items()
+            if node_id != S3_NODE_ID
+            for layer in layers
+            if layer.name == "RAM"
+            for item in layer.content
+        )
+        ssd_usage = sum(
+            self._item_size(item)
+            for node_id, layers in self.layers.items()
+            if node_id != S3_NODE_ID
+            for layer in layers
+            if layer.name == "SSD"
+            for item in layer.content
+        )
+        s3_usage = sum(
+            self._item_size(item)
+            for layer in self.layers.get(S3_NODE_ID, [])
+            if layer.name == "S3"
+            for item in layer.content
+        )
+        ram_capacity = sum(self.ram_capacity_bytes.values())
+        ssd_capacity = sum(self.ssd_capacity_bytes.values())
+        return {
+            "ram_usage_bytes": ram_usage,
+            "ssd_usage_bytes": ssd_usage,
+            "s3_usage_bytes": s3_usage,
+            "ram_capacity_bytes": ram_capacity,
+            "ssd_capacity_bytes": ssd_capacity,
+        }
+
     def _has_s3_equivalent(self, item: CacheItem) -> bool:
         """Return True if an equivalent item already exists in the shared S3 layer."""
         if not self.s3_spec.enabled:

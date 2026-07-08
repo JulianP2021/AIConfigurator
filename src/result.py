@@ -42,6 +42,13 @@ class SimulationResult:
     # Pricing
     price_usd_per_hour: float
 
+    # Cache usage statistics (bytes)
+    ram_cache_usage_bytes: float = 0.0
+    ssd_cache_usage_bytes: float = 0.0
+    s3_cache_usage_bytes: float = 0.0
+    ram_cache_capacity_bytes: float = 0.0
+    ssd_cache_capacity_bytes: float = 0.0
+
     # Raw per-request data for deeper analysis
     per_request_stats: list[dict[str, Any]] = field(default_factory=list)
 
@@ -85,6 +92,11 @@ class SimulationResult:
             "tokens_per_second_per_user": round(self.tokens_per_second_per_user, 2),
             "seq/s": round(self.seq_per_second, 3),
             "memory_gb": round(self.memory_gb, 2),
+            "ram_cache_usage_bytes": round(self.ram_cache_usage_bytes, 0),
+            "ssd_cache_usage_bytes": round(self.ssd_cache_usage_bytes, 0),
+            "s3_cache_usage_bytes": round(self.s3_cache_usage_bytes, 0),
+            "ram_cache_capacity_bytes": round(self.ram_cache_capacity_bytes, 0),
+            "ssd_cache_capacity_bytes": round(self.ssd_cache_capacity_bytes, 0),
             "price_usd_per_hour": round(self.price_usd_per_hour, 4),
             "num_requests": len(self.per_request_stats),
             "avg_prefill_time_ms": round(self.avg_prefill_time_ms, 3),
