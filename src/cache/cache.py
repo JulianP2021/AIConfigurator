@@ -346,6 +346,21 @@ class Cache:
                     return layer
         return None
 
+    def cached_prefix_on_node(self, session_id: tuple[int, int], node_id: int) -> int:
+        """Return the longest contiguous cached prefix length on ``node_id``.
+
+        This is a read-only helper used by the router for locality-aware cost
+        scoring.  It does not mutate cache state.
+        """
+        items = [
+            item
+            for item in self._find_all_items(session_id)
+            if (layer := self.find_cache_layer(item)) is not None
+            and layer.node_id == node_id
+        ]
+        prefix = self._contiguous_prefix(items)
+        return prefix[-1].token_end if prefix else 0
+
     def delete_item(self, item: CacheItem):
         layer = self.find_cache_layer(item)
         if layer:
@@ -636,6 +651,7 @@ class Cache:
             if track:
                 tracks.append(track)
 
+        request.prefilled_tokens = effective_end
         log(
             LOG_CACHE,
             f"Downloading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "

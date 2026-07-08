@@ -32,6 +32,7 @@ from src.logger import set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.result import SimulationResult
+from src.router.router import RouterCostConfig
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
@@ -168,6 +169,12 @@ def _run_single_config(
     s3_enabled: bool,
     s3_up_bw_gbps: float,
     s3_down_bw_gbps: float,
+    router_prefill_load_scale: float,
+    router_device_credit: float,
+    router_remote_ram_credit: float,
+    router_ssd_credit: float,
+    router_s3_credit: float,
+    router_busy_threshold_tokens: float,
     colocated: bool = False,
 ) -> SimulationResult | None:
     nodes = _build_nodes(
@@ -205,6 +212,14 @@ def _run_single_config(
         up_gbps=s3_up_bw_gbps,
         down_gbps=s3_down_bw_gbps,
     )
+    router_cost_config = RouterCostConfig(
+        prefill_load_scale=router_prefill_load_scale,
+        device_credit=router_device_credit,
+        remote_ram_credit=router_remote_ram_credit,
+        ssd_credit=router_ssd_credit,
+        s3_credit=router_s3_credit,
+        busy_threshold_tokens=router_busy_threshold_tokens,
+    )
     with io.StringIO() as buf, redirect_stdout(buf):
         try:
             print(f"Simulating scenario: {scenario}")
@@ -214,6 +229,7 @@ def _run_single_config(
                 ram_usage_fraction=ram_usage_fraction,
                 ssd_usage_fraction=ssd_usage_fraction,
                 s3_spec=s3_spec,
+                router_cost_config=router_cost_config,
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")
@@ -604,6 +620,12 @@ async def simulate(
     s3_enabled: str = Form("true" if _env.s3_enabled else "false"),
     s3_up_bw_gbps: float = Form(_env.s3_up_bw_gbps),
     s3_down_bw_gbps: float = Form(_env.s3_down_bw_gbps),
+    router_prefill_load_scale: float = Form(_env.router_prefill_load_scale),
+    router_device_credit: float = Form(_env.router_device_credit),
+    router_remote_ram_credit: float = Form(_env.router_remote_ram_credit),
+    router_ssd_credit: float = Form(_env.router_ssd_credit),
+    router_s3_credit: float = Form(_env.router_s3_credit),
+    router_busy_threshold_tokens: float = Form(_env.router_busy_threshold_tokens),
     xhr: str = Form("0"),
 ):
     try:
@@ -642,6 +664,12 @@ async def simulate(
             "s3_enabled": s3_on,
             "s3_up_bw_gbps": s3_up_bw_gbps,
             "s3_down_bw_gbps": s3_down_bw_gbps,
+            "router_prefill_load_scale": router_prefill_load_scale,
+            "router_device_credit": router_device_credit,
+            "router_remote_ram_credit": router_remote_ram_credit,
+            "router_ssd_credit": router_ssd_credit,
+            "router_s3_credit": router_s3_credit,
+            "router_busy_threshold_tokens": router_busy_threshold_tokens,
         }
 
         config_kwargs: list[dict[str, object]] = []

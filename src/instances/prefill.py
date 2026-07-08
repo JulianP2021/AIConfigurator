@@ -1,11 +1,13 @@
 from typing import Any
 
+from src.cache.cache import Cache
+
 # from src.aiconfigurator_lib.estimator import (
 #     build_session,
 #     get_meta,
 #     run_static_inference,
 # )
-from src.cache.cache import Cache
+from src.eroors.errors import PrefillError
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log
 from src.model.model import Model
@@ -95,7 +97,11 @@ class PrefillInstance:
         return float("inf")
 
     def process_queue(self, time_ms: float) -> list[Request]:
-        assert len(self.queue) < 100, "Too many requests in prefill queue"
+        if len(self.queue) >= 10:
+            raise PrefillError(
+                f"Too many requests in prefill queue for node {self.node_id}: "
+                f"{len(self.queue)} requests"
+            )
         assert self.cache is not None, "Cache must be set before processing queue"
         assert self.scheduler is not None, (
             "Scheduler must be set before processing queue"

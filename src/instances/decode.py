@@ -1,11 +1,13 @@
 from typing import Any
 
+from src.cache.cache import Cache
+
 # from src.aiconfigurator_lib.estimator import (
 #     build_session,
 #     get_meta,
 #     run_static_inference,
 # )
-from src.cache.cache import Cache
+from src.eroors.errors import DecodeError
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log
 from src.model.model import Model
@@ -156,9 +158,12 @@ class DecodeInstance:
         kv_cache = 0
         for req, _ in self.queue:
             kv_cache += self.model.kv_size_per_token * req.cache_length
-        assert kv_cache <= self.hardware.gpu_mem, (
-            "KV cache exceeds GPU memory, too many requests in decode queue"
-        )
+
+        if kv_cache > self.hardware.gpu_mem:
+            raise DecodeError(
+                f"KV cache exceeds GPU memory for node {self.node_id}: "
+                f"{kv_cache} bytes used, {self.hardware.gpu_mem} bytes available"
+            )
 
         finished_requests: list[Request] = []
 

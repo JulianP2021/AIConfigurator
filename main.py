@@ -20,6 +20,7 @@ from src.hardware.scraper import fetch_machine_hardware
 from src.logger import set_debug, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
+from src.router.router import RouterCostConfig
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
@@ -61,30 +62,77 @@ def main():
         max_output_tokens=args.osl,
     )
 
-    hardware = fetch_machine_hardware("H200 x1 #8a0e41af")
+    hardware = fetch_machine_hardware(args.machine_hardware)
     assert type(hardware) is Hardware, (
         f"Expected Hardware instance, got {type(hardware)}"
     )
-    assert hardware is not None, "Failed to fetch hardware for H200 x1 #8a0e41af"
+    assert hardware is not None, f"Failed to fetch hardware for {args.machine_hardware}"
+
+    total_gpus = hardware.spec.num_gpus
+    prefill_split_explicit = args.prefill_gpus_per_node >= 0
+    prefill_gpus_per_node = (
+        args.prefill_gpus_per_node if prefill_split_explicit else args.prefill_workers
+    )
+
+    nodes: list[Node] = []
+    if args.colocated:
+        if prefill_gpus_per_node >= total_gpus:
+            raise ValueError(
+                f"--prefill-gpus-per-node ({prefill_gpus_per_node}) must be "
+                f"less than total GPUs per node ({total_gpus}) in colocated mode."
+            )
+        decode_gpus_per_node = total_gpus - prefill_gpus_per_node
+        for _ in range(args.num_prefill_nodes):
+            nodes.append(
+                Node(
+                    hardware=hardware,
+                    model_name=args.model,
+                    batch_size=args.batch_size,
+                    prefill_instances=prefill_gpus_per_node,
+                    decode_instances=decode_gpus_per_node,
+                )
+            )
+        print(
+            f"Colocated mode: {args.num_prefill_nodes} node(s), each with "
+            f"{prefill_gpus_per_node} prefill + {decode_gpus_per_node} decode GPU(s)."
+        )
+    else:
+        # Non-colocated nodes dedicate all GPUs to their single role, unless
+        # the user explicitly set --prefill-gpus-per-node.
+        prefill_instances_per_node = (
+            prefill_gpus_per_node if prefill_split_explicit else total_gpus
+        )
+        decode_instances_per_node = total_gpus
+        for _ in range(args.num_prefill_nodes):
+            nodes.append(
+                Node(
+                    hardware=hardware,
+                    model_name=args.model,
+                    batch_size=args.batch_size,
+                    prefill_instances=prefill_instances_per_node,
+                    decode_instances=0,
+                )
+            )
+        for _ in range(args.num_decode_nodes):
+            nodes.append(
+                Node(
+                    hardware=hardware,
+                    model_name=args.model,
+                    batch_size=args.batch_size,
+                    prefill_instances=0,
+                    decode_instances=decode_instances_per_node,
+                )
+            )
+        print(
+            f"Non-colocated mode: {args.num_prefill_nodes} prefill-only node(s) "
+            f"({prefill_instances_per_node} GPU(s) each), "
+            f"{args.num_decode_nodes} decode-only node(s) "
+            f"({decode_instances_per_node} GPU(s) each)."
+        )
 
     scenario = DistributedScenario(
         name="cli_run",
-        nodes=[
-            Node(
-                hardware=hardware,
-                model_name=args.model,
-                batch_size=args.batch_size,
-                prefill_instances=args.prefill_workers,
-                decode_instances=0,
-            ),
-            Node(
-                hardware=hardware,
-                model_name=args.model,
-                batch_size=args.batch_size,
-                prefill_instances=0,
-                decode_instances=args.decode_workers,
-            ),
-        ],
+        nodes=nodes,
         requests=RequestScenario(
             token_distribution=token_dist,
             total_requests=args.requests,
@@ -101,11 +149,21 @@ def main():
         down_gbps=args.s3_down_bw_gbps,
     )
 
+    router_cost_config = RouterCostConfig(
+        prefill_load_scale=args.router_prefill_load_scale,
+        device_credit=args.router_device_credit,
+        remote_ram_credit=args.router_remote_ram_credit,
+        ssd_credit=args.router_ssd_credit,
+        s3_credit=args.router_s3_credit,
+        busy_threshold_tokens=args.router_busy_threshold_tokens,
+    )
+
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=args.ram_usage_fraction,
         ssd_usage_fraction=args.ssd_usage_fraction,
         s3_spec=s3_spec,
+        router_cost_config=router_cost_config,
     )
 
     # Print compact JSON for piping

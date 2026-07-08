@@ -144,7 +144,6 @@ class DownloadRequest(_MultiTrackTransfer):
 class Request:
     isl: int
     osl: int
-    prefix: int
     prefilled_tokens: int
     decoded_tokens: int = 0
     remaining_prefill_time_ms: float = -1
@@ -192,14 +191,11 @@ class Request:
     user_id: int
     session_id: int
 
-    def __init__(
-        self, isl: int, osl: int, cached: int, user_id: int = -1, session_id: int = -1
-    ):
+    def __init__(self, isl: int, osl: int, user_id: int = -1, session_id: int = -1):
         global request_id_counter
         self.isl = isl
         self.osl = osl
-        self.prefix = cached
-        self.prefilled_tokens = cached
+        self.prefilled_tokens = 0
         self.id = request_id_counter
         self.user_id = user_id
         self.session_id = session_id
@@ -349,13 +345,9 @@ class RequestGenerator:
             request_scenario.token_distribution.max_output_tokens,
         )
 
-        # All prior session tokens are considered prefetched from cache.
-        cached = min_input_tokens
-
         return Request(
             isl=input_tokens,
             osl=output_tokens,
-            cached=cached,
             user_id=user_id,
             session_id=session_id,
         )

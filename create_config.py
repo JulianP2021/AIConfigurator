@@ -52,7 +52,7 @@ if __name__ == "__main__":
     colocation_configs: list[dict[str, str]] = []
     single_node_configs: list[dict[str, str]] = []
 
-    for prefill_machine_name, prefill_machine in possible_machines:
+    for prefill_machine_name, prefill_machine in sorted_possible_machines:
         for prefill_nodes in [1, 2, 4, 8]:
             for batch_size in [64, 128]:
                 for prefill_gpus_per_node in [6, 4]:
@@ -75,27 +75,27 @@ if __name__ == "__main__":
                         },
                     )
 
-        # for decode_machine_name, _ in possible_machines:
-        #     for prefill_nodes in [1, 2, 4, 8]:
-        #         for decode_nodes in [1, 2, 4, 8]:
-        #             for batch_size in [64, 128]:
-        #                 single_node_configs.append(
-        #                     {
-        #                         "colocated": "false",
-        #                         "prefill_hardware": prefill_machine_name,
-        #                         "decode_hardware": decode_machine_name,
-        #                         "prefill_nodes": str(prefill_nodes),
-        #                         "decode_nodes": str(decode_nodes),
-        #                         "batch_size": str(batch_size),
-        #                         "label": f"Single Node: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
-        #                     },
-        #                 )
+        for decode_machine_name, _ in sorted_possible_machines:
+            for prefill_nodes in [1, 2, 4, 8]:
+                for decode_nodes in [1, 2, 4, 8]:
+                    for batch_size in [64, 128]:
+                        single_node_configs.append(
+                            {
+                                "colocated": "false",
+                                "prefill_hardware": prefill_machine_name,
+                                "decode_hardware": decode_machine_name,
+                                "prefill_nodes": str(prefill_nodes),
+                                "decode_nodes": str(decode_nodes),
+                                "batch_size": str(batch_size),
+                                "label": f"Single Node: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
+                            },
+                        )
 
     print(
         f"Generated {len(colocation_configs)} colocation configs and {len(single_node_configs)} single node configs."
     )
 
-    config["configs"] = colocation_configs
+    config["configs"] = colocation_configs + single_node_configs
 
     with Path(args.config_name).open("w", encoding="utf-8") as f:
         import json

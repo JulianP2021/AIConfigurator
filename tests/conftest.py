@@ -153,7 +153,8 @@ def request_factory() -> Generator:
     def make(
         isl: int = 128, osl: int = 8, cached: int = 0, user_id: int = 0
     ) -> Request:
-        req = Request(isl=isl, osl=osl, cached=cached, user_id=user_id)
+        req = Request(isl=isl, osl=osl, user_id=user_id)
+        req.prefilled_tokens = cached
         # Resetting the global counter after each request is not safe, so we
         # just leave ids increasing across the test.
         counter["value"] += 1

@@ -66,3 +66,31 @@ def calculate_memory(model: Model, batch: list[Request], mode: str) -> int:
             model, tokens_to_process, request.cache_length
         )
     return total_memory
+
+
+def get_shape(lst, shape=()):
+    """Returns the shape of nested lists similarly to numpy's shape.
+
+    :param lst: the nested list
+    :param shape: the shape up to the current recursion depth
+    :return: the shape including the current depth
+            (finally this will be the full depth)
+    """
+    if not isinstance(lst, list):
+        # base case
+        return shape
+
+    # peek ahead and assure all lists in the next depth
+    # have the same length
+    if len(lst) == 0:
+        return (*shape, 0)
+    if isinstance(lst[0], list):
+        len_item_0 = len(lst[0])
+        if not all(len(item) == len_item_0 for item in lst):
+            msg = "not all lists have the same length"
+            raise ValueError(msg)
+
+    shape += (len(lst),)
+
+    # recurse
+    return get_shape(lst[0], shape)

@@ -8,7 +8,7 @@ from src.logger import LOG_SIMULATION, log
 from src.node.node import Node
 from src.request.request import Request, RequestGenerator, RequestScenario
 from src.result import SimulationResult
-from src.router.router import Router
+from src.router.router import Router, RouterCostConfig
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 
 
@@ -24,6 +24,7 @@ def simulate_run_distributed(
     ram_usage_fraction: float = 0.8,
     ssd_usage_fraction: float = 0.8,
     s3_spec: S3Spec | None = None,
+    router_cost_config: RouterCostConfig | None = None,
     should_print: bool = True,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
@@ -59,7 +60,11 @@ def simulate_run_distributed(
             decode_instance.set_scheduler(scheduler)
 
     router = Router(
-        queue=[], prefill_instances=prefill_instances, decode_instances=decode_instances
+        queue=[],
+        prefill_instances=prefill_instances,
+        decode_instances=decode_instances,
+        cache=cache,
+        cost_config=router_cost_config,
     )
 
     request_generator = RequestGenerator(

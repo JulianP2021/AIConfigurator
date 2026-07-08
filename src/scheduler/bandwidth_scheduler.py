@@ -42,8 +42,6 @@ class BandwidthScheduler:
         s3_spec: S3Spec | None = None,
         clock: GlobalClock | None = None,
     ):
-        from src.hardware.hardware import S3Spec
-
         self.node_specs = {}
         for node in nodes:
             self.node_specs[node.id] = node.hardware.spec

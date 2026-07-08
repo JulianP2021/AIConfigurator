@@ -96,21 +96,50 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.s3_down_bw_gbps,
         help=f"S3 download bandwidth in Gbps (default: {env.s3_down_bw_gbps})",
     )
-    return parser
-
-
-def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
-    parser = _base_parser(env)
     parser.add_argument(
-        "--config-name",
-        type=str,
-        default="config.json",
-        help="Name of the output configuration file (default: config.json)",
+        "--router-prefill-load-scale",
+        type=float,
+        default=env.router_prefill_load_scale,
+        help=f"Weight of prefill load in routing cost (default: {env.router_prefill_load_scale})",
+    )
+    parser.add_argument(
+        "--router-device-credit",
+        type=float,
+        default=env.router_device_credit,
+        help=f"Credit for device-local KV hits (default: {env.router_device_credit})",
+    )
+    parser.add_argument(
+        "--router-remote-ram-credit",
+        type=float,
+        default=env.router_remote_ram_credit,
+        help=f"Credit for remote RAM KV hits (default: {env.router_remote_ram_credit})",
+    )
+    parser.add_argument(
+        "--router-ssd-credit",
+        type=float,
+        default=env.router_ssd_credit,
+        help=f"Credit for SSD KV hits (default: {env.router_ssd_credit})",
+    )
+    parser.add_argument(
+        "--router-s3-credit",
+        type=float,
+        default=env.router_s3_credit,
+        help=f"Credit for S3 KV hits (default: {env.router_s3_credit})",
+    )
+    parser.add_argument(
+        "--router-busy-threshold-tokens",
+        type=float,
+        default=env.router_busy_threshold_tokens,
+        help=(
+            "Workers with active load above this token count are skipped "
+            f"(default: {env.router_busy_threshold_tokens})"
+        ),
     )
     return parser
 
 
 def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
+    """CLI parser for main.py (adds simulator-specific flags on top of base)."""
     parser = _base_parser(env)
     parser.add_argument(
         "--log-mask",
@@ -146,4 +175,69 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.gpus_per_node,
         help=f"GPUs per node (default: {env.gpus_per_node})",
     )
+    parser.add_argument(
+        "--machine-hardware",
+        type=str,
+        default="H200 x8 #692c33bd",
+        help=(
+            "Hardware preset key from the machine database. "
+            "Quote values containing spaces/hash, e.g. "
+            '"H200 x8 #692c33bd"'
+        ),
+    )
+    parser.add_argument(
+        "--colocated",
+        action="store_true",
+        default=False,
+        help=(
+            "Run colocated nodes that host both prefill and decode instances. "
+            "The GPU split is controlled by --prefill-gpus-per-node; the rest "
+            "are decode instances (default: disabled; separate prefill/decode nodes)"
+        ),
+    )
+    parser.add_argument(
+        "--num-prefill-nodes",
+        type=int,
+        default=1,
+        help=(
+            "Number of distinct prefill-only nodes when --colocated is not set "
+            "(default: 1)"
+        ),
+    )
+    parser.add_argument(
+        "--num-decode-nodes",
+        type=int,
+        default=1,
+        help=(
+            "Number of distinct decode-only nodes when --colocated is not set "
+            "(default: 1)"
+        ),
+    )
+    parser.add_argument(
+        "--prefill-gpus-per-node",
+        type=int,
+        default=-1,
+        help=(
+            "GPUs on each node to use as prefill instances. "
+            "In --colocated mode the remaining GPUs become decode instances. "
+            "When omitted, colocated mode falls back to --prefill-workers and "
+            "non-colocated mode uses all GPUs per prefill-only node."
+        ),
+    )
     return parser
+
+
+def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
+    parser = _base_parser(env)
+    parser.add_argument(
+        "--config-name",
+        type=str,
+        default="config.json",
+        help="Name of the output configuration file (default: config.json)",
+    )
+    return parser
+
+
+# Alias kept for backwards compatibility with any direct imports.
+def get_simulation_parser(env: EnvConfig) -> argparse.ArgumentParser:
+    return get_main_parser(env)
