@@ -164,6 +164,7 @@ def main():
         ssd_usage_fraction=args.ssd_usage_fraction,
         s3_spec=s3_spec,
         router_cost_config=router_cost_config,
+        sla=args.sla,
     )
 
     # Print compact JSON for piping

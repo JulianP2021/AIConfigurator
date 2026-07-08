@@ -1,6 +1,32 @@
 import argparse
+import json
 
 from src.utils.env_reader import EnvConfig
+
+
+def _parse_sla(value: str) -> dict[str, float]:
+    """Parse a JSON SLA dict from a CLI string.
+
+    Accepts either a JSON object (e.g. '{"ttft_ms":100,"tpot_ms":50}') or the
+    literal ``inf`` / ``none`` / ``null`` to mean no SLA.  JSON ``inf`` values
+    are supported both as quoted strings and (in Python 3.9+) as bare ``Infinity``.
+    """
+    value = value.strip()
+    if value.lower() in {"inf", "infinity", "none", "null"}:
+        return {"ttft_ms": float("inf"), "tpot_ms": float("inf")}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("SLA must be a JSON object")
+    for key in ("ttft_ms", "tpot_ms"):
+        if key in parsed:
+            v = parsed[key]
+            if isinstance(v, str) and v.lower() in {"inf", "infinity", "+inf"}:
+                parsed[key] = float("inf")
+            elif isinstance(v, str) and v.lower() in {"-inf", "-infinity"}:
+                parsed[key] = float("-inf")
+            else:
+                parsed[key] = float(v)
+    return parsed
 
 
 def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
@@ -58,6 +84,16 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         type=int,
         default=env.max_session_turns,
         help=f"Max requests per user session before starting a new session (default: {env.max_session_turns})",
+    )
+    parser.add_argument(
+        "--sla",
+        type=_parse_sla,
+        default={"ttft_ms": env.sla_ttft_ms, "tpot_ms": env.sla_tpot_ms},
+        help=(
+            "Per-request latency SLA as a JSON object with 'ttft_ms' and "
+            "'tpot_ms' keys, e.g. '{\"ttft_ms\":100,\"tpot_ms\":50}' "
+            f"(default: ttft_ms={env.sla_ttft_ms}, tpot_ms={env.sla_tpot_ms})"
+        ),
     )
     parser.add_argument(
         "--debug",

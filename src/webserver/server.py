@@ -230,6 +230,7 @@ def _run_single_config(
                 ssd_usage_fraction=ssd_usage_fraction,
                 s3_spec=s3_spec,
                 router_cost_config=router_cost_config,
+                sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")

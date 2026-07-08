@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from src.cache.cache import Cache
+from src.eroors.errors import DecodeLatencyError, PrefillLatencyError
 from src.hardware.hardware import S3Spec
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
@@ -19,6 +20,88 @@ class DistributedScenario:
     requests: RequestScenario
 
 
+def _duration(start_ms: float | None, end_ms: float | None) -> float:
+    if start_ms is None or end_ms is None:
+        return 0.0
+    return max(0.0, end_ms - start_ms)
+
+
+def _finish_request(
+    request: Request,
+    finished_requests: list[Request],
+    sla: dict[str, float] | None,
+) -> None:
+    """Append a completed request to finished_requests and enforce per-request SLAs.
+
+    Computes the wait-inclusive TTFT from the request's phase timestamps and
+    raises a latency-specific exception if any configured SLA is exceeded.
+    """
+    request.prefill_time_ms = _duration(
+        request.prefill_start_ms, request.prefill_end_ms
+    )
+    request.prefill_wait_ms = _duration(
+        request.prefill_queue_start_ms, request.prefill_start_ms
+    )
+    request.prefill_download_wait_ms = max(
+        0.0,
+        _duration(request.prefill_download_start_ms, request.prefill_download_end_ms)
+        - request.prefill_download_active_ms,
+    )
+    request.prefill_upload_wait_ms = max(
+        0.0,
+        _duration(request.prefill_upload_start_ms, request.prefill_upload_end_ms)
+        - request.prefill_upload_active_ms,
+    )
+    request.decode_time_ms = _duration(request.decode_start_ms, request.decode_end_ms)
+    request.decode_wait_ms = _duration(
+        request.decode_queue_start_ms, request.decode_start_ms
+    )
+    request.decode_download_wait_ms = max(
+        0.0,
+        _duration(request.decode_download_start_ms, request.decode_download_end_ms)
+        - request.decode_download_active_ms,
+    )
+    request.decode_upload_wait_ms = max(
+        0.0,
+        _duration(request.decode_upload_start_ms, request.decode_upload_end_ms)
+        - request.decode_upload_active_ms,
+    )
+
+    clean_ttft_ms = (
+        request.prefill_time_ms
+        + request.prefill_download_active_ms
+        + request.prefill_upload_active_ms
+        + request.decode_download_active_ms
+    )
+    wait_inclusive_ttft_ms = (
+        clean_ttft_ms
+        + request.prefill_wait_ms
+        + request.prefill_download_wait_ms
+        + request.prefill_upload_wait_ms
+        + request.decode_download_wait_ms
+    )
+
+    if sla is not None:
+        ttft_sla = sla.get("ttft_ms")
+        if ttft_sla is not None and wait_inclusive_ttft_ms > ttft_sla:
+            raise PrefillLatencyError(
+                f"Request {request.id} TTFT SLA violated: "
+                f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
+                f"SLA {ttft_sla:.2f} ms"
+            )
+
+        tpot_sla = sla.get("tpot_ms")
+        if tpot_sla is not None and request.osl > 1:
+            tpot_ms = request.decode_time_ms / (request.osl - 1)
+            if tpot_ms > tpot_sla:
+                raise DecodeLatencyError(
+                    f"Request {request.id} TPOT SLA violated: "
+                    f"TPOT {tpot_ms:.2f} ms > SLA {tpot_sla:.2f} ms"
+                )
+
+    finished_requests.append(request)
+
+
 def simulate_run_distributed(
     scenario: DistributedScenario,
     ram_usage_fraction: float = 0.8,
@@ -26,6 +109,7 @@ def simulate_run_distributed(
     s3_spec: S3Spec | None = None,
     router_cost_config: RouterCostConfig | None = None,
     should_print: bool = True,
+    sla: dict[str, float] | None = None,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -119,7 +203,8 @@ def simulate_run_distributed(
                     prefilled_requests.extend(instance.process_queue(0))
                 for instance in decode_instances:
                     decoded_requests = instance.process_queue(0)
-                    finished_requests.extend(decoded_requests)
+                    for decoded_request in decoded_requests:
+                        _finish_request(decoded_request, finished_requests, sla)
                     current_requests = [
                         r for r in current_requests if r not in decoded_requests
                     ]
@@ -160,7 +245,8 @@ def simulate_run_distributed(
                     f"upload queue length {len(instance.upload_queue)}",
                 )
                 decoded_requests = instance.process_queue(time_to_next_completion)
-                finished_requests.extend(decoded_requests)
+                for decoded_request in decoded_requests:
+                    _finish_request(decoded_request, finished_requests, sla)
                 current_requests = [
                     r for r in current_requests if r not in decoded_requests
                 ]
@@ -217,7 +303,8 @@ def simulate_run_distributed(
             instance.process_queue(time_to_next_completion)
         for instance in decode_instances:
             decoded_requests = instance.process_queue(time_to_next_completion)
-            finished_requests.extend(decoded_requests)
+            for decoded_request in decoded_requests:
+                _finish_request(decoded_request, finished_requests, sla)
             current_requests = [
                 r for r in current_requests if r not in decoded_requests
             ]
@@ -255,42 +342,10 @@ def simulate_run_distributed(
     total_decode_time_ms = 0.0
     total_prefill_time_ms = 0.0
 
-    def _duration(start_ms: float | None, end_ms: float | None) -> float:
-        if start_ms is None or end_ms is None:
-            return 0.0
-        return max(0.0, end_ms - start_ms)
-
     for req in finished_requests:
-        # Derive all phase timings from global-clock event timestamps.
-        req.prefill_time_ms = _duration(req.prefill_start_ms, req.prefill_end_ms)
-        req.prefill_wait_ms = _duration(
-            req.prefill_queue_start_ms, req.prefill_start_ms
-        )
-
-        req.prefill_download_wait_ms = max(
-            0.0,
-            _duration(req.prefill_download_start_ms, req.prefill_download_end_ms)
-            - req.prefill_download_active_ms,
-        )
-        req.prefill_upload_wait_ms = max(
-            0.0,
-            _duration(req.prefill_upload_start_ms, req.prefill_upload_end_ms)
-            - req.prefill_upload_active_ms,
-        )
-
-        req.decode_time_ms = _duration(req.decode_start_ms, req.decode_end_ms)
-        req.decode_wait_ms = _duration(req.decode_queue_start_ms, req.decode_start_ms)
-
-        req.decode_download_wait_ms = max(
-            0.0,
-            _duration(req.decode_download_start_ms, req.decode_download_end_ms)
-            - req.decode_download_active_ms,
-        )
-        req.decode_upload_wait_ms = max(
-            0.0,
-            _duration(req.decode_upload_start_ms, req.decode_upload_end_ms)
-            - req.decode_upload_active_ms,
-        )
+        # Phase timings were already computed when the request was added to
+        # finished_requests by _finish_request. Re-use them here so the final
+        # metrics and per-request stats are consistent.
 
         req.kv_download_time_ms = (
             req.prefill_download_active_ms + req.decode_download_active_ms

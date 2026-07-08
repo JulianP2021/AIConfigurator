@@ -29,6 +29,7 @@ if __name__ == "__main__":
     config["s3_enabled"] = args.s3_enabled
     config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
     config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
+    config["sla"] = args.sla
 
     possible_machines: list[tuple[str, dict[str, Any]]] = []
 

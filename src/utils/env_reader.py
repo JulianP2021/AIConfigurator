@@ -26,6 +26,10 @@ class EnvConfig:
     max_users: int = 10
     max_session_turns: int = 5
 
+    # Per-request latency SLAs (default inf = disabled)
+    sla_ttft_ms: float = float("inf")
+    sla_tpot_ms: float = float("inf")
+
     # Topology
     batch_size: int = 10
     prefill_workers: int = 1
@@ -71,6 +75,8 @@ _DEFAULTS = {
     "MIN_USERS": "1",
     "MAX_USERS": "10",
     "MAX_SESSION_TURNS": "5",
+    "SLA_TTFT_MS": "inf",
+    "SLA_TPOT_MS": "inf",
     "BATCH_SIZE": "10",
     "PREFILL_WORKERS": "1",
     "DECODE_WORKERS": "1",
@@ -116,6 +122,8 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "SSD_USAGE_FRACTION",
         "S3_UP_BW_GBPS",
         "S3_DOWN_BW_GBPS",
+        "SLA_TTFT_MS",
+        "SLA_TPOT_MS",
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_DEVICE_CREDIT",
         "ROUTER_REMOTE_RAM_CREDIT",
@@ -185,6 +193,8 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         min_users=int(merged["MIN_USERS"]),
         max_users=int(merged["MAX_USERS"]),
         max_session_turns=int(merged["MAX_SESSION_TURNS"]),
+        sla_ttft_ms=float(merged["SLA_TTFT_MS"]),
+        sla_tpot_ms=float(merged["SLA_TPOT_MS"]),
         batch_size=int(merged["BATCH_SIZE"]),
         prefill_workers=int(merged["PREFILL_WORKERS"]),
         decode_workers=int(merged["DECODE_WORKERS"]),

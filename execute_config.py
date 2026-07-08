@@ -240,12 +240,14 @@ def _run_single_config(
 ) -> SimulationResult:
     """Top-level worker function suitable for process-pool pickling."""
     scenario = build_scenario(common, cfg)
+    sla = common.get("sla")
     return simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
         should_print=False,
+        sla=sla,
     )
 
 
@@ -735,6 +737,13 @@ def main() -> None:
         "min_users": config.get("min_users", env.min_users),
         "max_users": config.get("max_users", env.max_users),
         "max_session_turns": config.get("max_session_turns", env.max_session_turns),
+        "sla": config.get(
+            "sla",
+            {
+                "ttft_ms": config.get("sla_ttft_ms", env.sla_ttft_ms),
+                "tpot_ms": config.get("sla_tpot_ms", env.sla_tpot_ms),
+            },
+        ),
     }
     ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
     ssd_usage_fraction = float(config.get("ssd_usage_fraction", env.ssd_usage_fraction))
