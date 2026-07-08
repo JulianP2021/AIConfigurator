@@ -30,6 +30,8 @@ def _finish_request(
     request: Request,
     finished_requests: list[Request],
     sla: dict[str, float] | None,
+    request_generator: RequestGenerator | None = None,
+    now_ms: float = 0.0,
 ) -> None:
     """Append a completed request to finished_requests and enforce per-request SLAs.
 
@@ -100,6 +102,37 @@ def _finish_request(
                 )
 
     finished_requests.append(request)
+    if request_generator is not None:
+        request_generator.finish_request(request, now_ms)
+
+
+def _generate_ready_requests(
+    request_scenario: RequestScenario,
+    request_generator: RequestGenerator,
+    now_ms: float,
+    router: Router,
+    current_requests: list[Request],
+    num_reqs: int,
+) -> int:
+    """Create requests for all users that are idle and past their think time.
+
+    Returns the updated request count.
+    """
+    while num_reqs < request_scenario.total_requests:
+        new_request = request_generator.generate_request(request_scenario, now_ms)
+        if new_request is None:
+            break
+        current_requests.append(new_request)
+        router.queue.append(new_request)
+        num_reqs += 1
+        log(
+            LOG_SIMULATION,
+            f"Generated new request with id: {new_request.id} at "
+            f"{now_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
+            f"isl: {new_request.isl}, osl: {new_request.osl}, "
+            f"cached: {new_request.prefilled_tokens}",
+        )
+    return num_reqs
 
 
 def simulate_run_distributed(
@@ -152,124 +185,143 @@ def simulate_run_distributed(
     )
 
     request_generator = RequestGenerator(
-        req_rate=scenario.requests.req_s,
+        users=scenario.requests.users,
         max_session_turns=scenario.requests.max_session_turns,
+        think_time_ms=scenario.requests.think_time_ms,
     )
     finished_requests: list[Request] = []
     current_requests: list[Request] = []
     num_reqs = 0
     time_to_next_completion = 0
-    while (
-        time_to_next_completion < float("inf")
-        or num_reqs < scenario.requests.total_requests
-    ):
-        if num_reqs < scenario.requests.total_requests:
-            time_till_next_ms = int(request_generator.time_till_next_request() * 1000)
-        else:
-            time_till_next_ms = float("inf")
 
+    # Generate initial requests for all ready users.
+    while num_reqs < scenario.requests.total_requests:
+        new_request = request_generator.generate_request(
+            scenario.requests, scheduler.time_ms
+        )
+        if new_request is None:
+            break
+        current_requests.append(new_request)
+        router.queue.append(new_request)
+        num_reqs += 1
+
+        log(
+            LOG_SIMULATION,
+            f"Generated new request with id: {new_request.id} at "
+            f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
+            f"isl: {new_request.isl}, osl: {new_request.osl}, "
+            f"cached: {new_request.prefilled_tokens}",
+        )
+
+    while len(finished_requests) < scenario.requests.total_requests:
         router.route_requests()
 
-        passed_time = 0
-        while passed_time < time_till_next_ms:
-            prefilled_requests: list[Request] = []
-            transfer_event_ms = scheduler.next_event_ms()
-            compute_event_ms = min(
-                [instance.time_to_next_completion() for instance in prefill_instances]
-                + [instance.time_to_next_completion() for instance in decode_instances]
-                + [float("inf")]
-            )
-            time_to_next_completion = min(
-                compute_event_ms,
-                transfer_event_ms,
-                time_till_next_ms - passed_time,
-            )
+        prefilled_requests: list[Request] = []
+        transfer_event_ms = scheduler.next_event_ms()
+        compute_event_ms = min(
+            [instance.time_to_next_completion() for instance in prefill_instances]
+            + [instance.time_to_next_completion() for instance in decode_instances]
+            + [float("inf")]
+        )
+        time_to_next_completion = min(compute_event_ms, transfer_event_ms)
 
-            # If there are no more compute or transfer events before the next
-            # request arrival, jump the global clock to the arrival time and
-            # stop the inner loop.
-            if time_to_next_completion == float("inf"):
-                remaining_to_arrival = time_till_next_ms - passed_time
-                if remaining_to_arrival > 0 and remaining_to_arrival != float("inf"):
-                    scheduler.advance_time(remaining_to_arrival)
-                passed_time = time_till_next_ms
-                break
+        # If nothing else is happening, jump to the next moment a user becomes
+        # ready to send its next request.
+        if time_to_next_completion == float("inf"):
+            next_ready_ms = request_generator.next_ready_time_ms(scheduler.time_ms)
+            if next_ready_ms != float("inf") and next_ready_ms > scheduler.time_ms:
+                scheduler.advance_time(next_ready_ms - scheduler.time_ms)
+            elif next_ready_ms == float("inf"):
+                raise RuntimeError(
+                    "No compute/transfer events and no user will become ready, "
+                    "but not all requests are finished."
+                )
+            time_to_next_completion = 0
 
-            # Zero-length events can occur when a transfer/compute finishes
-            # exactly at the current wall-clock time.  Process them immediately
-            # without advancing the clock or logging a bogus 0 ms step.
-            if time_to_next_completion <= 0:
-                for instance in prefill_instances:
-                    prefilled_requests.extend(instance.process_queue(0))
-                for instance in decode_instances:
-                    decoded_requests = instance.process_queue(0)
-                    for decoded_request in decoded_requests:
-                        _finish_request(decoded_request, finished_requests, sla)
-                    current_requests = [
-                        r for r in current_requests if r not in decoded_requests
-                    ]
-                router.queue.extend(prefilled_requests)
-                prefilled_requests = []
-                router.route_requests()
-                continue
-
-            log(
-                LOG_SIMULATION,
-                f"Time to next completion: {time_to_next_completion} ms, "
-                f"passed time: {passed_time} ms, "
-                f"time till next request: {time_till_next_ms} ms, "
-                f"global_time={scheduler.time_ms:.3f} ms, "
-                f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
-            )
-
-            # Advance all transfers globally using the scheduler.  It returns
-            # fully completed transfers; instances drain their own queues by
-            # checking ``active_leg is None`` at the top of ``process_queue``.
-            scheduler.advance_time(time_to_next_completion)
-
+        # Zero-length events can occur when a transfer/compute finishes
+        # exactly at the current wall-clock time.  Process them immediately
+        # without advancing the clock or logging a bogus 0 ms step.
+        if time_to_next_completion <= 0:
             for instance in prefill_instances:
-                log(
-                    LOG_SIMULATION,
-                    f"Processing prefill instance with download queue length "
-                    f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
-                    f"upload queue length {len(instance.upload_queue)}",
-                )
-                prefilled_requests.extend(
-                    instance.process_queue(time_to_next_completion)
-                )
+                prefilled_requests.extend(instance.process_queue(0))
             for instance in decode_instances:
-                log(
-                    LOG_SIMULATION,
-                    f"Processing decode instance with download queue length "
-                    f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
-                    f"upload queue length {len(instance.upload_queue)}",
-                )
-                decoded_requests = instance.process_queue(time_to_next_completion)
+                decoded_requests = instance.process_queue(0)
                 for decoded_request in decoded_requests:
-                    _finish_request(decoded_request, finished_requests, sla)
+                    _finish_request(
+                        decoded_request,
+                        finished_requests,
+                        sla,
+                        request_generator,
+                        scheduler.time_ms,
+                    )
                 current_requests = [
                     r for r in current_requests if r not in decoded_requests
                 ]
-            passed_time += time_to_next_completion
             router.queue.extend(prefilled_requests)
             prefilled_requests = []
             router.route_requests()
-
-        if num_reqs < scenario.requests.total_requests:
-            new_request = request_generator.generate_request(
-                scenario.requests, current_requests, finished_requests
+            num_reqs = _generate_ready_requests(
+                scenario.requests,
+                request_generator,
+                scheduler.time_ms,
+                router,
+                current_requests,
+                num_reqs,
             )
-            current_requests.append(new_request)
-            router.queue.append(new_request)
-            num_reqs += 1
+            continue
 
+        log(
+            LOG_SIMULATION,
+            f"Time to next completion: {time_to_next_completion} ms, "
+            f"global_time={scheduler.time_ms:.3f} ms, "
+            f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
+        )
+
+        # Advance all transfers globally using the scheduler.  It returns
+        # fully completed transfers; instances drain their own queues by
+        # checking ``active_leg is None`` at the top of ``process_queue``.
+        scheduler.advance_time(time_to_next_completion)
+
+        for instance in prefill_instances:
             log(
                 LOG_SIMULATION,
-                f"Generated new request with id: {new_request.id} at "
-                f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
-                f"isl: {new_request.isl}, osl: {new_request.osl}, "
-                f"cached: {new_request.prefilled_tokens}",
+                f"Processing prefill instance with download queue length "
+                f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
+                f"upload queue length {len(instance.upload_queue)}",
             )
+            prefilled_requests.extend(instance.process_queue(time_to_next_completion))
+        for instance in decode_instances:
+            log(
+                LOG_SIMULATION,
+                f"Processing decode instance with download queue length "
+                f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
+                f"upload queue length {len(instance.upload_queue)}",
+            )
+            decoded_requests = instance.process_queue(time_to_next_completion)
+            for decoded_request in decoded_requests:
+                _finish_request(
+                    decoded_request,
+                    finished_requests,
+                    sla,
+                    request_generator,
+                    scheduler.time_ms,
+                )
+            current_requests = [
+                r for r in current_requests if r not in decoded_requests
+            ]
+        router.queue.extend(prefilled_requests)
+        prefilled_requests = []
+        router.route_requests()
+
+        # Generate new requests for any users that just became idle and ready.
+        num_reqs = _generate_ready_requests(
+            scenario.requests,
+            request_generator,
+            scheduler.time_ms,
+            router,
+            current_requests,
+            num_reqs,
+        )
 
     log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
 
@@ -304,7 +356,13 @@ def simulate_run_distributed(
         for instance in decode_instances:
             decoded_requests = instance.process_queue(time_to_next_completion)
             for decoded_request in decoded_requests:
-                _finish_request(decoded_request, finished_requests, sla)
+                _finish_request(
+                    decoded_request,
+                    finished_requests,
+                    sla,
+                    request_generator,
+                    scheduler.time_ms,
+                )
             current_requests = [
                 r for r in current_requests if r not in decoded_requests
             ]

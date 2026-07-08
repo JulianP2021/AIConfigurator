@@ -90,7 +90,7 @@ class TestCacheInsertion:
         item = CacheItem((1, 0), 0, 100)
         cache_with_fake_model.insert_cache_item(item, 0)
 
-        assert item in cache_with_fake_model._ram_layer(0).content
+        assert item in cache_with_fake_model._ram_layer(0).content[(1, 0)]
         assert cache_with_fake_model.ram_usage_bytes[0] == 10_000
         assert cache_with_fake_model.ssd_usage_bytes[0] == 0
 
@@ -106,8 +106,8 @@ class TestCacheInsertion:
         small_cache.insert_cache_item(item3, 0)
         eviction_legs = small_cache.insert_cache_item(item4, 0)
 
-        assert item4 in small_cache._ram_layer(0).content
-        assert item1 in small_cache._ssd_layer(0).content
+        assert item4 in small_cache._ram_layer(0).content[(4, 0)]
+        assert item1 in small_cache._ssd_layer(0).content[(1, 0)]
         assert len(eviction_legs) == 1
         assert eviction_legs[0].bottleneck == "SSD_LOCAL"
 
@@ -124,10 +124,10 @@ class TestCacheInsertion:
         small_cache.insert_cache_item(item3, 0)
 
         # item1 was evicted to SSD and then deleted to make room for item2.
-        assert item1 not in small_cache._ssd_layer(0).content
+        assert (1, 0) not in small_cache._ssd_layer(0).content
         # item3 should be in RAM; item2 should be the SSD LRU.
-        assert item3 in small_cache._ram_layer(0).content
-        assert item2 in small_cache._ssd_layer(0).content
+        assert item3 in small_cache._ram_layer(0).content[(3, 0)]
+        assert item2 in small_cache._ssd_layer(0).content[(2, 0)]
 
 
 class TestCacheDownload:
@@ -174,7 +174,7 @@ class TestCacheDownload:
         ram_items = cache_with_fake_model.find_cache((1, 10))
         assert len(ram_items) == 1
         assert ram_items[0].last_access_tick > original_tick
-        assert old_item not in cache_with_fake_model._ram_layer(0).content
+        assert old_item not in cache_with_fake_model._ram_layer(0).content[(1, 10)]
 
     def test_download_from_ram_remote(self, cache_with_fake_model: Cache):
         req = Request(128, 8, user_id=1, session_id=11)
@@ -208,7 +208,7 @@ class TestCacheDownload:
         # Node 0 SSD has 0-100.
         ssd_item = CacheItem((1, 30), 0, 100)
         ssd_layer = cache_with_fake_model._ssd_layer(0)
-        ssd_layer.content.append(ssd_item)
+        ssd_layer.content.setdefault((1, 30), []).append(ssd_item)
         cache_with_fake_model.ssd_usage_bytes[0] += cache_with_fake_model._item_size(
             ssd_item
         )
@@ -232,7 +232,7 @@ class TestCacheDownload:
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 200
         # Remote source copy is retained.
-        remote_items = cache_with_fake_model._ram_layer(1).content
+        remote_items = cache_with_fake_model._ram_layer(1).content.get((1, 30), [])
         assert any(
             item.session_id == (1, 30)
             and item.token_start == 100
@@ -269,7 +269,8 @@ class TestCacheDownload:
         # Make room on node 0 RAM so the merged item inserts without eviction.
         item99 = next(
             item
-            for item in small_cache._ram_layer(0).content
+            for items in small_cache._ram_layer(0).content.values()
+            for item in items
             if item.session_id == (99, 0)
         )
         small_cache.delete_item(item99)
@@ -306,7 +307,10 @@ class TestCacheS3:
         cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
 
         s3_items = [
-            item for item in cache._s3_layer().content if item.session_id == (1, 40)
+            item
+            for items in cache._s3_layer().content.values()
+            for item in items
+            if item.session_id == (1, 40)
         ]
         assert len(s3_items) == 1
         assert s3_items[0].token_start == 0
@@ -327,7 +331,7 @@ class TestCacheS3:
         req = Request(512, 8, user_id=1, session_id=42)
         # Place a copy only in S3.
         s3_layer = cache._s3_layer()
-        s3_layer.content.append(CacheItem((1, 42), 0, 512))
+        s3_layer.content.setdefault((1, 42), []).append(CacheItem((1, 42), 0, 512))
 
         dr = cache.download_kv(0, req)
         assert [bottleneck_names([track]) for track in dr.tracks] == [["S3_DOWNLOAD"]]
@@ -362,7 +366,7 @@ class TestCacheLRU:
         cache_with_fake_model.insert_cache_item(item2, 0)
 
         first_tick = item1.last_access_tick
-        cache_with_fake_model._touch(item1)
+        cache_with_fake_model._touch(item1, cache_with_fake_model._ram_layer(0))
         assert item1.last_access_tick > first_tick
         assert item1.last_access_tick > item2.last_access_tick
 
@@ -375,15 +379,68 @@ class TestCacheLRU:
         medium_cache.insert_cache_item(item3, 0)
 
         # Touch item1 so it is more recently used than item2 and item3.
-        medium_cache._touch(item1)
+        medium_cache._touch(item1, medium_cache._ram_layer(0))
 
         item4 = CacheItem((4, 0), 0, 512)
         medium_cache.insert_cache_item(item4, 0)
 
         # item2 should have been evicted because it was LRU; item1 stays in RAM
         # because it was touched after item2 and item3 were inserted.
-        assert item2 in medium_cache._ssd_layer(0).content
-        assert item1 in medium_cache._ram_layer(0).content
+        assert item2 in medium_cache._ssd_layer(0).content[(2, 0)]
+        assert item1 in medium_cache._ram_layer(0).content[(1, 0)]
+
+
+class TestCacheByteCounters:
+    def test_ram_usage_bytes_updated_on_insert(self, cache_with_fake_model: Cache):
+        item = CacheItem((1, 0), 0, 100)
+        cache_with_fake_model.insert_cache_item(item, 0)
+        assert cache_with_fake_model.ram_usage_bytes[0] == 10_000
+
+    def test_ram_and_ssd_counters_updated_on_eviction(self, small_cache: Cache):
+        item1 = CacheItem((1, 0), 0, 512)
+        item2 = CacheItem((2, 0), 0, 512)
+        item_size = small_cache._item_size(item1)
+        small_cache.insert_cache_item(item1, 0)
+        small_cache.insert_cache_item(item2, 0)
+
+        assert small_cache.ram_usage_bytes[0] == item_size
+        assert small_cache.ssd_usage_bytes[0] == item_size
+
+    def test_delete_updates_ram_counter(self, cache_with_fake_model: Cache):
+        item = CacheItem((1, 0), 0, 100)
+        cache_with_fake_model.insert_cache_item(item, 0)
+        cache_with_fake_model.delete_item(item)
+        assert cache_with_fake_model.ram_usage_bytes[0] == 0
+
+    def test_s3_counter_updated_on_eviction_upload(
+        self, fake_model: Model, s3_tiny_hardware: Hardware, s3_enabled: S3Spec
+    ):
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_enabled,
+        )
+        item1 = CacheItem((1, 40), 0, 512)
+        item2 = CacheItem((2, 0), 0, 512)
+        item3 = CacheItem((3, 0), 0, 512)
+        cache.insert_cache_item(item1, 0)
+        cache.insert_cache_item(item2, 0)
+        cache.insert_cache_item(item3, 0)
+
+        item_size = cache._item_size(item1)
+        assert cache.s3_usage_bytes == item_size
+
+    def test_usage_summary_matches_counters(self, small_cache: Cache):
+        small_cache.insert_cache_item(CacheItem((1, 0), 0, 512), 0)
+        small_cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+
+        summary = small_cache.usage_summary()
+        assert summary["ram_usage_bytes"] == small_cache.ram_usage_bytes[0]
+        assert summary["ssd_usage_bytes"] == small_cache.ssd_usage_bytes[0]
+        assert summary["s3_usage_bytes"] == small_cache.s3_usage_bytes
 
 
 class TestCacheUpload:

@@ -19,10 +19,8 @@ if __name__ == "__main__":
     config["isl"] = args.isl
     config["osl"] = args.osl
     config["requests"] = args.requests
-    config["req_rate"] = args.req_rate
-    config["unique_users"] = args.unique_users
-    config["min_users"] = args.min_users
-    config["max_users"] = args.max_users
+    config["users"] = args.users
+    config["think_time_ms"] = args.think_time_ms
     config["max_session_turns"] = args.max_session_turns
     config["ram_usage_fraction"] = args.ram_usage_fraction
     config["ssd_usage_fraction"] = args.ssd_usage_fraction
@@ -30,6 +28,11 @@ if __name__ == "__main__":
     config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
     config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
     config["sla"] = args.sla
+    config["batch_size"] = args.batch_size
+    config["num_prefill_nodes"] = args.num_prefill_nodes
+    config["num_decode_nodes"] = args.num_decode_nodes
+    config["colocated"] = args.colocated
+    config["prefill_gpus_per_node"] = args.prefill_gpus_per_node
 
     possible_machines: list[tuple[str, dict[str, Any]]] = []
 

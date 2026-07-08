@@ -6,10 +6,10 @@ Usage examples:
     python main.py
 
     # Custom model and lengths
-    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --req-rate 2
+    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --users 10
 
     # Unique users (no shared prefix / no repeat users)
-    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --unique-users
+    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --users 20
 
     # Debug mode
     python main.py --debug --model Qwen/Qwen3-8B --isl 1000 --osl 100
@@ -42,17 +42,12 @@ def main():
         if args.log_mask:
             print(f"Logging enabled with LOG_MASK={args.log_mask}.")
 
-    # If --unique-users, force min_users and max_users > total_requests so every
-    # request is a new user (no shared prefix / no repeat users).
-    if args.unique_users:
-        min_users = args.requests + 1
-        max_users = args.requests + 1
+    # If users >= total_requests every request gets its own user, which means no
+    # shared prefix / no repeat users.  We keep the user's chosen value otherwise.
+    if args.users >= args.requests:
         print(
-            f"--unique-users set: forcing {min_users} users (> {args.requests} requests) → no shared prefix."
+            f"--users ({args.users}) >= --requests ({args.requests}): each request gets a unique user → no shared prefix."
         )
-    else:
-        max_users = args.max_users
-        min_users = args.min_users
 
     # ISL/OSL are fixed (min=max) as requested
     token_dist = TokenDistribution(
@@ -71,7 +66,7 @@ def main():
     total_gpus = hardware.spec.num_gpus
     prefill_split_explicit = args.prefill_gpus_per_node >= 0
     prefill_gpus_per_node = (
-        args.prefill_gpus_per_node if prefill_split_explicit else args.prefill_workers
+        args.prefill_gpus_per_node if prefill_split_explicit else total_gpus // 2
     )
 
     nodes: list[Node] = []
@@ -97,11 +92,7 @@ def main():
             f"{prefill_gpus_per_node} prefill + {decode_gpus_per_node} decode GPU(s)."
         )
     else:
-        # Non-colocated nodes dedicate all GPUs to their single role, unless
-        # the user explicitly set --prefill-gpus-per-node.
-        prefill_instances_per_node = (
-            prefill_gpus_per_node if prefill_split_explicit else total_gpus
-        )
+        prefill_instances_per_node = total_gpus
         decode_instances_per_node = total_gpus
         for _ in range(args.num_prefill_nodes):
             nodes.append(
@@ -136,10 +127,9 @@ def main():
         requests=RequestScenario(
             token_distribution=token_dist,
             total_requests=args.requests,
-            min_users=min_users,
-            max_users=max_users,
+            users=args.users,
             max_session_turns=args.max_session_turns,
-            req_s=args.req_rate,
+            think_time_ms=args.think_time_ms,
         ),
     )
 

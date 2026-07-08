@@ -63,8 +63,8 @@ class TestRouterCostFunction:
     def test_prefill_prefers_node_with_cached_prefix(self):
         cache = _make_cache()
         cache.layers = {
-            0: [CacheLayer(0, "RAM", [CacheItem((1, 0), 0, 500)])],
-            1: [CacheLayer(1, "RAM", [])],
+            0: [CacheLayer(0, "RAM", {(1, 0): [CacheItem((1, 0), 0, 500)]})],
+            1: [CacheLayer(1, "RAM", {})],
         }
 
         prefill_0 = _make_prefill_instance(0)
@@ -108,8 +108,8 @@ class TestRouterCostFunction:
     def test_decode_prefers_node_with_full_kv(self):
         cache = _make_cache()
         cache.layers = {
-            0: [CacheLayer(0, "RAM", [CacheItem((1, 0), 0, 1000)])],
-            1: [CacheLayer(1, "RAM", [])],
+            0: [CacheLayer(0, "RAM", {(1, 0): [CacheItem((1, 0), 0, 1000)]})],
+            1: [CacheLayer(1, "RAM", {})],
         }
 
         prefill_0 = _make_prefill_instance(0)
@@ -132,8 +132,8 @@ class TestRouterCostFunction:
     def test_decode_prefers_local_over_remote(self):
         cache = _make_cache()
         cache.layers = {
-            0: [CacheLayer(0, "RAM", [])],
-            1: [CacheLayer(1, "RAM", [CacheItem((1, 0), 0, 1000)])],
+            0: [CacheLayer(0, "RAM", {})],
+            1: [CacheLayer(1, "RAM", {(1, 0): [CacheItem((1, 0), 0, 1000)]})],
         }
 
         prefill_0 = _make_prefill_instance(0)

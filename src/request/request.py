@@ -1,6 +1,6 @@
 import random
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 
@@ -236,104 +236,98 @@ class TokenDistribution:
 class RequestScenario:
     token_distribution: TokenDistribution
     total_requests: int
-    min_users: int
-    max_users: int
+    users: int
     max_session_turns: int
-    req_s: float
+    think_time_ms: float
 
 
 @dataclass
 class RequestGenerator:
-    req_rate: float
-    max_session_turns: int = 5
+    users: int
+    max_session_turns: int
+    think_time_ms: float
 
-    def time_till_next_request(self) -> float:
-        return random.expovariate(self.req_rate)
+    # One active session per user.  A user is "active" while it has any request
+    # in flight; otherwise it is "idle".  Session ids are monotonic per user.
+    _active_users: set[int] = field(default_factory=set)
+    _idle_users: set[int] = field(default_factory=set)
+    _user_session_id: dict[int, int] = field(default_factory=dict)
+    _user_session_turns: dict[int, int] = field(default_factory=dict)
+    _last_total_tokens: dict[tuple[int, int], int] = field(default_factory=dict)
+    _next_available_ms: dict[int, float] = field(default_factory=dict)
 
-    def _get_random_user_id(
-        self,
-        request_scenario: RequestScenario,
-        current_requests: list[Request],
-        finished_requests: list[Request],
-    ) -> int:
-        current_users = {r.user_id for r in current_requests}
-        finished_users = {r.user_id for r in finished_requests}.difference(
-            current_users
-        )
-        users = current_users.union(finished_users)
+    def __post_init__(self) -> None:
+        """Initialize all users as idle."""
+        self._idle_users.update(range(self.users))
 
-        if len(finished_users) < request_scenario.min_users:
-            # Need more finished users; create a brand-new user not in flight.
-            user_id = max(users, default=-1) + 1
-        else:
-            if len(users) < request_scenario.max_users:
-                if random.random() < 0.5:
-                    # New user must not collide with an in-flight user.
-                    user_id = max(users, default=-1) + 1
-                else:
-                    user_id = (
-                        random.choice(list(finished_users))
-                        if finished_users
-                        else max(users, default=-1) + 1
-                    )
-            else:
-                if not finished_users:
-                    raise ValueError(
-                        "No finished users available to select from, but already at maximum user limit."
-                    )
-                user_id = random.choice(list(finished_users))
-        return user_id
+    def start_request(self, request: Request) -> None:
+        """Record that ``request`` has been generated and is now in flight."""
+        user_id = request.user_id
+        session_id = request.session_id
+        self._active_users.add(user_id)
+        self._idle_users.discard(user_id)
+        self._user_session_id[user_id] = session_id
+        self._user_session_turns[user_id] = self._user_session_turns.get(user_id, 0) + 1
 
-    def _get_session_id(
-        self,
-        user_id: int,
-        current_requests: list[Request],
-        finished_requests: list[Request],
-    ) -> int:
-        """Return a session id for the user, creating a new one if needed.
+    def finish_request(self, request: Request, now_ms: float) -> None:
+        """Record that ``request`` has completed and is no longer in flight.
 
-        A session is retired once it has reached ``max_session_turns`` requests
-        (counted among finished requests). Requests that are still in flight are
-        not counted.
+        ``now_ms`` is the current simulation time; the user's next request will
+        not be generated until ``now_ms + think_time_ms`` has elapsed.
         """
-        all_user_requests = [
-            r for r in current_requests + finished_requests if r.user_id == user_id
+        user_id = request.user_id
+        session_id = request.session_id
+        total = request.isl + request.osl
+        key = (user_id, session_id)
+        self._last_total_tokens[key] = max(self._last_total_tokens.get(key, 0), total)
+        self._active_users.discard(user_id)
+        self._idle_users.add(user_id)
+        self._next_available_ms[user_id] = now_ms + self.think_time_ms
+
+    def ready_users(self, now_ms: float) -> list[int]:
+        """Return idle users whose think time has elapsed, shuffled."""
+        ready = [
+            user_id
+            for user_id in self._idle_users
+            if now_ms >= self._next_available_ms.get(user_id, 0.0)
         ]
-        if not all_user_requests:
-            return 0
+        random.shuffle(ready)
+        return ready
 
-        # Group finished requests by session and retire the most recent session
-        # if it has reached the turn limit.
-        sessions: dict[int, int] = {}
-        for r in all_user_requests:
-            sessions[r.session_id] = sessions.get(r.session_id, 0) + 1
-
-        latest_session = max(sessions.keys())
-        if sessions[latest_session] >= self.max_session_turns:
-            return latest_session + 1
-        return latest_session
+    def next_ready_time_ms(self, now_ms: float) -> float:
+        """Return the earliest time at which an idle user becomes ready."""
+        min_time = float("inf")
+        for user_id in self._idle_users:
+            available = self._next_available_ms.get(user_id, 0.0)
+            if available < min_time:
+                min_time = available
+        return min_time - now_ms
 
     def generate_request(
         self,
         request_scenario: RequestScenario,
-        current_requests: list[Request],
-        finished_requests: list[Request],
-    ) -> Request:
-        user_id = self._get_random_user_id(
-            request_scenario, current_requests, finished_requests
-        )
-        session_id = self._get_session_id(user_id, current_requests, finished_requests)
+        now_ms: float,
+    ) -> Request | None:
+        """Generate the next request for a ready idle user, if any.
 
-        # Within a session, the input is the cumulative conversation length so far.
-        past_session_requests = [
-            r
-            for r in current_requests + finished_requests
-            if r.user_id == user_id and r.session_id == session_id
-        ]
-        min_input_tokens = max(
-            0,
-            max((r.isl + r.osl for r in past_session_requests), default=0),
-        )
+        Returns ``None`` when every user is still active or within its think time.
+        """
+        ready_users = self.ready_users(now_ms)
+        if not ready_users:
+            return None
+
+        user_id = ready_users[0]
+        session_id = self._user_session_id.get(user_id, 0)
+
+        # If the user's current session is full, roll over to a new session.
+        if (
+            self._user_session_turns.get(user_id, 0) >= self.max_session_turns
+            and session_id in self._user_session_id
+        ):
+            session_id += 1
+
+        key = (user_id, session_id)
+        min_input_tokens = self._last_total_tokens.get(key, 0)
 
         input_tokens = min_input_tokens + random.randint(
             request_scenario.token_distribution.min_input_tokens,
@@ -345,9 +339,11 @@ class RequestGenerator:
             request_scenario.token_distribution.max_output_tokens,
         )
 
-        return Request(
+        request = Request(
             isl=input_tokens,
             osl=output_tokens,
             user_id=user_id,
             session_id=session_id,
         )
+        self.start_request(request)
+        return request

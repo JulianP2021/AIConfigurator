@@ -54,6 +54,7 @@ def fake_prefill_instance():
     )
     instance.scheduler = FakeScheduler()
     instance.session = MagicMock()
+    instance._kv_cache_bytes = 0
     return instance
 
 
@@ -86,6 +87,7 @@ def fake_decode_instance():
     instance.current_batch = None
     instance.remaining_batch_time_ms = None
     instance.current_batch_decode_time_ms = None
+    instance._kv_cache_bytes = 0
     return instance
 
 

@@ -49,6 +49,7 @@ class DecodeInstance:
         self.current_batch = None
         self.remaining_batch_time_ms = None
         self.current_batch_decode_time_ms = None
+        self._kv_cache_bytes: int = 0
 
         # system_name, backend_version = get_meta(
         #     backend_version="",
@@ -74,8 +75,7 @@ class DecodeInstance:
         """Return the scheduler's global time, or 0.0 if unavailable."""
         if self.scheduler is None:
             return 0.0
-        raw = self.scheduler.time_ms
-        return float(raw)
+        return float(self.scheduler.time_ms)
 
     def add_request(self, request: Request):
         assert self.cache is not None, "Cache must be set before adding requests"
@@ -99,6 +99,7 @@ class DecodeInstance:
             if not self.queue and not self.current_batch:
                 request.decode_start_ms = now
             self.queue.append((request, -1))
+            self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
 
     def _ensure_batch(self) -> None:
         """Freeze a new batch from the head of the queue when none is active."""
@@ -155,14 +156,15 @@ class DecodeInstance:
         )
 
         assert time_ms >= 0, "Time to process queue should be non-negative"
-        kv_cache = 0
-        for req, _ in self.queue:
-            kv_cache += self.model.kv_size_per_token * req.cache_length
+        if self._kv_cache_bytes > self.hardware.gpu_mem:
+            print(
+                f"KV cache exceeds GPU memory for node {self.node_id}: "
+                f"{self._kv_cache_bytes} bytes used by {len(self.queue)} requests with {sum(r.cache_length for r, _ in self.queue) / len(self.queue) if self.queue else 0} avg tokens , {self.hardware.gpu_mem} bytes available",
+            )
 
-        if kv_cache > self.hardware.gpu_mem:
             raise DecodeError(
                 f"KV cache exceeds GPU memory for node {self.node_id}: "
-                f"{kv_cache} bytes used, {self.hardware.gpu_mem} bytes available"
+                f"{self._kv_cache_bytes} bytes used, {self.hardware.gpu_mem} bytes available"
             )
 
         finished_requests: list[Request] = []
@@ -177,6 +179,7 @@ class DecodeInstance:
             )
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
+            self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
 
         # Drain completed decode uploads.
         while self.upload_queue and not self.upload_queue[0][0].active_legs:
@@ -257,12 +260,20 @@ class DecodeInstance:
             # Remove finished requests from the queue and the frozen batch.
             if finished_in_batch:
                 finished_set = {id(r) for r in finished_in_batch}
-                self.queue = [
-                    (r, t) for r, t in self.queue if id(r) not in finished_set
-                ]
+                removed_cache_bytes = 0
+                new_queue: list[tuple[Request, float]] = []
+                for r, t in self.queue:
+                    if id(r) in finished_set:
+                        removed_cache_bytes += (
+                            self.model.kv_size_per_token * r.cache_length
+                        )
+                    else:
+                        new_queue.append((r, t))
+                self.queue = new_queue
                 self.current_batch = [
                     r for r in self.current_batch if id(r) not in finished_set
                 ]
+                self._kv_cache_bytes -= removed_cache_bytes
 
             # If we completed one or more tokens, or the batch is empty,
             # unfreeze so a new batch can be formed for the next token step.

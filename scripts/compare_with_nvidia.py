@@ -55,8 +55,8 @@ def run_your_simulator(
     isl: int,
     osl: int,
     total_requests: int,
-    req_rate: float,
-    unique_users: bool,
+    users: int,
+    think_time_ms: float,
     batch_size: int,
     prefill_workers: int,
     decode_workers: int,
@@ -65,17 +65,6 @@ def run_your_simulator(
 ) -> SimulationResult:
     """Run the discrete-event simulator with the matched topology."""
     print("[1/2] Running your simulator ...")
-
-    # If unique_users, force max_users > total_requests so every request is a new user
-    if unique_users:
-        min_users = total_requests + 1
-        max_users = total_requests + 1
-        print(
-            f"  Unique users: {max_users} users (> {total_requests} requests) → no shared prefix."
-        )
-    else:
-        min_users = 1
-        max_users = 10
 
     return simulate_run_distributed(
         DistributedScenario(
@@ -98,9 +87,9 @@ def run_your_simulator(
             ],
             requests=RequestScenario(
                 total_requests=total_requests,
-                min_users=min_users,
-                max_users=max_users,
-                req_s=req_rate,
+                users=users,
+                max_session_turns=1,
+                think_time_ms=think_time_ms,
                 token_distribution=TokenDistribution(
                     min_input_tokens=isl,
                     max_input_tokens=isl,
@@ -281,15 +270,16 @@ def main():
         "--requests", type=int, default=10, help="Total requests (default: 10)"
     )
     parser.add_argument(
-        "--req-rate",
-        type=float,
-        default=2.0,
-        help="Request arrival rate in req/s (default: 2.0)",
+        "--users",
+        type=int,
+        default=10,
+        help="Fixed pool of users taking turns (default: 10)",
     )
     parser.add_argument(
-        "--unique-users",
-        action="store_true",
-        help="Force max_users > requests so every request is a unique user (no shared prefix)",
+        "--think-time-ms",
+        type=float,
+        default=0.0,
+        help="Think time between a user's consecutive requests in ms (default: 0.0)",
     )
     parser.add_argument(
         "--cache-pct",
@@ -339,8 +329,8 @@ def main():
         isl=args.isl,
         osl=args.osl,
         total_requests=args.requests,
-        req_rate=args.req_rate,
-        unique_users=args.unique_users,
+        users=args.users,
+        think_time_ms=args.think_time_ms,
         batch_size=args.batch_size,
         prefill_workers=args.prefill_workers,
         decode_workers=args.decode_workers,
@@ -392,8 +382,8 @@ def main():
                 "isl": args.isl,
                 "osl": args.osl,
                 "total_requests": args.requests,
-                "req_rate": args.req_rate,
-                "unique_users": args.unique_users,
+                "users": args.users,
+                "think_time_ms": args.think_time_ms,
                 "batch_size": args.batch_size,
                 "prefill_workers": args.prefill_workers,
                 "decode_workers": args.decode_workers,

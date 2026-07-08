@@ -198,10 +198,9 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
                 max_output_tokens=int(common["osl"]),
             ),
             total_requests=int(common["requests"]),
-            min_users=int(common.get("min_users", 1)),
-            max_users=int(common.get("max_users", 10)),
+            users=int(common.get("users", 10)),
             max_session_turns=int(common.get("max_session_turns", 5)),
-            req_s=float(common["req_rate"]),
+            think_time_ms=float(common.get("think_time_ms", 0.0)),
         ),
     )
 
@@ -733,9 +732,8 @@ def main() -> None:
         "isl": config.get("isl", env.isl),
         "osl": config.get("osl", env.osl),
         "requests": config.get("requests", env.requests),
-        "req_rate": config.get("req_rate", env.req_rate),
-        "min_users": config.get("min_users", env.min_users),
-        "max_users": config.get("max_users", env.max_users),
+        "users": config.get("users", env.users),
+        "think_time_ms": config.get("think_time_ms", env.think_time_ms),
         "max_session_turns": config.get("max_session_turns", env.max_session_turns),
         "sla": config.get(
             "sla",

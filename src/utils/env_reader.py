@@ -20,11 +20,9 @@ class EnvConfig:
 
     # Scenario scale
     requests: int = 10
-    req_rate: float = 2.0
-    unique_users: bool = False
-    min_users: int = 1
-    max_users: int = 10
+    users: int = 10
     max_session_turns: int = 5
+    think_time_ms: float = 0.0
 
     # Per-request latency SLAs (default inf = disabled)
     sla_ttft_ms: float = float("inf")
@@ -32,9 +30,10 @@ class EnvConfig:
 
     # Topology
     batch_size: int = 10
-    prefill_workers: int = 1
-    decode_workers: int = 1
-    gpus_per_node: int = 1
+    num_prefill_nodes: int = 1
+    num_decode_nodes: int = 1
+    colocated: bool = False
+    prefill_gpus_per_node: int = -1
 
     # Cache
     ram_usage_fraction: float = 0.8
@@ -64,23 +63,25 @@ class EnvConfig:
     log_mask: int = 15
     debug: bool = False
 
+    # Hardware preset
+    machine_hardware: str = "B200 x8 #15825275"
+
 
 _DEFAULTS = {
     "MODEL": "Qwen/Qwen3-8B",
     "ISL": "1000",
     "OSL": "100",
     "REQUESTS": "10",
-    "REQ_RATE": "2.0",
-    "UNIQUE_USERS": "false",
-    "MIN_USERS": "1",
-    "MAX_USERS": "10",
+    "USERS": "10",
     "MAX_SESSION_TURNS": "5",
+    "THINK_TIME_MS": "0.0",
     "SLA_TTFT_MS": "inf",
     "SLA_TPOT_MS": "inf",
     "BATCH_SIZE": "10",
-    "PREFILL_WORKERS": "1",
-    "DECODE_WORKERS": "1",
-    "GPUS_PER_NODE": "1",
+    "NUM_PREFILL_NODES": "1",
+    "NUM_DECODE_NODES": "1",
+    "COLOCATED": "false",
+    "PREFILL_GPUS_PER_NODE": "-1",
     "RAM_USAGE_FRACTION": "0.8",
     "SSD_USAGE_FRACTION": "0.8",
     "S3_ENABLED": "true",
@@ -94,6 +95,7 @@ _DEFAULTS = {
     "ROUTER_BUSY_THRESHOLD_TOKENS": "1000000.0",
     "LOG_MASK": "15",
     "DEBUG": "false",
+    "MACHINE_HARDWARE": "B200 x8 #15825275",
 }
 
 
@@ -108,22 +110,21 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "ISL",
         "OSL",
         "REQUESTS",
-        "MIN_USERS",
-        "MAX_USERS",
+        "USERS",
         "BATCH_SIZE",
-        "PREFILL_WORKERS",
-        "DECODE_WORKERS",
-        "GPUS_PER_NODE",
+        "NUM_PREFILL_NODES",
+        "NUM_DECODE_NODES",
+        "PREFILL_GPUS_PER_NODE",
     }:
         return int(value)
     if key in {
-        "REQ_RATE",
         "RAM_USAGE_FRACTION",
         "SSD_USAGE_FRACTION",
         "S3_UP_BW_GBPS",
         "S3_DOWN_BW_GBPS",
         "SLA_TTFT_MS",
         "SLA_TPOT_MS",
+        "THINK_TIME_MS",
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_DEVICE_CREDIT",
         "ROUTER_REMOTE_RAM_CREDIT",
@@ -134,7 +135,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         return float(value)
     if key == "LOG_MASK":
         return int(value, 0)
-    if key in {"UNIQUE_USERS", "DEBUG", "S3_ENABLED"}:
+    if key in {"DEBUG", "S3_ENABLED", "COLOCATED"}:
         return _parse_bool(value)
     if key == "MAX_SESSION_TURNS":
         return int(value)
@@ -188,17 +189,16 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         isl=int(merged["ISL"]),
         osl=int(merged["OSL"]),
         requests=int(merged["REQUESTS"]),
-        req_rate=float(merged["REQ_RATE"]),
-        unique_users=_parse_bool(merged["UNIQUE_USERS"]),
-        min_users=int(merged["MIN_USERS"]),
-        max_users=int(merged["MAX_USERS"]),
+        users=int(merged["USERS"]),
         max_session_turns=int(merged["MAX_SESSION_TURNS"]),
+        think_time_ms=float(merged["THINK_TIME_MS"]),
         sla_ttft_ms=float(merged["SLA_TTFT_MS"]),
         sla_tpot_ms=float(merged["SLA_TPOT_MS"]),
         batch_size=int(merged["BATCH_SIZE"]),
-        prefill_workers=int(merged["PREFILL_WORKERS"]),
-        decode_workers=int(merged["DECODE_WORKERS"]),
-        gpus_per_node=int(merged["GPUS_PER_NODE"]),
+        num_prefill_nodes=int(merged["NUM_PREFILL_NODES"]),
+        num_decode_nodes=int(merged["NUM_DECODE_NODES"]),
+        colocated=_parse_bool(merged["COLOCATED"]),
+        prefill_gpus_per_node=int(merged["PREFILL_GPUS_PER_NODE"]),
         ram_usage_fraction=float(merged["RAM_USAGE_FRACTION"]),
         ssd_usage_fraction=float(merged["SSD_USAGE_FRACTION"]),
         s3_enabled=_parse_bool(merged["S3_ENABLED"]),
@@ -212,4 +212,5 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         router_busy_threshold_tokens=float(merged["ROUTER_BUSY_THRESHOLD_TOKENS"]),
         log_mask=int(merged["LOG_MASK"], 0),
         debug=_parse_bool(merged["DEBUG"]),
+        machine_hardware=str(merged["MACHINE_HARDWARE"]),
     )

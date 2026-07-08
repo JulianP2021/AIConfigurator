@@ -124,10 +124,9 @@ def _single_node_scenario(
                 max_output_tokens=osl,
             ),
             total_requests=total_requests,
-            min_users=1,
-            max_users=1,
+            users=2,
             max_session_turns=5,
-            req_s=10.0,
+            think_time_ms=0.0,
         ),
     )
 

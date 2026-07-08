@@ -291,7 +291,7 @@ def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
         "pcie_bw": offer.get("pcie_bw", 0.0) * 1024**3,
         "nvme_mem": offer.get("disk_space", 0.0) * 1024**3,
         "nvme_bw": offer.get("disk_bw", 0.0) * 1024**2,
-        "network_bw": offer.get("bw_nvlink", 0.0) * 1024**2,
+        "network_bw": offer.get("bw_nvlink", 0.0) * 1024**3,
         "network_inet_up": offer.get("inet_up", 0.0) * 1024**2 / 8,
         "network_inet_down": offer.get("inet_down", 0.0) * 1024**2 / 8,
         "reliability": offer.get("reliability", 0.0),

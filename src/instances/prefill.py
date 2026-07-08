@@ -62,8 +62,7 @@ class PrefillInstance:
         """Return the scheduler's global time, or 0.0 if unavailable."""
         if self.scheduler is None:
             return 0.0
-        raw = self.scheduler.time_ms
-        return float(raw)
+        return float(self.scheduler.time_ms)
 
     def add_request(self, request: Request):
         assert self.cache is not None, "Cache must be set before adding requests"

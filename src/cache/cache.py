@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from heapq import heappop, heappush
 
 from src.hardware.hardware import Hardware, S3Spec
 from src.logger import LOG_CACHE, log
@@ -35,8 +36,45 @@ class CacheItem:
 class CacheLayer:
     node_id: int
     name: str
-    # list session_id, tokens
-    content: list[CacheItem]
+    # Mapping from session_id (user_id, session_id) to the list of CacheItems
+    # belonging to that session.  Items within a session are kept unsorted; callers
+    # sort when needed.
+    content: dict[tuple[int, int], list[CacheItem]]
+
+    # Lazy LRU index.  The heap stores (last_access_tick, id(item)) tuples.
+    # _lru_tick maps id(item) to its current valid tick; stale heap entries are
+    # skipped during pop_lru().  This gives O(log n) touch and O(log n) amortized
+    # eviction instead of scanning the full content dict.
+    _lru_heap: list[tuple[int, int]] = field(default_factory=list)
+    _lru_tick: dict[int, int] = field(default_factory=dict)
+
+    def touch(self, item: CacheItem, tick: int) -> None:
+        """Record that ``item`` was accessed at ``tick``."""
+        heappush(self._lru_heap, (tick, id(item)))
+        self._lru_tick[id(item)] = tick
+        item.last_access_tick = tick
+
+    def remove_from_lru(self, item: CacheItem) -> None:
+        """Mark ``item`` as removed from the LRU index (lazy deletion)."""
+        self._lru_tick.pop(id(item), None)
+
+    def pop_lru(self) -> CacheItem | None:
+        """Return and remove the least-recently-used live item, or None."""
+        while self._lru_heap:
+            tick, item_id = heappop(self._lru_heap)
+            current_tick = self._lru_tick.get(item_id)
+            if current_tick is None or current_tick != tick:
+                # Stale heap entry; the item was removed or re-touched.
+                continue
+            # Find the live item object from the content buckets.
+            for items in self.content.values():
+                for item in items:
+                    if id(item) == item_id:
+                        self._lru_tick.pop(item_id)
+                        return item
+            # Item is no longer in content; clean up the tick entry.
+            self._lru_tick.pop(item_id, None)
+        return None
 
 
 @dataclass
@@ -51,6 +89,7 @@ class Cache:
     ssd_capacity_bytes: dict[int, int]
     ram_usage_bytes: dict[int, int]
     ssd_usage_bytes: dict[int, int]
+    s3_usage_bytes: int
     _access_tick: int
 
     cost_usd: float = 0.0
@@ -80,11 +119,12 @@ class Cache:
         }
         self.ram_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.ssd_usage_bytes = dict.fromkeys(node_hardware, 0)
+        self.s3_usage_bytes = 0
         self._access_tick = 0
 
         # S3 is a single shared layer keyed by S3_NODE_ID.
         if self.s3_spec.enabled:
-            self.layers[S3_NODE_ID] = [CacheLayer(S3_NODE_ID, "S3", [])]
+            self.layers[S3_NODE_ID] = [CacheLayer(S3_NODE_ID, "S3", {})]
 
         self._validate_capacity()
 
@@ -112,10 +152,16 @@ class Cache:
         """Bytes required to store the smallest allowed KV item (512 tokens)."""
         return self.kv_size(self.model, 512)
 
-    def _touch(self, item: CacheItem) -> None:
-        """Update LRU ordering for an accessed item."""
+    def _touch(self, item: CacheItem, layer: CacheLayer | None = None) -> None:
+        """Update LRU ordering for an accessed item.
+
+        If ``layer`` is given, the layer's lazy LRU index is updated as well.
+        """
         self._access_tick += 1
-        item.last_access_tick = self._access_tick
+        if layer is not None:
+            layer.touch(item, self._access_tick)
+        else:
+            item.last_access_tick = self._access_tick
 
     def _item_size(self, item: CacheItem) -> int:
         return self.kv_size(self.model, item.tokens)
@@ -132,40 +178,19 @@ class Cache:
     def usage_summary(self) -> dict[str, int]:
         """Return aggregate cache usage across all nodes/tiers.
 
+        Uses the maintained per-node byte counters and the single S3 counter,
+        avoiding an expensive re-walk of every cached item.
+
         Keys:
             ram_usage_bytes, ssd_usage_bytes, s3_usage_bytes,
             ram_capacity_bytes, ssd_capacity_bytes
         """
-        ram_usage = sum(
-            self._item_size(item)
-            for node_id, layers in self.layers.items()
-            if node_id != S3_NODE_ID
-            for layer in layers
-            if layer.name == "RAM"
-            for item in layer.content
-        )
-        ssd_usage = sum(
-            self._item_size(item)
-            for node_id, layers in self.layers.items()
-            if node_id != S3_NODE_ID
-            for layer in layers
-            if layer.name == "SSD"
-            for item in layer.content
-        )
-        s3_usage = sum(
-            self._item_size(item)
-            for layer in self.layers.get(S3_NODE_ID, [])
-            if layer.name == "S3"
-            for item in layer.content
-        )
-        ram_capacity = sum(self.ram_capacity_bytes.values())
-        ssd_capacity = sum(self.ssd_capacity_bytes.values())
         return {
-            "ram_usage_bytes": ram_usage,
-            "ssd_usage_bytes": ssd_usage,
-            "s3_usage_bytes": s3_usage,
-            "ram_capacity_bytes": ram_capacity,
-            "ssd_capacity_bytes": ssd_capacity,
+            "ram_usage_bytes": sum(self.ram_usage_bytes.values()),
+            "ssd_usage_bytes": sum(self.ssd_usage_bytes.values()),
+            "s3_usage_bytes": self.s3_usage_bytes,
+            "ram_capacity_bytes": sum(self.ram_capacity_bytes.values()),
+            "ssd_capacity_bytes": sum(self.ssd_capacity_bytes.values()),
         }
 
     def _has_s3_equivalent(self, item: CacheItem) -> bool:
@@ -177,7 +202,7 @@ class Cache:
             existing.session_id == item.session_id
             and existing.token_start == item.token_start
             and existing.token_end == item.token_end
-            for existing in s3_layer.content
+            for existing in s3_layer.content.get(item.session_id, [])
         )
 
     def _evict_ssd_lru(self, node_id: int) -> TransferLeg | None:
@@ -188,19 +213,22 @@ class Cache:
         S3 upload leg if an upload happened, otherwise None.
         """
         layer = self._ssd_layer(node_id)
-        if not layer.content:
+        victim = layer.pop_lru()
+        if victim is None:
             return None
-        victim = min(layer.content, key=lambda item: item.last_access_tick)
         victim_size = self._item_size(victim)
-        layer.content.remove(victim)
+        layer.content[victim.session_id].remove(victim)
+        if not layer.content[victim.session_id]:
+            del layer.content[victim.session_id]
         self.ssd_usage_bytes[node_id] -= victim_size
 
         s3_leg: TransferLeg | None = None
         if self.s3_spec.enabled and not self._has_s3_equivalent(victim):
             s3_layer = self._s3_layer()
             copied = CacheItem(victim.session_id, victim.token_start, victim.token_end)
-            s3_layer.content.append(copied)
-            self._touch(copied)
+            s3_layer.content.setdefault(victim.session_id, []).append(copied)
+            s3_layer.touch(copied, self._access_tick)
+            self.s3_usage_bytes += victim_size
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
             self.cost_usd += (
                 float(victim_size) / 1024 / 1024 / 1024 * self.s3_spec.S3_UPLOAD_COST_GB
@@ -230,29 +258,28 @@ class Cache:
         by SSD overflow evictions.
         """
         ram_layer = self._ram_layer(node_id)
-        if not ram_layer.content:
+        victim = ram_layer.pop_lru()
+        if victim is None:
             raise RuntimeError("No RAM item available to evict")
-
-        victim = min(ram_layer.content, key=lambda item: item.last_access_tick)
         victim_size = self._item_size(victim)
-        ram_layer.content.remove(victim)
+        ram_layer.content[victim.session_id].remove(victim)
+        if not ram_layer.content[victim.session_id]:
+            del ram_layer.content[victim.session_id]
         self.ram_usage_bytes[node_id] -= victim_size
 
         # Make room on SSD, evicting SSD LRU to S3 synchronously if needed.
         s3_legs: list[TransferLeg] = []
-        while (
-            self.ssd_usage_bytes[node_id] + victim_size
-            > self.ssd_capacity_bytes[node_id]
-            and self._ssd_layer(node_id).content
-        ):
+        while self.ssd_usage_bytes[node_id] + victim_size > self.ssd_capacity_bytes[
+            node_id
+        ] and any(item_list for item_list in self._ssd_layer(node_id).content.values()):
             s3_leg = self._evict_ssd_lru(node_id)
             if s3_leg is not None:
                 s3_legs.append(s3_leg)
 
         ssd_layer = self._ssd_layer(node_id)
-        ssd_layer.content.append(victim)
+        ssd_layer.content.setdefault(victim.session_id, []).append(victim)
         self.ssd_usage_bytes[node_id] += victim_size
-        self._touch(victim)
+        ssd_layer.touch(victim, self._access_tick)
         log(
             LOG_CACHE,
             f"Evicted RAM LRU KV for request {victim.session_id} "
@@ -268,7 +295,7 @@ class Cache:
         evictions that were pushed to S3.
         """
         eviction_legs: list[TransferLeg] = []
-        while self._ram_layer(node_id).content:
+        while any(item_list for item_list in self._ram_layer(node_id).content.values()):
             # Stop if the new item already fits in the remaining RAM budget.
             if self.ram_usage_bytes[node_id] + size <= self.ram_capacity_bytes[node_id]:
                 break
@@ -304,14 +331,14 @@ class Cache:
         if self.layers.get(node_id) is None:
             self.layers[node_id] = []
             self.layers[node_id].append(
-                CacheLayer(node_id=node_id, name=layer_name, content=[])
+                CacheLayer(node_id=node_id, name=layer_name, content={})
             )
             layer = self.layers[node_id][0]
         else:
             node_layers = self.layers[node_id]
             if not any(layer.name == layer_name for layer in node_layers):
                 node_layers.append(
-                    CacheLayer(node_id=node_id, name=layer_name, content=[])
+                    CacheLayer(node_id=node_id, name=layer_name, content={})
                 )
                 layer = next(
                     (
@@ -338,9 +365,8 @@ class Cache:
         items: list[CacheItem] = []
         for node_layers in self.layers.values():
             for layer in node_layers:
-                for item in layer.content:
-                    if item.session_id == session_id:
-                        items.append(item)
+                for item in layer.content.get(session_id, []):
+                    items.append(item)
         return items
 
     def _contiguous_prefix(self, items: list[CacheItem]) -> list[CacheItem]:
@@ -381,7 +407,7 @@ class Cache:
     def find_cache_layer(self, item: CacheItem) -> CacheLayer | None:
         for _, layers in self.layers.items():
             for layer in layers:
-                if item in layer.content:
+                if item in layer.content.get(item.session_id, []):
                     return layer
         return None
 
@@ -407,7 +433,13 @@ class Cache:
                 self.ram_usage_bytes[layer.node_id] -= self._item_size(item)
             elif layer.name == "SSD":
                 self.ssd_usage_bytes[layer.node_id] -= self._item_size(item)
-            layer.content.remove(item)
+            elif layer.name == "S3":
+                self.s3_usage_bytes -= self._item_size(item)
+            item_list = layer.content[item.session_id]
+            item_list.remove(item)
+            if not item_list:
+                del layer.content[item.session_id]
+            layer.remove_from_lru(item)
             return
         raise ValueError("Item not found in cache")
 
@@ -425,9 +457,7 @@ class Cache:
         Returns any destination-RAM eviction legs produced while making room.
         """
         for layer in (self._ram_layer(node_id), self._ssd_layer(node_id)):
-            for existing in list(layer.content):
-                if existing.session_id != session_id:
-                    continue
+            for existing in list(layer.content.get(session_id, [])):
                 if (
                     existing.token_end <= token_start
                     or existing.token_start >= token_end
@@ -537,9 +567,9 @@ class Cache:
         item_size = self._item_size(item)
         eviction_legs = self._make_room_ram(node_id, item_size)
 
-        layer.content.append(item)
+        layer.content.setdefault(item.session_id, []).append(item)
         self.ram_usage_bytes[node_id] += item_size
-        self._touch(item)
+        self._touch(item, layer)
 
         log(
             LOG_CACHE,

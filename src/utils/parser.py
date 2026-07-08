@@ -56,34 +56,22 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Total requests to simulate (default: {env.requests})",
     )
     parser.add_argument(
-        "--req-rate",
-        type=float,
-        default=env.req_rate,
-        help=f"Request arrival rate in req/s (default: {env.req_rate})",
-    )
-    parser.add_argument(
-        "--unique-users",
-        action="store_true",
-        default=env.unique_users,
-        help="Set max_users > total_requests so every request gets a unique user (no shared prefix)",
-    )
-    parser.add_argument(
-        "--min-users",
+        "--users",
         type=int,
-        default=env.min_users,
-        help=f"Minimum number of users (default: {env.min_users})",
-    )
-    parser.add_argument(
-        "--max-users",
-        type=int,
-        default=env.max_users,
-        help=f"Maximum number of users (default: {env.max_users})",
+        default=env.users,
+        help=f"Fixed pool of users that take turns sending requests (default: {env.users})",
     )
     parser.add_argument(
         "--max-session-turns",
         type=int,
         default=env.max_session_turns,
         help=f"Max requests per user session before starting a new session (default: {env.max_session_turns})",
+    )
+    parser.add_argument(
+        "--think-time-ms",
+        type=float,
+        default=env.think_time_ms,
+        help=f"Think time between a user's consecutive requests in ms (default: {env.think_time_ms})",
     )
     parser.add_argument(
         "--sla",
@@ -183,7 +171,8 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.log_mask,
         help=(
             "Component logging bitmask: bit 0 (1)=cache, bit 1 (2)=instances, "
-            "bit 2 (4)=router,  bit 3 (8)=simulation, bit 4 (16)=bandwidth. 0=none, 31=all "
+            "bit 2 (4)=router, bit 3 (8)=simulation, bit 4 (16)=bandwidth, "
+            "bit 5 (32)=config executor. 0=none, 63=all "
             f"(default: {env.log_mask})"
         ),
     )
@@ -194,77 +183,54 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Decode batch size (default: {env.batch_size})",
     )
     parser.add_argument(
-        "--prefill-workers",
-        type=int,
-        default=env.prefill_workers,
-        help=f"Number of prefill workers (default: {env.prefill_workers})",
-    )
-    parser.add_argument(
-        "--decode-workers",
-        type=int,
-        default=env.decode_workers,
-        help=f"Number of decode workers (default: {env.decode_workers})",
-    )
-    parser.add_argument(
-        "--gpus-per-node",
-        type=int,
-        default=env.gpus_per_node,
-        help=f"GPUs per node (default: {env.gpus_per_node})",
-    )
-    parser.add_argument(
-        "--machine-hardware",
-        type=str,
-        default="H200 x8 #692c33bd",
-        help=(
-            "Hardware preset key from the machine database. "
-            "Quote values containing spaces/hash, e.g. "
-            '"H200 x8 #692c33bd"'
-        ),
-    )
-    parser.add_argument(
-        "--colocated",
-        action="store_true",
-        default=False,
-        help=(
-            "Run colocated nodes that host both prefill and decode instances. "
-            "The GPU split is controlled by --prefill-gpus-per-node; the rest "
-            "are decode instances (default: disabled; separate prefill/decode nodes)"
-        ),
-    )
-    parser.add_argument(
         "--num-prefill-nodes",
         type=int,
-        default=1,
-        help=(
-            "Number of distinct prefill-only nodes when --colocated is not set "
-            "(default: 1)"
-        ),
+        default=env.num_prefill_nodes,
+        help=f"Number of distinct prefill nodes (default: {env.num_prefill_nodes})",
     )
     parser.add_argument(
         "--num-decode-nodes",
         type=int,
-        default=1,
+        default=env.num_decode_nodes,
+        help=f"Number of distinct decode nodes (default: {env.num_decode_nodes})",
+    )
+    parser.add_argument(
+        "--colocated",
+        action="store_true",
+        default=env.colocated,
         help=(
-            "Number of distinct decode-only nodes when --colocated is not set "
-            "(default: 1)"
+            "Run colocated nodes that host both prefill and decode instances "
+            f"(default: {env.colocated})"
         ),
     )
     parser.add_argument(
         "--prefill-gpus-per-node",
         type=int,
-        default=-1,
+        default=env.prefill_gpus_per_node,
         help=(
             "GPUs on each node to use as prefill instances. "
             "In --colocated mode the remaining GPUs become decode instances. "
-            "When omitted, colocated mode falls back to --prefill-workers and "
-            "non-colocated mode uses all GPUs per prefill-only node."
+            f"When omitted, colocated mode falls back to --num-prefill-nodes and "
+            "non-colocated mode uses all GPUs per prefill-only node "
+            f"(default: {env.prefill_gpus_per_node})"
+        ),
+    )
+    parser.add_argument(
+        "--machine-hardware",
+        type=str,
+        default=env.machine_hardware,
+        help=(
+            f"Hardware preset key from the machine database (default: {env.machine_hardware}). "
+            "Quote values containing spaces/hash, e.g. "
+            '"H200 x8 #692c33bd"'
         ),
     )
     return parser
 
 
 def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
-    parser = _base_parser(env)
+    """CLI parser for create_config.py; mirrors main.py topology flags."""
+    parser = get_main_parser(env)
     parser.add_argument(
         "--config-name",
         type=str,
