@@ -294,14 +294,14 @@ class RequestGenerator:
         random.shuffle(ready)
         return ready
 
-    def next_ready_time_ms(self, now_ms: float) -> float:
-        """Return the earliest time at which an idle user becomes ready."""
+    def next_ready_time_ms(self, _now_ms: float) -> float:
+        """Return the earliest absolute time at which an idle user becomes ready."""
         min_time = float("inf")
         for user_id in self._idle_users:
             available = self._next_available_ms.get(user_id, 0.0)
             if available < min_time:
                 min_time = available
-        return min_time - now_ms
+        return min_time
 
     def generate_request(
         self,
@@ -320,10 +320,7 @@ class RequestGenerator:
         session_id = self._user_session_id.get(user_id, 0)
 
         # If the user's current session is full, roll over to a new session.
-        if (
-            self._user_session_turns.get(user_id, 0) >= self.max_session_turns
-            and session_id in self._user_session_id
-        ):
+        if self._user_session_turns.get(user_id, 0) >= self.max_session_turns:
             session_id += 1
 
         key = (user_id, session_id)

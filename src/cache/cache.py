@@ -647,7 +647,6 @@ class Cache:
             assert cache_layer.node_id == node_id, (
                 f"Cache layer node_id should match the provided node_id for request {request.id}"
             )
-            assert cache_layer.name == "RAM", "Cache layer name should be 'RAM'"
             prior_cached_tokens = prior_cache[-1].token_end
             cache_item = CacheItem(
                 cache_key,

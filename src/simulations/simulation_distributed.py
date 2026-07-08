@@ -213,7 +213,17 @@ def simulate_run_distributed(
             f"cached: {new_request.prefilled_tokens}",
         )
 
+    max_iterations = max(1000, scenario.requests.total_requests * 100)
+    iterations = 0
     while len(finished_requests) < scenario.requests.total_requests:
+        iterations += 1
+        if iterations > max_iterations:
+            raise RuntimeError(
+                f"Simulation loop exceeded {max_iterations} iterations "
+                f"(finished={len(finished_requests)}, num_reqs={num_reqs}, "
+                f"global_time={scheduler.time_ms:.3f} ms). This usually means "
+                f"the event loop is not making progress."
+            )
         router.route_requests()
 
         prefilled_requests: list[Request] = []
@@ -231,11 +241,15 @@ def simulate_run_distributed(
             next_ready_ms = request_generator.next_ready_time_ms(scheduler.time_ms)
             if next_ready_ms != float("inf") and next_ready_ms > scheduler.time_ms:
                 scheduler.advance_time(next_ready_ms - scheduler.time_ms)
-            elif next_ready_ms == float("inf"):
+                # Routing newly-ready requests may create compute/transfer work,
+                # so recompute instead of forcing a zero-length step.
+                continue
+            if next_ready_ms == float("inf"):
                 raise RuntimeError(
                     "No compute/transfer events and no user will become ready, "
                     "but not all requests are finished."
                 )
+            # next_ready_ms <= scheduler.time_ms: users are already ready now.
             time_to_next_completion = 0
 
         # Zero-length events can occur when a transfer/compute finishes

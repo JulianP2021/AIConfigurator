@@ -253,7 +253,7 @@ def _run_single_config(
 def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
     """Print a simple comparison table to stdout."""
     header = (
-        f"{'Label':<50} {'avg TTFT':>10} {'TTFT':>10} {'TPOT':>10} {'KV Download':>10} {'KV Upload':>10} {'Latency':>10} "
+        f"{'Label':<50} {'avg prefill time':>10} {'TTFT':>10} {'TPOT':>10} {'KV Download':>10} {'KV Upload':>10} {'Latency':>10} "
         f"{'Tokens/s':>12} {'$/h':>10}"
     )
     print(header)
@@ -677,7 +677,7 @@ def _run_single_node_configs(
                         f"Invalidated {invalidated} configs in the config batches.",
                         file=sys.stdout,
                     )
-        except RuntimeError as e:
+        except Exception as e:
             if isinstance(e, (PrefillError, PrefillLatencyError)):
                 single_node_batches = [
                     prefill_batch
@@ -688,6 +688,9 @@ def _run_single_node_configs(
                         and prefill_batch[0][0][1]["prefill_nodes"] <= prefill_nodes
                     )
                 ]
+                print(
+                    f"Prefill error occurred for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
+                )
             else:
                 raise e
         else:
