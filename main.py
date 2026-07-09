@@ -6,13 +6,16 @@ Usage examples:
     python main.py
 
     # Custom model and lengths
-    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --users 10
+    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --sessions-per-user 1 --users 10
 
     # Unique users (no shared prefix / no repeat users)
-    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --requests 10 --users 20
+    python main.py --model Qwen/Qwen3-8B --isl 1000 --osl 100 --sessions-per-user 1 --users 20
 
     # Debug mode
     python main.py --debug --model Qwen/Qwen3-8B --isl 1000 --osl 100
+
+    # Scenario scale
+    # total_requests = users * sessions_per_user * max_session_turns
 """
 
 from src.hardware.hardware import Hardware, S3Spec
@@ -44,9 +47,10 @@ def main():
 
     # If users >= total_requests every request gets its own user, which means no
     # shared prefix / no repeat users.  We keep the user's chosen value otherwise.
-    if args.users >= args.requests:
+    total_requests = args.users * args.sessions_per_user * args.max_session_turns
+    if args.users >= total_requests:
         print(
-            f"--users ({args.users}) >= --requests ({args.requests}): each request gets a unique user → no shared prefix."
+            f"--users ({args.users}) >= total_requests ({total_requests}): each request gets a unique user → no shared prefix."
         )
 
     # ISL/OSL are fixed (min=max) as requested
@@ -126,7 +130,7 @@ def main():
         nodes=nodes,
         requests=RequestScenario(
             token_distribution=token_dist,
-            total_requests=args.requests,
+            sessions_per_user=args.sessions_per_user,
             users=args.users,
             max_session_turns=args.max_session_turns,
             think_time_ms=args.think_time_ms,

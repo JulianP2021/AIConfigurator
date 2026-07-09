@@ -38,6 +38,7 @@ class Node:
                 node_id=self.id,
                 hardware=hardware.spec.gpu_hardware,
                 model=Model(model_name),
+                max_batch_size=batch_size,
             )
             for _ in range(prefill_instances)
         ]

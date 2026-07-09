@@ -235,10 +235,14 @@ class TokenDistribution:
 @dataclass
 class RequestScenario:
     token_distribution: TokenDistribution
-    total_requests: int
+    sessions_per_user: int
     users: int
     max_session_turns: int
     think_time_ms: float
+
+    @property
+    def total_requests(self) -> int:
+        return self.users * self.sessions_per_user * self.max_session_turns
 
 
 @dataclass
@@ -246,6 +250,7 @@ class RequestGenerator:
     users: int
     max_session_turns: int
     think_time_ms: float
+    sessions_per_user: int
 
     # One active session per user.  A user is "active" while it has any request
     # in flight; otherwise it is "idle".  Session ids are monotonic per user.
@@ -259,6 +264,10 @@ class RequestGenerator:
     def __post_init__(self) -> None:
         """Initialize all users as idle."""
         self._idle_users.update(range(self.users))
+
+    @property
+    def total_requests(self) -> int:
+        return self.users * self.sessions_per_user * self.max_session_turns
 
     def start_request(self, request: Request) -> None:
         """Record that ``request`` has been generated and is now in flight."""

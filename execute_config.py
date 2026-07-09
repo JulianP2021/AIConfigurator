@@ -14,9 +14,9 @@ The input JSON schema mirrors the webserver export/import state:
         "model": "Qwen/Qwen3-8B",
         "isl": 128,
         "osl": 8,
-        "requests": 4,
-        "req_rate": 10.0,
-        "max_session_turns": 2,
+        "sessions_per_user": 1,
+        "users": 4,
+        "max_session_turns": 1,
         "ram_usage_fraction": 0.8,
         "ssd_usage_fraction": 0.8,
         "s3_enabled": true,
@@ -197,7 +197,7 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
                 min_output_tokens=int(common["osl"]),
                 max_output_tokens=int(common["osl"]),
             ),
-            total_requests=int(common["requests"]),
+            sessions_per_user=int(common["sessions_per_user"]),
             users=int(common.get("users", 10)),
             max_session_turns=int(common.get("max_session_turns", 5)),
             think_time_ms=float(common.get("think_time_ms", 0.0)),
@@ -248,6 +248,62 @@ def _run_single_config(
         should_print=False,
         sla=sla,
     )
+
+
+def _collect_future_results(
+    futures: dict[concurrent.futures.Future, tuple[int, dict[str, Any]]],
+    timeout_s: float,
+) -> tuple[
+    list[tuple[int, dict[str, Any], SimulationResult]],
+    list[tuple[int, dict[str, Any], Exception]],
+]:
+    """Wait up to ``timeout_s`` for all ``futures`` and collect results.
+
+    Returns a pair ``(successful, failed)``.  Any future still pending when its
+    per-config deadline expires is cancelled and reported as a timeout.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    remaining = dict(futures)
+    successful: list[tuple[int, dict[str, Any], SimulationResult]] = []
+    failed: list[tuple[int, dict[str, Any], Exception]] = []
+
+    while remaining:
+        now = time.monotonic()
+        wait_s = max(0.0, min(deadline - now, 1.0))
+        done, _ = concurrent.futures.wait(
+            remaining, timeout=wait_s, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+
+        # If nothing finished and we are past the deadline, treat the rest as
+        # timed out so the runner cannot hang on a single slow config.
+        if not done and time.monotonic() >= deadline:
+            for future, (i, config) in remaining.items():
+                future.cancel()
+                failed.append((
+                    i,
+                    config,
+                    RuntimeError(f"timed out after {timeout_s}s"),
+                ))
+                print(
+                    f"Config '{config['label']}' timed out after {timeout_s}s",
+                    file=sys.stderr,
+                )
+            remaining.clear()
+            break
+
+        for future in done:
+            i, config = remaining.pop(future)
+            try:
+                result = future.result()
+                successful.append((i, config, result))
+                print(f"Config '{config['label']}' succeeded", file=sys.stdout)
+            except Exception as exc:
+                failed.append((i, config, exc))
+                print(f"Config '{config['label']}' failed: {exc}", file=sys.stderr)
+
+    return successful, failed
 
 
 def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
@@ -346,7 +402,7 @@ def _group_colocated_configs(
     return groups
 
 
-def _group_single_node_configs(
+def _group_seperate_configs(
     configs: list[dict[str, Any]],
 ) -> list[list[list[dict[str, Any]]]]:
     """Group single-node (non-colocated) configs for batched execution.
@@ -403,7 +459,7 @@ def create_colocated_batches(
     return config_batches
 
 
-def create_single_node_batches(
+def create_seperate_batches(
     splitted_configs: list[list[list[dict[str, Any]]]],
 ) -> list[list[list[tuple[str, dict[str, Any]]]]]:
     config_batches: list[list[list[tuple[str, dict[str, Any]]]]] = []
@@ -433,11 +489,11 @@ def _run_colocated_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    timeout_s: float = 120.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     while config_batches:
         batch = config_batches.pop(0)
-
         log(LOG_CONFIG_EXECUTOR, f"\nRunning batch of {len(batch)} configs:")
         for status, cfg in batch:
             if status == "valid":
@@ -462,21 +518,15 @@ def _run_colocated_configs(
                 if status == "valid"
             }
 
-            for future in concurrent.futures.as_completed(futures):
-                (i, config) = futures[future]
-                try:
-                    result = future.result()
-                    results.append((
-                        config["prefill_hardware"],
-                        config["label"],
-                        result,
-                    ))
-                    successful.append((i, config))
-                    print(f"Config '{config['label']}' succeeded", file=sys.stdout)
-
-                except Exception as exc:
-                    failed.append((i, config, exc))
-                    print(f"Config '{config['label']}' failed: {exc}", file=sys.stderr)
+            collected, failed_in_batch = _collect_future_results(futures, timeout_s)
+            for i, config, result in collected:
+                results.append((
+                    config["prefill_hardware"],
+                    config["label"],
+                    result,
+                ))
+                successful.append((i, config))
+            failed.extend(failed_in_batch)
 
             for next_batch in config_batches:
                 if len(next_batch) == 0:
@@ -498,19 +548,23 @@ def _run_colocated_configs(
                         f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
                     )
                     if isinstance(exc, (PrefillError, PrefillLatencyError)) and (
-                        cfg["prefill_nodes"] < failed_config["prefill_nodes"]
+                        int(cfg["prefill_nodes"]) < int(failed_config["prefill_nodes"])
                     ):
                         next_batch[i] = ("invalid", cfg)
                     if isinstance(exc, DecodeError) and (
-                        cfg["prefill_nodes"] <= failed_config["prefill_nodes"]
-                        and cfg["batch_size"] < failed_config["batch_size"]
+                        int(cfg["prefill_nodes"]) <= int(failed_config["prefill_nodes"])
+                        and int(cfg["batch_size"]) < int(failed_config["batch_size"])
                     ):
                         next_batch[i] = ("invalid", cfg)
                     if isinstance(exc, DecodeLatencyError) and (
-                        cfg["prefill_nodes"] <= failed_config["prefill_nodes"]
-                        and cfg["batch_size"] > failed_config["batch_size"]
+                        int(cfg["prefill_nodes"]) <= int(failed_config["prefill_nodes"])
+                        and int(cfg["batch_size"]) > int(failed_config["batch_size"])
                     ):
                         next_batch[i] = ("invalid", cfg)
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                        )
 
                 for i, successful_config in successful:
                     assert len(next_batch) > i, (
@@ -529,25 +583,34 @@ def _run_colocated_configs(
                     ), (
                         f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
                     )
-                    if cfg["prefill_nodes"] > successful_config["prefill_nodes"] or (
-                        cfg["prefill_nodes"] == successful_config["prefill_nodes"]
-                        and cfg["batch_size"] > successful_config["batch_size"]
+                    if int(cfg["prefill_nodes"]) > int(
+                        successful_config["prefill_nodes"]
+                    ) or (
+                        int(cfg["prefill_nodes"])
+                        == int(successful_config["prefill_nodes"])
+                        and int(cfg["batch_size"])
+                        > int(successful_config["batch_size"])
                     ):
                         next_batch[i] = ("invalid", cfg)
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                        )
     return results
 
 
-def _run_single_node_configs(
-    single_node_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+def _run_seperate_configs(
+    seperate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
     common: dict[str, Any],
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    timeout_s: float = 120.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
 
-    while single_node_batches:
-        config_batches = single_node_batches.pop(0)
+    while seperate_batches:
+        config_batches = seperate_batches.pop(0)
         prefill_hw = config_batches[0][0][1]["prefill_hardware"]
         print(
             f"Running single-node configs for prefill_hardware: {prefill_hw}",
@@ -582,30 +645,19 @@ def _run_single_node_configs(
                         if status == "valid"
                     }
 
-                    for future in concurrent.futures.as_completed(futures):
-                        (i, config) = futures[future]
-                        try:
-                            result = future.result()
-                            results.append((
-                                config["prefill_hardware"]
-                                + " + "
-                                + config["decode_hardware"],
-                                config["label"],
-                                result,
-                            ))
-                            successful.append((i, config))
-                            print(
-                                f"Config '{config['label']}' succeeded", file=sys.stdout
-                            )
-
-                        except Exception as exc:
-                            if isinstance(exc, (PrefillError, PrefillLatencyError)):
-                                raise exc
-                            failed.append((i, config, exc))
-                            print(
-                                f"Config '{config['label']}' failed: {exc}",
-                                file=sys.stderr,
-                            )
+                    collected, failed_in_batch = _collect_future_results(
+                        futures, timeout_s
+                    )
+                    for i, config, result in collected:
+                        results.append((
+                            config["prefill_hardware"]
+                            + " + "
+                            + config["decode_hardware"],
+                            config["label"],
+                            result,
+                        ))
+                        successful.append((i, config))
+                    failed.extend(failed_in_batch)
                     invalidated = 0
                     for next_batch in config_batches:
                         if len(next_batch) == 0:
@@ -631,19 +683,29 @@ def _run_single_node_configs(
                                 f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
                             )
                             if isinstance(exc, DecodeError) and (
-                                cfg["decode_nodes"] <= failed_config["decode_nodes"]
-                                and cfg["batch_size"] < failed_config["batch_size"]
+                                int(cfg["decode_nodes"])
+                                <= int(failed_config["decode_nodes"])
+                                and int(cfg["batch_size"])
+                                < int(failed_config["batch_size"])
                             ):
                                 next_batch[i] = ("invalid", cfg)
                                 invalidated += 1
-                                # print(f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.", file=sys.stdout)
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
                             if isinstance(exc, DecodeLatencyError) and (
-                                cfg["decode_nodes"] <= failed_config["decode_nodes"]
-                                and cfg["batch_size"] > failed_config["batch_size"]
+                                int(cfg["decode_nodes"])
+                                <= int(failed_config["decode_nodes"])
+                                and int(cfg["batch_size"])
+                                > int(failed_config["batch_size"])
                             ):
                                 next_batch[i] = ("invalid", cfg)
                                 invalidated += 1
-                                # print(f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.", file=sys.stdout)
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
                         for i, successful_config in successful:
                             assert len(next_batch) > i, (
                                 f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
@@ -663,41 +725,50 @@ def _run_single_node_configs(
                             ), (
                                 f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
                             )
-                            if cfg["decode_nodes"] > successful_config[
-                                "decode_nodes"
-                            ] or (
-                                cfg["decode_nodes"] == successful_config["decode_nodes"]
-                                and cfg["batch_size"] > successful_config["batch_size"]
+                            if int(cfg["decode_nodes"]) > int(
+                                successful_config["decode_nodes"]
+                            ) or (
+                                int(cfg["decode_nodes"])
+                                == int(successful_config["decode_nodes"])
+                                and int(cfg["batch_size"])
+                                > int(successful_config["batch_size"])
                             ):
                                 invalidated += 1
                                 next_batch[i] = ("invalid", cfg)
-                                # print(f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.", file=sys.stdout)
-                        # print(f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}", file=sys.stdout)
-                    print(
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                                )
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
+                        )
+                    log(
+                        LOG_CONFIG_EXECUTOR,
                         f"Invalidated {invalidated} configs in the config batches.",
-                        file=sys.stdout,
                     )
         except Exception as e:
             if isinstance(e, (PrefillError, PrefillLatencyError)):
-                single_node_batches = [
+                seperate_batches = [
                     prefill_batch
-                    for prefill_batch in single_node_batches
+                    for prefill_batch in seperate_batches
                     if len(prefill_batch) > 0
                     and not (
                         prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
                         and prefill_batch[0][0][1]["prefill_nodes"] <= prefill_nodes
                     )
                 ]
-                print(
+                log(
+                    LOG_CONFIG_EXECUTOR,
                     f"Prefill error occurred for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
             else:
                 raise e
         else:
             # remove every prefill config with more prefill nodes
-            single_node_batches = [
+            seperate_batches = [
                 prefill_batch
-                for prefill_batch in single_node_batches
+                for prefill_batch in seperate_batches
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
@@ -725,16 +796,23 @@ def main() -> None:
         default=None,
         help="Path to write webserver-compatible results JSON (default: <config_dir>/results.json)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-config timeout in seconds (default: 120.0, override config file 'timeout_s')",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     set_log_mask(LOG_CONFIG_EXECUTOR)
+    set_log_mask(0)
 
     common = {
         "model": config.get("model", env.model),
         "isl": config.get("isl", env.isl),
         "osl": config.get("osl", env.osl),
-        "requests": config.get("requests", env.requests),
+        "sessions_per_user": config.get("sessions_per_user", env.sessions_per_user),
         "users": config.get("users", env.users),
         "think_time_ms": config.get("think_time_ms", env.think_time_ms),
         "max_session_turns": config.get("max_session_turns", env.max_session_turns),
@@ -766,12 +844,10 @@ def main() -> None:
     colocated_configs = [
         cfg for cfg in configs if cfg.get("colocated", False) == "true"
     ]
-    single_node_configs = [
-        cfg for cfg in configs if cfg.get("colocated", False) != "true"
-    ]
+    seperate_configs = [cfg for cfg in configs if cfg.get("colocated", False) != "true"]
 
     colocated_config_splitted = _group_colocated_configs(colocated_configs)
-    single_node_config_splitted = _group_single_node_configs(single_node_configs)
+    seperate_config_splitted = _group_seperate_configs(seperate_configs)
 
     for i, batch in enumerate(colocated_config_splitted):
         log(
@@ -787,33 +863,39 @@ def main() -> None:
             f"A{i}: {[cfg['label'] for cfg in colocated_config_splitted[i]]}, {[cfg['prefill_nodes'] for cfg in colocated_config_splitted[i]]}",
         )
 
-    for i, prefill_batch in enumerate(single_node_config_splitted):
+    for i, prefill_batch in enumerate(seperate_config_splitted):
         for j, decode_batch in enumerate(prefill_batch):
             log(
                 LOG_CONFIG_EXECUTOR,
                 f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['decode_nodes'] for cfg in decode_batch]}",
             )
-            single_node_config_splitted[i][j] = eytzinger_layout(
+            seperate_config_splitted[i][j] = eytzinger_layout(
                 decode_batch,
                 key=lambda c: int(c["decode_nodes"]) * 100 + int(c["batch_size"]),
             )
             log(
                 LOG_CONFIG_EXECUTOR,
-                f"A{i}.{j}: {[cfg['label'] for cfg in single_node_config_splitted[i][j]]}, {[cfg['decode_nodes'] for cfg in single_node_config_splitted[i][j]]}",
+                f"A{i}.{j}: {[cfg['label'] for cfg in seperate_config_splitted[i][j]]}, {[cfg['decode_nodes'] for cfg in seperate_config_splitted[i][j]]}",
             )
 
     colocated_config_batches = create_colocated_batches(colocated_config_splitted)
-    single_node_config_batches = create_single_node_batches(single_node_config_splitted)
+    seperate_config_batches = create_seperate_batches(seperate_config_splitted)
 
     from src.utils.utils import get_shape
 
     print(
         "Shapes: ",
         get_shape(colocated_config_splitted),
-        get_shape(single_node_config_splitted),
+        get_shape(seperate_config_splitted),
     )
 
     results: list[tuple[str, str, SimulationResult]] = []
+
+    timeout_s = (
+        args.timeout
+        if args.timeout is not None
+        else float(config.get("timeout_s", 120.0))
+    )
 
     results.extend(
         _run_colocated_configs(
@@ -822,18 +904,20 @@ def main() -> None:
             ram_usage_fraction,
             ssd_usage_fraction,
             s3_spec,
+            timeout_s=timeout_s,
         )
     )
     results.sort(key=lambda x: x[0])
-    single_node_results = _run_single_node_configs(
-        single_node_config_batches,
+    seperate_results = _run_seperate_configs(
+        seperate_config_batches,
         common,
         ram_usage_fraction,
         ssd_usage_fraction,
         s3_spec,
+        timeout_s=timeout_s,
     )
-    single_node_results.sort(key=lambda x: x[0])
-    results.extend(single_node_results)
+    seperate_results.sort(key=lambda x: x[0])
+    results.extend(seperate_results)
 
     print_table(results)
 

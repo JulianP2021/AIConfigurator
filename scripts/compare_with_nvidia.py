@@ -4,7 +4,7 @@
 2. NVIDIA AI Configurator (aiconfigurator) estimate API.
 
 Usage:
-    python scripts/compare_with_nvidia.py --isl 1000 --osl 100 --requests 10 --model Qwen/Qwen3-8B
+    python scripts/compare_with_nvidia.py --isl 1000 --osl 100 --sessions-per-user 1 --users 10 --model Qwen/Qwen3-8B
     python scripts/compare_with_nvidia.py --isl 1000 --osl 100 --unique-users
     python scripts/compare_with_nvidia.py --debug --save results.json
 """
@@ -54,7 +54,7 @@ def run_your_simulator(
     model: str,
     isl: int,
     osl: int,
-    total_requests: int,
+    sessions_per_user: int,
     users: int,
     think_time_ms: float,
     batch_size: int,
@@ -86,7 +86,7 @@ def run_your_simulator(
                 ),
             ],
             requests=RequestScenario(
-                total_requests=total_requests,
+                sessions_per_user=sessions_per_user,
                 users=users,
                 max_session_turns=1,
                 think_time_ms=think_time_ms,
@@ -267,7 +267,10 @@ def main():
         help="Output sequence length (fixed, default: 100)",
     )
     parser.add_argument(
-        "--requests", type=int, default=10, help="Total requests (default: 10)"
+        "--sessions-per-user",
+        type=int,
+        default=1,
+        help="Sessions per user (default: 1). Total requests = users * sessions_per_user.",
     )
     parser.add_argument(
         "--users",
@@ -328,7 +331,7 @@ def main():
         model=args.model,
         isl=args.isl,
         osl=args.osl,
-        total_requests=args.requests,
+        sessions_per_user=args.sessions_per_user,
         users=args.users,
         think_time_ms=args.think_time_ms,
         batch_size=args.batch_size,
@@ -381,7 +384,7 @@ def main():
                 "backend": BACKEND,
                 "isl": args.isl,
                 "osl": args.osl,
-                "total_requests": args.requests,
+                "sessions_per_user": args.sessions_per_user,
                 "users": args.users,
                 "think_time_ms": args.think_time_ms,
                 "batch_size": args.batch_size,

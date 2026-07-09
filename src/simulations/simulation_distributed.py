@@ -188,6 +188,7 @@ def simulate_run_distributed(
         users=scenario.requests.users,
         max_session_turns=scenario.requests.max_session_turns,
         think_time_ms=scenario.requests.think_time_ms,
+        sessions_per_user=scenario.requests.sessions_per_user,
     )
     finished_requests: list[Request] = []
     current_requests: list[Request] = []
@@ -215,6 +216,7 @@ def simulate_run_distributed(
 
     max_iterations = max(1000, scenario.requests.total_requests * 100)
     iterations = 0
+    heartbeat_every = max(100, scenario.requests.total_requests // 10)
     while len(finished_requests) < scenario.requests.total_requests:
         iterations += 1
         if iterations > max_iterations:
@@ -224,6 +226,21 @@ def simulate_run_distributed(
                 f"global_time={scheduler.time_ms:.3f} ms). This usually means "
                 f"the event loop is not making progress."
             )
+        if iterations % heartbeat_every == 0:
+            log(
+                LOG_SIMULATION,
+                f"Heartbeat: iteration={iterations}, finished={len(finished_requests)}"
+                f"/ total={scenario.requests.total_requests}, global_time="
+                f"{scheduler.time_ms:.3f} ms, active={len(current_requests)},"
+                f" queue={len(router.queue)}.",
+            )
+            if should_print:
+                print(
+                    f"[simulate] iteration={iterations}, "
+                    f"finished={len(finished_requests)}/"
+                    f"{scenario.requests.total_requests}, "
+                    f"global_time={scheduler.time_ms:.3f} ms"
+                )
         router.route_requests()
 
         prefilled_requests: list[Request] = []
@@ -355,7 +372,7 @@ def simulate_run_distributed(
         if time_to_next_completion == float("inf"):
             break
         if time_to_next_completion <= 0:
-            time_to_next_completion = 1e-9
+            time_to_next_completion = 10
 
         log(
             LOG_SIMULATION,

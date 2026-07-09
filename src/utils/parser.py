@@ -50,10 +50,11 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Output sequence length (fixed, default: {env.osl})",
     )
     parser.add_argument(
-        "--requests",
+        "--sessions-per-user",
         type=int,
-        default=env.requests,
-        help=f"Total requests to simulate (default: {env.requests})",
+        default=env.sessions_per_user,
+        help=f"Sessions per user (default: {env.sessions_per_user}). "
+        "Total requests = users * sessions_per_user * max_session_turns.",
     )
     parser.add_argument(
         "--users",

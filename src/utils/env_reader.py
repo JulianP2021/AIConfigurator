@@ -19,7 +19,7 @@ class EnvConfig:
     osl: int = 100
 
     # Scenario scale
-    requests: int = 10
+    sessions_per_user: int = 1
     users: int = 10
     max_session_turns: int = 5
     think_time_ms: float = 0.0
@@ -71,7 +71,7 @@ _DEFAULTS = {
     "MODEL": "Qwen/Qwen3-8B",
     "ISL": "1000",
     "OSL": "100",
-    "REQUESTS": "10",
+    "SESSIONS_PER_USER": "1",
     "USERS": "10",
     "MAX_SESSION_TURNS": "5",
     "THINK_TIME_MS": "0.0",
@@ -109,7 +109,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
     if key in {
         "ISL",
         "OSL",
-        "REQUESTS",
+        "SESSIONS_PER_USER",
         "USERS",
         "BATCH_SIZE",
         "NUM_PREFILL_NODES",
@@ -188,7 +188,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         model=str(merged["MODEL"]),
         isl=int(merged["ISL"]),
         osl=int(merged["OSL"]),
-        requests=int(merged["REQUESTS"]),
+        sessions_per_user=int(merged["SESSIONS_PER_USER"]),
         users=int(merged["USERS"]),
         max_session_turns=int(merged["MAX_SESSION_TURNS"]),
         think_time_ms=float(merged["THINK_TIME_MS"]),

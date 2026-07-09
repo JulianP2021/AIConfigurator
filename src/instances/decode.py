@@ -215,13 +215,19 @@ class DecodeInstance:
                 ])
                 self.current_batch_decode_time_ms = next_decode_time
 
+                # A request may already have reached its OSL; in that case
+                # there are no remaining tokens to decode and we must stop
+                # before applying a zero-width stride that would loop forever.
+                remaining_tokens = min(
+                    r.osl - r.decoded_tokens for r in self.current_batch
+                )
+                if remaining_tokens <= 0:
+                    break
+
                 # Try to stride multiple completed tokens at once, but only
                 # when the decode time is stable.  If the per-token latency
                 # changed, striding with the old rate would miscount how many
                 # tokens actually fit in the surplus time.
-                remaining_tokens = min(
-                    r.osl - r.decoded_tokens for r in self.current_batch
-                )
                 if old_decode_time and abs(next_decode_time - old_decode_time) < 1e-9:
                     stride = int(-self.remaining_batch_time_ms / next_decode_time) + 1
                     stride = min(32, remaining_tokens, max(1, stride))

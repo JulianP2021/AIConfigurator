@@ -67,7 +67,7 @@ When adding a new CLI/env parameter, mirror it in **all four** places unless it 
 MODEL=Qwen/Qwen3-8B
 ISL=1000
 OSL=100
-REQUESTS=10
+SESSIONS_PER_USER=1
 USERS=10
 MAX_SESSION_TURNS=5
 THINK_TIME_MS=0
@@ -154,6 +154,7 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime. In new 
 - After a user's request finishes, that user enters a think time (`THINK_TIME_MS`) before it can generate the next request. The simulator only generates a new request when a user is idle and its think time has elapsed.
 - A user's session is rolled over to the next `session_id` only after the previous session has reached `max_session_turns` **and** the user is idle.
 - Input sequence length within a session grows cumulatively: each new request starts from the maximum `isl + osl` seen so far in that `(user, session)`.
+- `total_requests` is derived from `users * sessions_per_user * max_session_turns`; it is no longer a standalone input.
 - If `users >= total_requests`, every request gets a unique user, which disables shared-prefix caching across requests.
 - `RequestGenerator` tracks active/idle users, per-user session IDs, turn counts, and cached last total tokens. The simulator calls `start_request()` when a request is generated and `finish_request(request, now_ms)` when it completes.
 - Do not change `request_id_counter` behavior unless explicitly asked; it is module-level global state used by `Request`.
@@ -183,7 +184,7 @@ A pytest suite lives in `tests/`.
 ```bash
 .venv/bin/python -m pytest tests/        # all tests
 .venv/bin/python -m pytest tests/ -v     # verbose
-.venv/bin/python main.py --requests 4 --isl 128 --osl 8 --users 4 --max-session-turns 1  # smoke test
+.venv/bin/python main.py --sessions-per-user 1 --isl 128 --osl 8 --users 4 --max-session-turns 1  # smoke test
 ```
 
 Covered areas:
@@ -196,6 +197,18 @@ Covered areas:
 - `tests/test_sla.py` — per-request TTFT/TPOT SLA enforcement.
 - `tests/test_router.py` — routing and cost scoring.
 - `tests/test_execute_config.py` / `tests/test_scraper.py` — config-execution utilities.
+
+## Batch runner (`execute_config.py`)
+
+`execute_config.py --config config.json [--output results.json] [--timeout T]` runs a matrix of scenarios in parallel.
+
+- Each valid config is simulated in a separate process (default `max_workers=8`).
+- A **per-config timeout** (`--timeout` seconds, default `120.0`) is enforced with
+  `concurrent.futures.wait`.  Configs that do not finish before their deadline are
+  cancelled and reported as `timed out after {T}s`.
+- Fast failures (e.g. `PrefillError`) still terminate immediately so dependent
+  configs can be invalidated.
+- The config file may also set `"timeout_s": 300.0`; the CLI flag overrides it.
 
 ## Contact / Ownership
 

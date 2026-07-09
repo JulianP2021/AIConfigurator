@@ -183,8 +183,8 @@
                     <input type="number" id="osl" name="osl" value="100" min="1" form="simForm" required>
                 </div>
                 <div>
-                    <label for="requests">Total Requests</label>
-                    <input type="number" id="requests" name="requests" value="10" min="1" form="simForm" required>
+                    <label for="sessions-per-user">Sessions per User</label>
+                    <input type="number" id="sessions-per-user" name="sessions_per_user" value="1" min="1" form="simForm" required>
                 </div>
                 <div>
                     <label for="users">Users</label>
@@ -367,7 +367,7 @@
                 model: fd.get('model') || '',
                 isl: fd.get('isl') || '',
                 osl: fd.get('osl') || '',
-                requests: fd.get('requests') || '',
+                sessions_per_user: fd.get('sessions_per_user') || '',
                 users: fd.get('users') || '',
                 think_time_ms: fd.get('think_time_ms') || '',
                 max_session_turns: fd.get('max_session_turns') || '',
@@ -414,7 +414,7 @@
             document.getElementById('model').value = state.model || 'Qwen/Qwen3-8B';
             document.getElementById('isl').value = state.isl || '1000';
             document.getElementById('osl').value = state.osl || '100';
-            document.getElementById('requests').value = state.requests || '10';
+            document.getElementById('sessions-per-user').value = state.sessions_per_user || '1';
             document.getElementById('users').value = state.users || '10';
             document.getElementById('think_time_ms').value = state.think_time_ms || '0';
             document.getElementById('max_session_turns').value = state.max_session_turns || '5';

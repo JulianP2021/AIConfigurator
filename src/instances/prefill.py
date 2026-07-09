@@ -27,8 +27,15 @@ class PrefillInstance:
 
     model: Model
     session: Any
+    max_batch_size: int
 
-    def __init__(self, node_id: int, hardware: GPUHardwareSpec, model: Model):
+    def __init__(
+        self,
+        node_id: int,
+        hardware: GPUHardwareSpec,
+        model: Model,
+        max_batch_size: int = 10,
+    ):
         self.node_id = node_id
         self.hardware = hardware
         self.queue = []
@@ -37,6 +44,7 @@ class PrefillInstance:
         self.cache = None
         self.scheduler = None
         self.model = model
+        self.max_batch_size = max_batch_size
 
         # system_name, backend_version = get_meta(
         #     backend_version="",
@@ -96,10 +104,13 @@ class PrefillInstance:
         return float("inf")
 
     def process_queue(self, time_ms: float) -> list[Request]:
-        if len(self.queue) >= 10:
+        # Allow the prefill queue to grow to a multiple of the decode batch size
+        # plus a small headroom; small batch sizes keep the original floor of 10.
+        queue_limit = max(10, self.max_batch_size * 2)
+        if len(self.queue) >= queue_limit:
             raise PrefillError(
                 f"Too many requests in prefill queue for node {self.node_id}: "
-                f"{len(self.queue)} requests"
+                f"{len(self.queue)} requests (limit={queue_limit})"
             )
         assert self.cache is not None, "Cache must be set before processing queue"
         assert self.scheduler is not None, (

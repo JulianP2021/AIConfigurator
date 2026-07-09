@@ -94,8 +94,8 @@ def _fake_model() -> Model:
     return model
 
 
-def _single_node_scenario(
-    isl: int, osl: int, total_requests: int
+def _seperate_scenario(
+    isl: int, osl: int, sessions_per_user: int
 ) -> DistributedScenario:
     hardware = _tiny_hardware()
     model = _fake_model()
@@ -108,11 +108,13 @@ def _single_node_scenario(
     )
     # Patch the node instances to use our fake model directly; avoids HF lookups.
     node.prefill_instances = [
-        PrefillInstance(node.id, hardware.spec.gpu_hardware, model)
+        PrefillInstance(node.id, hardware.spec.gpu_hardware, model, max_batch_size=1)
     ]
     node.decode_instances = [
         DecodeInstance(node.id, hardware.spec.gpu_hardware, 1, model)
     ]
+    users = 2
+    max_session_turns = 5
     return DistributedScenario(
         name="sla_test",
         nodes=[node],
@@ -123,39 +125,39 @@ def _single_node_scenario(
                 min_output_tokens=osl,
                 max_output_tokens=osl,
             ),
-            total_requests=total_requests,
-            users=2,
-            max_session_turns=5,
+            sessions_per_user=sessions_per_user,
+            users=users,
+            max_session_turns=max_session_turns,
             think_time_ms=0.0,
         ),
     )
 
 
 def test_no_sla_does_not_raise():
-    scenario = _single_node_scenario(isl=128, osl=4, total_requests=2)
+    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
     result = simulate_run_distributed(scenario, should_print=False)
     assert result is not None
-    assert len(result.per_request_stats) == 2
+    assert len(result.per_request_stats) == 10
     assert result.ram_cache_usage_bytes >= 0
     assert result.ssd_cache_usage_bytes >= 0
     assert result.s3_cache_usage_bytes >= 0
 
 
 def test_inf_sla_does_not_raise():
-    scenario = _single_node_scenario(isl=128, osl=4, total_requests=2)
+    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
     result = simulate_run_distributed(
         scenario,
         should_print=False,
         sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
     )
     assert result is not None
-    assert len(result.per_request_stats) == 2
+    assert len(result.per_request_stats) == 10
     assert result.ram_cache_capacity_bytes > 0
     assert result.ssd_cache_capacity_bytes > 0
 
 
 def test_ttft_sla_violation_raises():
-    scenario = _single_node_scenario(isl=128, osl=4, total_requests=2)
+    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
     with pytest.raises(PrefillLatencyError) as exc_info:
         simulate_run_distributed(
             scenario,
@@ -168,7 +170,7 @@ def test_ttft_sla_violation_raises():
 def test_tpot_sla_violation_raises():
     # Use many output tokens so the tiny fake model's decode_time exceeds the
     # extremely tight 0.001 ms per-token SLA.
-    scenario = _single_node_scenario(isl=128, osl=500, total_requests=1)
+    scenario = _seperate_scenario(isl=128, osl=500, sessions_per_user=1)
     with pytest.raises(DecodeLatencyError) as exc_info:
         simulate_run_distributed(
             scenario,

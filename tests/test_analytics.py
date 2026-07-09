@@ -55,6 +55,7 @@ def fake_prefill_instance():
     instance.scheduler = FakeScheduler()
     instance.session = MagicMock()
     instance._kv_cache_bytes = 0
+    instance.max_batch_size = 10
     return instance
 
 
