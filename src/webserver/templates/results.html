@@ -174,8 +174,16 @@
                     <div class="label">Concurrency</div>
                 </div>
                 <div class="metric">
-                    <div class="value">${{ "%.2f"|format(result.price_usd_per_hour) }}</div>
-                    <div class="label">Price / hour</div>
+                    <div class="value">${{ "%.2f"|format(result.total_cost_usd_per_hour) }}</div>
+                    <div class="label">Total cost / hour</div>
+                </div>
+                <div class="metric">
+                    <div class="value">${{ "%.2f"|format(result.compute_price_usd_per_hour) }}</div>
+                    <div class="label">Compute cost / hour</div>
+                </div>
+                <div class="metric">
+                    <div class="value">${{ "%.2f"|format(result.s3_cost_usd_per_hour) }}</div>
+                    <div class="label">S3 cost / hour</div>
                 </div>
             </div>
         </div>
@@ -201,9 +209,11 @@
                         <th>max TPOT (ms)</th>
                         <th>Latency (ms)</th>
                         <th>tokens/s</th>
-                        <th>Price/hour ($)</th>
-                        <th>Price/TTFT</th>
-                        <th>Price/TPOT</th>
+                        <th>Total $/h</th>
+                        <th>Compute $/h</th>
+                        <th>S3 $/h</th>
+                        <th>Total/TTFT</th>
+                        <th>Total/TPOT</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -216,7 +226,9 @@
                         <td>{{ "%.2f"|format(row.max_tpot) }}</td>
                         <td>{{ "%.2f"|format(row.request_latency) }}</td>
                         <td>{{ "%.2f"|format(row.tokens_per_second) }}</td>
-                        <td>{{ "%.2f"|format(row.price_usd_per_hour) }}</td>
+                        <td>{{ "%.2f"|format(row.total_cost_usd_per_hour) }}</td>
+                        <td>{{ "%.2f"|format(row.compute_price_usd_per_hour) }}</td>
+                        <td>{{ "%.2f"|format(row.s3_cost_usd_per_hour) }}</td>
                         <td>{{ "%.4f"|format(row.price_per_ttft) }}</td>
                         <td>{{ "%.4f"|format(row.price_per_tpot) }}</td>
                     </tr>

@@ -22,6 +22,7 @@ The input JSON schema mirrors the webserver export/import state:
         "s3_enabled": true,
         "s3_up_bw_gbps": 25.0,
         "s3_down_bw_gbps": 25.0,
+        "s3_eviction_time_ms": 0.0,
         "configs": [
             {
                 "label": "Config 1",
@@ -310,7 +311,7 @@ def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
     """Print a simple comparison table to stdout."""
     header = (
         f"{'Label':<50} {'avg prefill time':>10} {'TTFT':>10} {'TPOT':>10} {'KV Download':>10} {'KV Upload':>10} {'Latency':>10} "
-        f"{'Tokens/s':>12} {'$/h':>10}"
+        f"{'Tokens/s':>12} {'Compute $/h':>12} {'S3 $/h':>10} {'Total $/h':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -324,7 +325,9 @@ def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
             f"{result.kv_upload_time:>10.2f} "
             f"{result.request_latency:>10.2f} "
             f"{result.tokens_per_second:>12.2f} "
-            f"{result.price_usd_per_hour:>10.4f}"
+            f"{result.compute_price_usd_per_hour:>12.4f} "
+            f"{result.s3_cost_usd_per_hour:>10.4f} "
+            f"{result.total_cost_usd_per_hour:>10.4f}"
         )
 
 
@@ -358,7 +361,9 @@ def build_results_data(
             "tokens_per_second": result.tokens_per_second,
             "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
             "request_rate": result.seq_per_second,
-            "price_usd_per_hour": result.price_usd_per_hour,
+            "compute_price_usd_per_hour": result.compute_price_usd_per_hour,
+            "s3_cost_usd_per_hour": result.s3_cost_usd_per_hour,
+            "total_cost_usd_per_hour": result.total_cost_usd_per_hour,
             "color": colors[i % len(colors)],
             "has_error": False,
             "prefill_time": result.avg_prefill_time_ms,
@@ -833,6 +838,9 @@ def main() -> None:
         enabled=bool(config.get("s3_enabled", env.s3_enabled)),
         up_gbps=float(config.get("s3_up_bw_gbps", env.s3_up_bw_gbps)),
         down_gbps=float(config.get("s3_down_bw_gbps", env.s3_down_bw_gbps)),
+        eviction_time_ms=float(
+            config.get("s3_eviction_time_ms", env.s3_eviction_time_ms)
+        ),
     )
 
     configs = config.get("configs", [])

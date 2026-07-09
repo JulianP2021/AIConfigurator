@@ -27,6 +27,7 @@ if __name__ == "__main__":
     config["s3_enabled"] = args.s3_enabled
     config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
     config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
+    config["s3_eviction_time_ms"] = args.s3_eviction_time_ms
     config["sla"] = args.sla
     config["batch_size"] = args.batch_size
     config["num_prefill_nodes"] = args.num_prefill_nodes

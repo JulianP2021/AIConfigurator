@@ -162,6 +162,7 @@ def simulate_run_distributed(
         else scenario.nodes[0].decode_instances[0].model
     )
 
+    scheduler = BandwidthScheduler(scenario.nodes, s3_spec=s3_spec)
     cache = Cache(
         layers={},
         node_hardware=node_hardware_specs,
@@ -169,8 +170,8 @@ def simulate_run_distributed(
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
+        clock=scheduler.clock,
     )
-    scheduler = BandwidthScheduler(scenario.nodes, s3_spec=s3_spec)
 
     for node in scenario.nodes:
         prefill_instances.extend(node.prefill_instances)
@@ -603,11 +604,14 @@ def simulate_run_distributed(
     # Cache usage summary at simulation end
     cache_usage = cache.usage_summary()
 
-    # Pricing (hourly rate only)
-    total_price_per_hour = (
-        sum(node.hardware.spec.dph_base for node in scenario.nodes)
-        + cache.cost_usd * 3600.0 / total_time_s
+    # Pricing
+    compute_price_per_hour = sum(node.hardware.spec.dph_base for node in scenario.nodes)
+    # Extrapolate observed S3 transfer costs across the remaining hour assuming
+    # the same request rate continues.
+    s3_cost_per_hour = (
+        cache.cost_usd * 3600.0 / total_time_s if total_time_s > 0 else 0.0
     )
+    total_price_per_hour = compute_price_per_hour + s3_cost_per_hour
 
     result = SimulationResult(
         scenario_name=scenario.name,
@@ -634,9 +638,12 @@ def simulate_run_distributed(
         ram_cache_usage_bytes=cache_usage["ram_usage_bytes"],
         ssd_cache_usage_bytes=cache_usage["ssd_usage_bytes"],
         s3_cache_usage_bytes=cache_usage["s3_usage_bytes"],
+        s3_peak_cache_usage_bytes=cache_usage["s3_peak_usage_bytes"],
         ram_cache_capacity_bytes=cache_usage["ram_capacity_bytes"],
         ssd_cache_capacity_bytes=cache_usage["ssd_capacity_bytes"],
-        price_usd_per_hour=total_price_per_hour,
+        compute_price_usd_per_hour=compute_price_per_hour,
+        s3_cost_usd_per_hour=s3_cost_per_hour,
+        total_cost_usd_per_hour=total_price_per_hour,
         per_request_stats=per_request_stats,
         avg_prefill_time_ms=avg_prefill_time,
         avg_prefill_wait_ms=avg_prefill_wait,
@@ -723,8 +730,11 @@ def simulate_run_distributed(
         f"  SSD cache usage:      {result.ssd_cache_usage_bytes:,.0f} / {result.ssd_cache_capacity_bytes:,.0f} bytes"
     )
     print(f"  S3 cache usage:       {result.s3_cache_usage_bytes:,.0f} bytes")
+    print(f"  S3 peak cache usage: {result.s3_peak_cache_usage_bytes:,.0f} bytes")
     print(f"{'-' * 60}")
-    print(f"  Price/hour:           ${result.price_usd_per_hour:.4f}")
+    print(f"  Compute price/hour:  ${result.compute_price_usd_per_hour:.4f}")
+    print(f"  S3 cost/hour:        ${result.s3_cost_usd_per_hour:.4f}")
+    print(f"  Total cost/hour:     ${result.total_cost_usd_per_hour:.4f}")
     print(f"{'=' * 60}\n")
 
     return result

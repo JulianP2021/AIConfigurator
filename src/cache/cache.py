@@ -5,6 +5,7 @@ from src.hardware.hardware import Hardware, S3Spec
 from src.logger import LOG_CACHE, log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, TransferLeg, UploadRequest
+from src.scheduler.global_clock import GlobalClock
 
 
 # Sentinel node id used for the shared S3/object-store tier.
@@ -18,6 +19,7 @@ class CacheItem:
     token_start: int
     token_end: int = 0
     last_access_tick: int = 0
+    last_access_ms: float = 0.0
 
     def __init__(
         self, session_id: tuple[int, int], token_start: int, token_end: int = 0
@@ -26,6 +28,7 @@ class CacheItem:
         self.token_start = token_start
         self.token_end = token_end
         self.last_access_tick = 0
+        self.last_access_ms = 0.0
 
     @property
     def tokens(self):
@@ -91,6 +94,10 @@ class Cache:
     ssd_usage_bytes: dict[int, int]
     s3_usage_bytes: int
     _access_tick: int
+    _clock: GlobalClock
+
+    # Peak S3 usage observed during the simulation.
+    s3_peak_usage_bytes: int = 0
 
     cost_usd: float = 0.0
 
@@ -102,6 +109,7 @@ class Cache:
         ram_usage_fraction: float = 0.8,
         ssd_usage_fraction: float = 0.8,
         s3_spec: S3Spec | None = None,
+        clock: GlobalClock | None = None,
     ):
         self.layers = layers
         self.node_hardware = node_hardware
@@ -120,7 +128,9 @@ class Cache:
         self.ram_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.ssd_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.s3_usage_bytes = 0
+        self.s3_peak_usage_bytes = 0
         self._access_tick = 0
+        self._clock = clock or GlobalClock()
 
         # S3 is a single shared layer keyed by S3_NODE_ID.
         if self.s3_spec.enabled:
@@ -156,12 +166,16 @@ class Cache:
         """Update LRU ordering for an accessed item.
 
         If ``layer`` is given, the layer's lazy LRU index is updated as well.
+        The current simulation wall-clock time is recorded so S3 age-based
+        eviction can use real elapsed ms instead of logical access ticks.
         """
         self._access_tick += 1
+        now_ms = self._clock.time_ms
         if layer is not None:
             layer.touch(item, self._access_tick)
         else:
             item.last_access_tick = self._access_tick
+        item.last_access_ms = now_ms
 
     def _item_size(self, item: CacheItem) -> int:
         return self.kv_size(self.model, item.tokens)
@@ -189,6 +203,7 @@ class Cache:
             "ram_usage_bytes": sum(self.ram_usage_bytes.values()),
             "ssd_usage_bytes": sum(self.ssd_usage_bytes.values()),
             "s3_usage_bytes": self.s3_usage_bytes,
+            "s3_peak_usage_bytes": self.s3_peak_usage_bytes,
             "ram_capacity_bytes": sum(self.ram_capacity_bytes.values()),
             "ssd_capacity_bytes": sum(self.ssd_capacity_bytes.values()),
         }
@@ -204,6 +219,35 @@ class Cache:
             and existing.token_end == item.token_end
             for existing in s3_layer.content.get(item.session_id, [])
         )
+
+    def _evict_s3_stale(self) -> None:
+        """Remove S3 items whose last access is older than the eviction window.
+
+        Called after every upload to S3 so peak S3 memory reflects only recently
+        accessed ("hot") objects.
+        """
+        if not self.s3_spec.enabled or self.s3_spec.eviction_time_ms <= 0:
+            return
+        s3_layer = self._s3_layer()
+        now_ms = self._clock.time_ms
+        cutoff_ms = now_ms - self.s3_spec.eviction_time_ms
+        for session_id, items in list(s3_layer.content.items()):
+            for item in list(items):
+                if item.last_access_ms < cutoff_ms:
+                    victim_size = self._item_size(item)
+                    self.s3_usage_bytes -= victim_size
+                    items.remove(item)
+                    s3_layer.remove_from_lru(item)
+                    log(
+                        LOG_CACHE,
+                        f"Evicted stale S3 KV for request {item.session_id} "
+                        f"({item.tokens} tokens, {victim_size} bytes), "
+                        f"last_access_ms={item.last_access_ms:.3f}, cutoff_ms={cutoff_ms:.3f}",
+                    )
+            if not items:
+                del s3_layer.content[session_id]
+        if self.s3_usage_bytes > self.s3_peak_usage_bytes:
+            self.s3_peak_usage_bytes = self.s3_usage_bytes
 
     def _evict_ssd_lru(self, node_id: int) -> TransferLeg | None:
         """Delete the least-recently-used item from a node's SSD layer.
@@ -229,6 +273,8 @@ class Cache:
             s3_layer.content.setdefault(victim.session_id, []).append(copied)
             s3_layer.touch(copied, self._access_tick)
             self.s3_usage_bytes += victim_size
+            if self.s3_usage_bytes > self.s3_peak_usage_bytes:
+                self.s3_peak_usage_bytes = self.s3_usage_bytes
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
             self.cost_usd += (
                 float(victim_size) / 1024 / 1024 / 1024 * self.s3_spec.S3_UPLOAD_COST_GB
@@ -242,6 +288,9 @@ class Cache:
                 f"Uploaded SSD-evicted KV for request {victim.session_id} "
                 f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
             )
+            # Run S3 stale-object eviction after every upload so the reported
+            # peak S3 memory only counts recently-accessed objects.
+            self._evict_s3_stale()
 
         log(
             LOG_CACHE,
@@ -310,7 +359,7 @@ class Cache:
         return eviction_legs
 
     def _ensure_node_accounting(self, node_id: int) -> None:
-        """Create usage/capacity entries for a node if they do not exist."""
+        """Create usage/capacity/peak entries for a node if they do not exist."""
         if node_id == S3_NODE_ID:
             return
         if node_id not in self.ram_capacity_bytes:

@@ -170,6 +170,7 @@ def _run_single_config(
     s3_enabled: bool,
     s3_up_bw_gbps: float,
     s3_down_bw_gbps: float,
+    s3_eviction_time_ms: float,
     router_prefill_load_scale: float,
     router_device_credit: float,
     router_remote_ram_credit: float,
@@ -211,6 +212,7 @@ def _run_single_config(
         enabled=s3_enabled,
         up_gbps=s3_up_bw_gbps,
         down_gbps=s3_down_bw_gbps,
+        eviction_time_ms=s3_eviction_time_ms,
     )
     router_cost_config = RouterCostConfig(
         prefill_load_scale=router_prefill_load_scale,
@@ -395,7 +397,10 @@ def _results_inner_html(
         html += _metric_card(best["label"], "Configuration")
         html += _metric_card(f"{best['ttft']:.2f}", "TTFT (ms)")
         html += _metric_card(f"{best['tpot']:.2f}", "TPOT (ms)")
-        html += _metric_card(f"${best['price_usd_per_hour']:.2f}", "Price / hour")
+        html += _metric_card(
+            f"${best['total_cost_usd_per_hour']:.2f}", "Total cost / hour"
+        )
+        html += _metric_card(f"${best['s3_cost_usd_per_hour']:.2f}", "S3 cost / hour")
         html += _metric_card(f"{best['max_request_latency']:.2f}", "max Latency (ms)")
         html += "</div></div>\n"
 
@@ -406,35 +411,37 @@ def _results_inner_html(
         html += (
             "<th>Latency</th><th>max Latency</th><th>KV Upload</th><th>KV Download</th>"
         )
-        html += "<th>Price/h</th>"
+        html += "<th>Compute $/h</th><th>S3 $/h</th><th>Total $/h</th>"
         html += "</tr></thead><tbody>"
         for row in results:
             if row.get("has_error"):
                 html += (
                     f'<tr style="opacity:0.7;">'
                     f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
-                    f'<td colspan="13" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
+                    f'<td colspan="15" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
                     f"</tr>"
                 )
-                continue
-            html += (
-                f"<tr>"
-                f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
-                f"<td>{row['prefill_hardware']}</td>"
-                f"<td>{row['decode_hardware']}</td>"
-                f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
-                f"<td>{row['batch_size']}</td>"
-                f"<td>{row['ttft']:.2f}</td>"
-                f"<td>{row['max_ttft']:.2f}</td>"
-                f"<td>{row['tpot']:.2f}</td>"
-                f"<td>{row['max_tpot']:.2f}</td>"
-                f"<td>{row['request_latency']:.2f}</td>"
-                f"<td>{row['max_request_latency']:.2f}</td>"
-                f"<td>{row['kv_upload_time']:.2f}</td>"
-                f"<td>{row['kv_download_time']:.2f}</td>"
-                f"<td>${row['price_usd_per_hour']:.2f}</td>"
-                f"</tr>"
-            )
+            continue
+        html += (
+            f"<tr>"
+            f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
+            f"<td>{row['prefill_hardware']}</td>"
+            f"<td>{row['decode_hardware']}</td>"
+            f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
+            f"<td>{row['batch_size']}</td>"
+            f"<td>{row['ttft']:.2f}</td>"
+            f"<td>{row['max_ttft']:.2f}</td>"
+            f"<td>{row['tpot']:.2f}</td>"
+            f"<td>{row['max_tpot']:.2f}</td>"
+            f"<td>{row['request_latency']:.2f}</td>"
+            f"<td>{row['max_request_latency']:.2f}</td>"
+            f"<td>{row['kv_upload_time']:.2f}</td>"
+            f"<td>{row['kv_download_time']:.2f}</td>"
+            f"<td>${row['compute_price_usd_per_hour']:.2f}</td>"
+            f"<td>${row['s3_cost_usd_per_hour']:.2f}</td>"
+            f"<td>${row['total_cost_usd_per_hour']:.2f}</td>"
+            f"</tr>"
+        )
         html += "</tbody></table></div>\n"
 
         # ---- Timing breakdown table ----
@@ -498,7 +505,7 @@ def _build_single_plot(
     for row in results:
         ax.scatter(
             row[x_key],
-            row["price_usd_per_hour"],
+            row["total_cost_usd_per_hour"],
             s=120,
             color=row.get("color", "#58a6ff"),
             edgecolors="white",
@@ -507,14 +514,14 @@ def _build_single_plot(
         )
         ax.annotate(
             row["label"],
-            (row[x_key], row["price_usd_per_hour"]),
+            (row[x_key], row["total_cost_usd_per_hour"]),
             textcoords="offset points",
             xytext=(8, 4),
             fontsize=9,
             color=row.get("color", "#58a6ff"),
         )
     ax.set_xlabel(x_label)
-    ax.set_ylabel("Price ($/hour)")
+    ax.set_ylabel("Total cost ($/hour)")
     ax.set_title(title)
     ax.set_ylim(bottom=0)
     ax.set_xlim(left=0)
@@ -622,6 +629,7 @@ async def simulate(
     s3_enabled: str = Form("true" if _env.s3_enabled else "false"),
     s3_up_bw_gbps: float = Form(_env.s3_up_bw_gbps),
     s3_down_bw_gbps: float = Form(_env.s3_down_bw_gbps),
+    s3_eviction_time_ms: float = Form(_env.s3_eviction_time_ms),
     router_prefill_load_scale: float = Form(_env.router_prefill_load_scale),
     router_device_credit: float = Form(_env.router_device_credit),
     router_remote_ram_credit: float = Form(_env.router_remote_ram_credit),
@@ -667,6 +675,7 @@ async def simulate(
             "s3_enabled": s3_on,
             "s3_up_bw_gbps": s3_up_bw_gbps,
             "s3_down_bw_gbps": s3_down_bw_gbps,
+            "s3_eviction_time_ms": s3_eviction_time_ms,
             "router_prefill_load_scale": router_prefill_load_scale,
             "router_device_credit": router_device_credit,
             "router_remote_ram_credit": router_remote_ram_credit,
@@ -756,7 +765,9 @@ async def simulate(
                 "tokens_per_second": result.tokens_per_second,
                 "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
                 "request_rate": result.seq_per_second,
-                "price_usd_per_hour": result.price_usd_per_hour,
+                "compute_price_usd_per_hour": result.compute_price_usd_per_hour,
+                "s3_cost_usd_per_hour": result.s3_cost_usd_per_hour,
+                "total_cost_usd_per_hour": result.total_cost_usd_per_hour,
                 "color": COLORS[i % len(COLORS)],
                 "has_error": False,
                 # Timing breakdown fields
@@ -809,7 +820,9 @@ async def simulate(
                 "tokens_per_second": 0.0,
                 "tokens_per_second_per_gpu": 0.0,
                 "request_rate": 0.0,
-                "price_usd_per_hour": 0.0,
+                "compute_price_usd_per_hour": 0.0,
+                "s3_cost_usd_per_hour": 0.0,
+                "total_cost_usd_per_hour": 0.0,
                 "has_error": True,
             })
 

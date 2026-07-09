@@ -141,6 +141,7 @@ def main():
         enabled=args.s3_enabled,
         up_gbps=args.s3_up_bw_gbps,
         down_gbps=args.s3_down_bw_gbps,
+        eviction_time_ms=args.s3_eviction_time_ms,
     )
 
     router_cost_config = RouterCostConfig(

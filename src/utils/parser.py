@@ -122,6 +122,15 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"S3 download bandwidth in Gbps (default: {env.s3_down_bw_gbps})",
     )
     parser.add_argument(
+        "--s3-eviction-time-ms",
+        type=float,
+        default=env.s3_eviction_time_ms,
+        help=(
+            "Evict S3 objects that have not been accessed in this many ms. "
+            f"0 disables eviction (default: {env.s3_eviction_time_ms})"
+        ),
+    )
+    parser.add_argument(
         "--router-prefill-load-scale",
         type=float,
         default=env.router_prefill_load_scale,

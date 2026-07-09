@@ -6,6 +6,7 @@ from src.cache.cache import Cache, CacheItem
 from src.hardware.hardware import Hardware, S3Spec
 from src.model.model import Model
 from src.request.request import Request
+from src.scheduler.global_clock import GlobalClock
 
 
 def bottleneck_names(tracks: list[list]) -> list[str]:
@@ -356,6 +357,116 @@ class TestCacheS3:
         # No local cache and no S3 layer.
         dr = cache.download_kv(0, req)
         assert dr.tracks == []
+
+    def test_s3_evicts_stale_items_by_age(
+        self, fake_model: Model, s3_tiny_hardware: Hardware
+    ):
+        """S3 items older than eviction_time_ms are removed after new uploads."""
+        clock = GlobalClock()
+        eviction_window_ms = 1000.0
+        s3_spec = S3Spec.from_gbps(
+            enabled=True,
+            eviction_time_ms=eviction_window_ms,
+        )
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_spec,
+            clock=clock,
+        )
+
+        # Force an S3 upload by filling RAM, then SSD, then evicting to S3.
+        old_item = CacheItem((1, 40), 0, 512)
+        cache.insert_cache_item(old_item, 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+        # old_item is now in S3, recorded at t=0.
+        assert cache.s3_usage_bytes > 0
+        assert cache._s3_layer().content[(1, 40)]
+
+        # Advance the clock past the eviction window.
+        clock.advance(eviction_window_ms + 1.0)
+
+        # Trigger another SSD->S3 upload; this should run stale-object eviction.
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+
+        assert (1, 40) not in cache._s3_layer().content
+        assert cache.s3_usage_bytes == 0
+
+    def test_s3_peak_usage_tracks_maximum(
+        self, fake_model: Model, s3_tiny_hardware: Hardware
+    ):
+        """s3_peak_usage_bytes records the highest S3 usage ever observed."""
+        s3_spec = S3Spec.from_gbps(enabled=True)
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_spec,
+        )
+
+        # Fill RAM, then SSD, then push the oldest item to S3.
+        cache.insert_cache_item(CacheItem((1, 40), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+
+        item_size = cache._item_size(CacheItem((1, 40), 0, 512))
+        assert cache.s3_usage_bytes == item_size
+        assert cache.s3_peak_usage_bytes == item_size
+        assert cache.usage_summary()["s3_peak_usage_bytes"] == item_size
+
+        # Each further insert evicts another SSD item to S3; peak tracks usage.
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+        assert cache.s3_usage_bytes == 2 * item_size
+        assert cache.s3_peak_usage_bytes == 2 * item_size
+
+        cache.insert_cache_item(CacheItem((5, 0), 0, 512), 0)
+        assert cache.s3_usage_bytes == 3 * item_size
+        assert cache.s3_peak_usage_bytes == 3 * item_size
+
+    def test_s3_eviction_keeps_recently_accessed_items(
+        self, fake_model: Model, s3_tiny_hardware: Hardware
+    ):
+        """S3 items touched within the eviction window are not removed."""
+        clock = GlobalClock()
+        eviction_window_ms = 1000.0
+        s3_spec = S3Spec.from_gbps(
+            enabled=True,
+            eviction_time_ms=eviction_window_ms,
+        )
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_spec,
+            clock=clock,
+        )
+
+        old_item = CacheItem((1, 40), 0, 512)
+        cache.insert_cache_item(old_item, 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+
+        # Advance well into the eviction window, then re-touch the S3 copy
+        # directly. This resets its age.
+        clock.advance(eviction_window_ms * 1.5)
+        s3_item = cache._s3_layer().content[(1, 40)][0]
+        cache._touch(s3_item, cache._s3_layer())
+
+        # Advance past the original upload time, but less than the eviction
+        # window since the recent touch. The item should survive.
+        clock.advance(eviction_window_ms * 0.6)
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+
+        assert (1, 40) in cache._s3_layer().content
+        assert cache.s3_usage_bytes > 0
 
 
 class TestCacheLRU:

@@ -19,6 +19,7 @@ class S3Spec:
     enabled: bool
     up_bw_bytes_per_s: int
     down_bw_bytes_per_s: int
+    eviction_time_ms: float
 
     S3_DOWNLOAD_REQ_COSTS = 0.0004  # USD per 1k requests
     S3_DOWNLOAD_COST_GB = 0.09  # USD per GB
@@ -27,7 +28,11 @@ class S3Spec:
 
     @classmethod
     def from_gbps(
-        cls, enabled: bool = True, up_gbps: float = 25.0, down_gbps: float = 25.0
+        cls,
+        enabled: bool = True,
+        up_gbps: float = 25.0,
+        down_gbps: float = 25.0,
+        eviction_time_ms: float = 0.0,
     ) -> S3Spec:
         """Build an S3Spec from gigabits-per-second values."""
         gbps_to_bytes_per_s = 1e9 / 8.0
@@ -35,6 +40,7 @@ class S3Spec:
             enabled=enabled,
             up_bw_bytes_per_s=int(up_gbps * gbps_to_bytes_per_s),
             down_bw_bytes_per_s=int(down_gbps * gbps_to_bytes_per_s),
+            eviction_time_ms=eviction_time_ms,
         )
 
 

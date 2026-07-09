@@ -43,6 +43,7 @@ class EnvConfig:
     s3_enabled: bool = True
     s3_up_bw_gbps: float = 25.0
     s3_down_bw_gbps: float = 25.0
+    s3_eviction_time_ms: float = 0.0
 
     # Dynamo-style KV cache routing cost parameters (tokens).
     # Credits reduce the effective prefill load when the worker already holds
@@ -87,6 +88,7 @@ _DEFAULTS = {
     "S3_ENABLED": "true",
     "S3_UP_BW_GBPS": "25.0",
     "S3_DOWN_BW_GBPS": "25.0",
+    "S3_EVICTION_TIME_MS": "0.0",
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
     "ROUTER_DEVICE_CREDIT": "1.0",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
@@ -204,6 +206,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         s3_enabled=_parse_bool(merged["S3_ENABLED"]),
         s3_up_bw_gbps=float(merged["S3_UP_BW_GBPS"]),
         s3_down_bw_gbps=float(merged["S3_DOWN_BW_GBPS"]),
+        s3_eviction_time_ms=float(merged["S3_EVICTION_TIME_MS"]),
         router_prefill_load_scale=float(merged["ROUTER_PREFILL_LOAD_SCALE"]),
         router_device_credit=float(merged["ROUTER_DEVICE_CREDIT"]),
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),

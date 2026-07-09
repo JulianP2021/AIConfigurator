@@ -40,12 +40,15 @@ class SimulationResult:
     memory_gb: float
 
     # Pricing
-    price_usd_per_hour: float
+    compute_price_usd_per_hour: float
+    s3_cost_usd_per_hour: float = 0.0
+    total_cost_usd_per_hour: float = 0.0
 
     # Cache usage statistics (bytes)
     ram_cache_usage_bytes: float = 0.0
     ssd_cache_usage_bytes: float = 0.0
     s3_cache_usage_bytes: float = 0.0
+    s3_peak_cache_usage_bytes: float = 0.0
     ram_cache_capacity_bytes: float = 0.0
     ssd_cache_capacity_bytes: float = 0.0
 
@@ -95,9 +98,12 @@ class SimulationResult:
             "ram_cache_usage_bytes": round(self.ram_cache_usage_bytes, 0),
             "ssd_cache_usage_bytes": round(self.ssd_cache_usage_bytes, 0),
             "s3_cache_usage_bytes": round(self.s3_cache_usage_bytes, 0),
+            "s3_peak_cache_usage_bytes": round(self.s3_peak_cache_usage_bytes, 0),
             "ram_cache_capacity_bytes": round(self.ram_cache_capacity_bytes, 0),
             "ssd_cache_capacity_bytes": round(self.ssd_cache_capacity_bytes, 0),
-            "price_usd_per_hour": round(self.price_usd_per_hour, 4),
+            "compute_price_usd_per_hour": round(self.compute_price_usd_per_hour, 4),
+            "s3_cost_usd_per_hour": round(self.s3_cost_usd_per_hour, 6),
+            "total_cost_usd_per_hour": round(self.total_cost_usd_per_hour, 4),
             "num_requests": len(self.per_request_stats),
             "avg_prefill_time_ms": round(self.avg_prefill_time_ms, 3),
             "avg_prefill_wait_ms": round(self.avg_prefill_wait_ms, 3),

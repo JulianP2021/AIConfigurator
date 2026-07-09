@@ -161,7 +161,12 @@ class TestBandwidthScheduler:
         scheduler.register(dr)
 
         scheduler.advance_time(50.0)
-        expected_ms = 1_000_000_000 / (s3_spec.down_bw_bytes_per_s / 1000.0)
+        # S3 download is now limited by the smaller of the S3 link and the
+        # destination node's inet downlink.
+        expected_bw = min(
+            s3_spec.down_bw_bytes_per_s, tiny_hardware.spec.network_inet_down
+        )
+        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_s3_upload_shared(self, tiny_hardware: Hardware):
@@ -188,6 +193,11 @@ class TestBandwidthScheduler:
         scheduler.register(ur_b)
 
         scheduler.advance_time(50.0)
-        # S3 uploads use the full uplink bandwidth for each transfer.
-        expected_ms = 1_000_000_000 / (s3_spec.up_bw_bytes_per_s / 1000.0)
+        # S3 uploads share the node's inet uplink (and the S3 uplink), so each
+        # transfer gets an equal share of the bottleneck.
+        expected_bw = min(
+            s3_spec.up_bw_bytes_per_s,
+            tiny_hardware.spec.network_inet_up / 2,
+        )
+        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
