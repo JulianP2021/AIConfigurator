@@ -38,6 +38,7 @@ from src.simulations.simulation_distributed import (
     simulate_run_distributed,
 )
 from src.utils.env_reader import load_env
+from src.utils.utils import add_result_metadata
 
 
 matplotlib.use("Agg")
@@ -421,27 +422,27 @@ def _results_inner_html(
                     f'<td colspan="15" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
                     f"</tr>"
                 )
-            continue
-        html += (
-            f"<tr>"
-            f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
-            f"<td>{row['prefill_hardware']}</td>"
-            f"<td>{row['decode_hardware']}</td>"
-            f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
-            f"<td>{row['batch_size']}</td>"
-            f"<td>{row['ttft']:.2f}</td>"
-            f"<td>{row['max_ttft']:.2f}</td>"
-            f"<td>{row['tpot']:.2f}</td>"
-            f"<td>{row['max_tpot']:.2f}</td>"
-            f"<td>{row['request_latency']:.2f}</td>"
-            f"<td>{row['max_request_latency']:.2f}</td>"
-            f"<td>{row['kv_upload_time']:.2f}</td>"
-            f"<td>{row['kv_download_time']:.2f}</td>"
-            f"<td>${row['compute_price_usd_per_hour']:.2f}</td>"
-            f"<td>${row['s3_cost_usd_per_hour']:.2f}</td>"
-            f"<td>${row['total_cost_usd_per_hour']:.2f}</td>"
-            f"</tr>"
-        )
+                continue
+            html += (
+                f"<tr>"
+                f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
+                f"<td>{row['prefill_hardware']}</td>"
+                f"<td>{row['decode_hardware']}</td>"
+                f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
+                f"<td>{row['batch_size']}</td>"
+                f"<td>{row['ttft']:.2f}</td>"
+                f"<td>{row['max_ttft']:.2f}</td>"
+                f"<td>{row['tpot']:.2f}</td>"
+                f"<td>{row['max_tpot']:.2f}</td>"
+                f"<td>{row['request_latency']:.2f}</td>"
+                f"<td>{row['max_request_latency']:.2f}</td>"
+                f"<td>{row['kv_upload_time']:.2f}</td>"
+                f"<td>{row['kv_download_time']:.2f}</td>"
+                f"<td>${row['compute_price_usd_per_hour']:.2f}</td>"
+                f"<td>${row['s3_cost_usd_per_hour']:.2f}</td>"
+                f"<td>${row['total_cost_usd_per_hour']:.2f}</td>"
+                f"</tr>"
+            )
         html += "</tbody></table></div>\n"
 
         # ---- Timing breakdown table ----
@@ -463,21 +464,21 @@ def _results_inner_html(
             html += (
                 f"<tr>"
                 f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
-                f"<td>{row['prefill_time']:.2f}</td>"
-                f"<td>{row['prefill_wait']:.2f}</td>"
-                f"<td>{row['prefill_download_active']:.2f}</td>"
-                f"<td>{row['prefill_download_wait']:.2f}</td>"
-                f"<td>{row['prefill_upload_active']:.2f}</td>"
-                f"<td>{row['prefill_upload_wait']:.2f}</td>"
-                f"<td>{row['decode_download_active']:.2f}</td>"
-                f"<td>{row['decode_download_wait']:.2f}</td>"
-                f"<td>{row['decode_time']:.2f}</td>"
-                f"<td>{row['decode_wait']:.2f}</td>"
-                f"<td>{row['decode_upload_active']:.2f}</td>"
-                f"<td>{row['decode_upload_wait']:.2f}</td>"
-                f"<td>{row['clean_ttft']:.2f}</td>"
+                f"<td>{row['avg_prefill_time_ms']:.2f}</td>"
+                f"<td>{row['avg_prefill_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_prefill_download_active_ms']:.2f}</td>"
+                f"<td>{row['avg_prefill_download_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_prefill_upload_active_ms']:.2f}</td>"
+                f"<td>{row['avg_prefill_upload_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_download_active_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_download_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_time_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_upload_active_ms']:.2f}</td>"
+                f"<td>{row['avg_decode_upload_wait_ms']:.2f}</td>"
+                f"<td>{row['avg_clean_ttft_ms']:.2f}</td>"
                 f"<td>{row['ttft']:.2f}</td>"
-                f"<td>{row['clean_latency']:.2f}</td>"
+                f"<td>{row['avg_clean_latency_ms']:.2f}</td>"
                 f"<td>{row['request_latency']:.2f}</td>"
                 f"</tr>"
             )
@@ -744,48 +745,9 @@ async def simulate(
                 continue
 
             assert isinstance(result, SimulationResult)
-            results_data.append({
-                "label": label,
-                "prefill_hardware": kwargs["prefill_hardware"],
-                "decode_hardware": kwargs["decode_hardware"],
-                "prefill_nodes": kwargs["prefill_nodes"],
-                "decode_nodes": kwargs["decode_nodes"],
-                "prefill_gpus_per_node": kwargs.get("prefill_gpus_per_node", 0),
-                "decode_gpus_per_node": kwargs.get("decode_gpus_per_node", 0),
-                "batch_size": kwargs["batch_size"],
-                "colocated": kwargs.get("colocated", False),
-                "ttft": result.ttft,
-                "kv_upload_time": result.kv_upload_time,
-                "kv_download_time": result.kv_download_time,
-                "max_ttft": result.max_ttft,
-                "tpot": result.tpot,
-                "max_tpot": result.max_tpot,
-                "request_latency": result.request_latency,
-                "max_request_latency": result.max_request_latency,
-                "tokens_per_second": result.tokens_per_second,
-                "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
-                "request_rate": result.seq_per_second,
-                "compute_price_usd_per_hour": result.compute_price_usd_per_hour,
-                "s3_cost_usd_per_hour": result.s3_cost_usd_per_hour,
-                "total_cost_usd_per_hour": result.total_cost_usd_per_hour,
-                "color": COLORS[i % len(COLORS)],
-                "has_error": False,
-                # Timing breakdown fields
-                "prefill_time": result.avg_prefill_time_ms,
-                "prefill_wait": result.avg_prefill_wait_ms,
-                "prefill_download_active": result.avg_prefill_download_active_ms,
-                "prefill_download_wait": result.avg_prefill_download_wait_ms,
-                "prefill_upload_active": result.avg_prefill_upload_active_ms,
-                "prefill_upload_wait": result.avg_prefill_upload_wait_ms,
-                "decode_download_active": result.avg_decode_download_active_ms,
-                "decode_download_wait": result.avg_decode_download_wait_ms,
-                "decode_time": result.avg_decode_time_ms,
-                "decode_wait": result.avg_decode_wait_ms,
-                "decode_upload_active": result.avg_decode_upload_active_ms,
-                "decode_upload_wait": result.avg_decode_upload_wait_ms,
-                "clean_ttft": result.avg_clean_ttft_ms,
-                "clean_latency": result.avg_clean_latency_ms,
-            })
+            row = result.to_dict()
+            add_result_metadata(row, label, kwargs, COLORS[i % len(COLORS)])
+            results_data.append(row)
 
         error_msg = None
         errors: list[str] = []
@@ -822,6 +784,7 @@ async def simulate(
                 "request_rate": 0.0,
                 "compute_price_usd_per_hour": 0.0,
                 "s3_cost_usd_per_hour": 0.0,
+                "s3_storage_cost_usd_per_hour": 0.0,
                 "total_cost_usd_per_hour": 0.0,
                 "has_error": True,
             })

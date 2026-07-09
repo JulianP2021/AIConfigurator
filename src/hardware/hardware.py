@@ -25,6 +25,7 @@ class S3Spec:
     S3_DOWNLOAD_COST_GB = 0.09  # USD per GB
     S3_UPLOAD_REQ_COSTS = 0.0005  # USD per 1k requests
     S3_UPLOAD_COST_GB = 0  # USD per GB
+    S3_STORAGE_COST_GB_PER_MONTH = 0.022  # USD per GB per month
 
     @classmethod
     def from_gbps(

@@ -86,6 +86,7 @@ from src.simulations.simulation_distributed import (
     simulate_run_distributed,
 )
 from src.utils.env_reader import load_env
+from src.utils.utils import add_result_metadata
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -340,47 +341,9 @@ def build_results_data(
     results_data: list[dict[str, Any]] = []
     for i, (_, label, result) in enumerate(results):
         cfg = configs[i]
-        results_data.append({
-            "label": label,
-            "prefill_hardware": cfg.get("prefill_hardware", ""),
-            "decode_hardware": cfg.get("decode_hardware", ""),
-            "prefill_nodes": cfg.get("prefill_nodes", 0),
-            "decode_nodes": cfg.get("decode_nodes", 0),
-            "prefill_gpus_per_node": cfg.get("prefill_gpus_per_node", 0),
-            "decode_gpus_per_node": cfg.get("decode_gpus_per_node", 0),
-            "batch_size": cfg.get("batch_size", 0),
-            "colocated": cfg.get("colocated", False),
-            "ttft": result.ttft,
-            "kv_upload_time": result.kv_upload_time,
-            "kv_download_time": result.kv_download_time,
-            "max_ttft": result.max_ttft,
-            "tpot": result.tpot,
-            "max_tpot": result.max_tpot,
-            "request_latency": result.request_latency,
-            "max_request_latency": result.max_request_latency,
-            "tokens_per_second": result.tokens_per_second,
-            "tokens_per_second_per_gpu": result.tokens_per_second_per_gpu,
-            "request_rate": result.seq_per_second,
-            "compute_price_usd_per_hour": result.compute_price_usd_per_hour,
-            "s3_cost_usd_per_hour": result.s3_cost_usd_per_hour,
-            "total_cost_usd_per_hour": result.total_cost_usd_per_hour,
-            "color": colors[i % len(colors)],
-            "has_error": False,
-            "prefill_time": result.avg_prefill_time_ms,
-            "prefill_wait": result.avg_prefill_wait_ms,
-            "prefill_download_active": result.avg_prefill_download_active_ms,
-            "prefill_download_wait": result.avg_prefill_download_wait_ms,
-            "prefill_upload_active": result.avg_prefill_upload_active_ms,
-            "prefill_upload_wait": result.avg_prefill_upload_wait_ms,
-            "decode_download_active": result.avg_decode_download_active_ms,
-            "decode_download_wait": result.avg_decode_download_wait_ms,
-            "decode_time": result.avg_decode_time_ms,
-            "decode_wait": result.avg_decode_wait_ms,
-            "decode_upload_active": result.avg_decode_upload_active_ms,
-            "decode_upload_wait": result.avg_decode_upload_wait_ms,
-            "clean_ttft": result.avg_clean_ttft_ms,
-            "clean_latency": result.avg_clean_latency_ms,
-        })
+        row = result.to_dict()
+        add_result_metadata(row, label, cfg, colors[i % len(colors)])
+        results_data.append(row)
     return results_data
 
 

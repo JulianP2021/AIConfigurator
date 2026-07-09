@@ -429,6 +429,11 @@ class TestCacheS3:
         assert cache.s3_usage_bytes == 3 * item_size
         assert cache.s3_peak_usage_bytes == 3 * item_size
 
+    def test_s3_spec_has_storage_cost_constant(self):
+        """S3Spec exposes the hard-coded storage cost per GB per month."""
+        s3_spec = S3Spec.from_gbps(enabled=True)
+        assert s3_spec.S3_STORAGE_COST_GB_PER_MONTH == 0.022
+
     def test_s3_eviction_keeps_recently_accessed_items(
         self, fake_model: Model, s3_tiny_hardware: Hardware
     ):

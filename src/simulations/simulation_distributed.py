@@ -608,9 +608,17 @@ def simulate_run_distributed(
     compute_price_per_hour = sum(node.hardware.spec.dph_base for node in scenario.nodes)
     # Extrapolate observed S3 transfer costs across the remaining hour assuming
     # the same request rate continues.
-    s3_cost_per_hour = (
+    s3_transfer_cost_per_hour = (
         cache.cost_usd * 3600.0 / total_time_s if total_time_s > 0 else 0.0
     )
+    # S3 storage is charged by peak capacity (GB/month rate -> hourly).
+    s3_peak_gb = cache_usage["s3_peak_usage_bytes"] / (1024.0 * 1024.0 * 1024.0)
+    s3_storage_cost_per_hour = (
+        s3_peak_gb * cache.s3_spec.S3_STORAGE_COST_GB_PER_MONTH / (30.0 * 24.0)
+        if cache.s3_spec.enabled
+        else 0.0
+    )
+    s3_cost_per_hour = s3_transfer_cost_per_hour + s3_storage_cost_per_hour
     total_price_per_hour = compute_price_per_hour + s3_cost_per_hour
 
     result = SimulationResult(
@@ -643,6 +651,7 @@ def simulate_run_distributed(
         ssd_cache_capacity_bytes=cache_usage["ssd_capacity_bytes"],
         compute_price_usd_per_hour=compute_price_per_hour,
         s3_cost_usd_per_hour=s3_cost_per_hour,
+        s3_storage_cost_usd_per_hour=s3_storage_cost_per_hour,
         total_cost_usd_per_hour=total_price_per_hour,
         per_request_stats=per_request_stats,
         avg_prefill_time_ms=avg_prefill_time,

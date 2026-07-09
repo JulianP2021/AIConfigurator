@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -42,6 +42,7 @@ class SimulationResult:
     # Pricing
     compute_price_usd_per_hour: float
     s3_cost_usd_per_hour: float = 0.0
+    s3_storage_cost_usd_per_hour: float = 0.0
     total_cost_usd_per_hour: float = 0.0
 
     # Cache usage statistics (bytes)
@@ -75,59 +76,74 @@ class SimulationResult:
     avg_clean_latency_ms: float = 0.0
     max_clean_latency_ms: float = 0.0
 
+    # Rounding configuration for JSON export.  Keys match attribute names.
+    _ROUND: dict[str, int] = field(
+        default_factory=lambda: {
+            "ttft": 3,
+            "tpot": 3,
+            "kv_upload_time": 3,
+            "kv_download_time": 3,
+            "request_latency": 3,
+            "max_request_latency": 3,
+            "max_ttft": 3,
+            "max_tpot": 3,
+            "tokens_per_second": 2,
+            "tokens_per_second_per_gpu": 2,
+            "tokens_per_second_per_user": 2,
+            "seq_per_second": 3,
+            "memory_gb": 2,
+            "ram_cache_usage_bytes": 0,
+            "ssd_cache_usage_bytes": 0,
+            "s3_cache_usage_bytes": 0,
+            "s3_peak_cache_usage_bytes": 0,
+            "ram_cache_capacity_bytes": 0,
+            "ssd_cache_capacity_bytes": 0,
+            "compute_price_usd_per_hour": 4,
+            "s3_cost_usd_per_hour": 6,
+            "s3_storage_cost_usd_per_hour": 6,
+            "total_cost_usd_per_hour": 4,
+            "avg_prefill_time_ms": 3,
+            "avg_prefill_wait_ms": 3,
+            "max_prefill_wait_ms": 3,
+            "avg_prefill_download_active_ms": 3,
+            "avg_prefill_download_wait_ms": 3,
+            "avg_prefill_upload_active_ms": 3,
+            "avg_prefill_upload_wait_ms": 3,
+            "avg_decode_time_ms": 3,
+            "avg_decode_wait_ms": 3,
+            "max_decode_wait_ms": 3,
+            "avg_decode_download_active_ms": 3,
+            "avg_decode_download_wait_ms": 3,
+            "avg_decode_upload_active_ms": 3,
+            "avg_decode_upload_wait_ms": 3,
+            "avg_clean_ttft_ms": 3,
+            "max_clean_ttft_ms": 3,
+            "avg_clean_latency_ms": 3,
+            "max_clean_latency_ms": 3,
+        },
+        repr=False,
+    )
+
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "scenario_name": self.scenario_name,
-            "total_gpus": self.total_gpus,
-            "num_prefill_workers": self.num_prefill_workers,
-            "num_decode_workers": self.num_decode_workers,
-            "prefill_gpus_per_worker": self.prefill_gpus_per_worker,
-            "decode_gpus_per_worker": self.decode_gpus_per_worker,
-            "batch_size": self.batch_size,
-            "ttft_ms": round(self.ttft, 3),
-            "tpot_ms": round(self.tpot, 3),
-            "request_latency_ms": round(self.request_latency, 3),
-            "max_request_latency_ms": round(self.max_request_latency, 3),
-            "max_ttft_ms": round(self.max_ttft, 3),
-            "max_tpot_ms": round(self.max_tpot, 3),
-            "tokens_per_second": round(self.tokens_per_second, 2),
-            "tokens_per_second_per_gpu": round(self.tokens_per_second_per_gpu, 2),
-            "tokens_per_second_per_user": round(self.tokens_per_second_per_user, 2),
-            "seq/s": round(self.seq_per_second, 3),
-            "memory_gb": round(self.memory_gb, 2),
-            "ram_cache_usage_bytes": round(self.ram_cache_usage_bytes, 0),
-            "ssd_cache_usage_bytes": round(self.ssd_cache_usage_bytes, 0),
-            "s3_cache_usage_bytes": round(self.s3_cache_usage_bytes, 0),
-            "s3_peak_cache_usage_bytes": round(self.s3_peak_cache_usage_bytes, 0),
-            "ram_cache_capacity_bytes": round(self.ram_cache_capacity_bytes, 0),
-            "ssd_cache_capacity_bytes": round(self.ssd_cache_capacity_bytes, 0),
-            "compute_price_usd_per_hour": round(self.compute_price_usd_per_hour, 4),
-            "s3_cost_usd_per_hour": round(self.s3_cost_usd_per_hour, 6),
-            "total_cost_usd_per_hour": round(self.total_cost_usd_per_hour, 4),
-            "num_requests": len(self.per_request_stats),
-            "avg_prefill_time_ms": round(self.avg_prefill_time_ms, 3),
-            "avg_prefill_wait_ms": round(self.avg_prefill_wait_ms, 3),
-            "max_prefill_wait_ms": round(self.max_prefill_wait_ms, 3),
-            "avg_prefill_download_active_ms": round(
-                self.avg_prefill_download_active_ms, 3
-            ),
-            "avg_prefill_download_wait_ms": round(self.avg_prefill_download_wait_ms, 3),
-            "avg_prefill_upload_active_ms": round(self.avg_prefill_upload_active_ms, 3),
-            "avg_prefill_upload_wait_ms": round(self.avg_prefill_upload_wait_ms, 3),
-            "avg_decode_time_ms": round(self.avg_decode_time_ms, 3),
-            "avg_decode_wait_ms": round(self.avg_decode_wait_ms, 3),
-            "max_decode_wait_ms": round(self.max_decode_wait_ms, 3),
-            "avg_decode_download_active_ms": round(
-                self.avg_decode_download_active_ms, 3
-            ),
-            "avg_decode_download_wait_ms": round(self.avg_decode_download_wait_ms, 3),
-            "avg_decode_upload_active_ms": round(self.avg_decode_upload_active_ms, 3),
-            "avg_decode_upload_wait_ms": round(self.avg_decode_upload_wait_ms, 3),
-            "avg_clean_ttft_ms": round(self.avg_clean_ttft_ms, 3),
-            "max_clean_ttft_ms": round(self.max_clean_ttft_ms, 3),
-            "avg_clean_latency_ms": round(self.avg_clean_latency_ms, 3),
-            "max_clean_latency_ms": round(self.max_clean_latency_ms, 3),
-        }
+        """Return a JSON-ready dict using the dataclass attribute names.
+
+        Fields listed in ``_ROUND`` are rounded; everything else is exported
+        as-is (e.g. ints, strings, unrounded lists).
+        """
+        raw = asdict(self)
+        rounded: dict[str, Any] = {}
+        for key, value in raw.items():
+            if key.startswith("_"):
+                continue
+            if key == "per_request_stats":
+                rounded[key] = value
+                continue
+            decimals = self._ROUND.get(key)
+            if decimals is not None:
+                rounded[key] = round(value, decimals)
+            else:
+                rounded[key] = value
+        return rounded
 
     def __repr__(self) -> str:
         return (

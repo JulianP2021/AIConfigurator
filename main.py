@@ -162,6 +162,14 @@ def main():
         sla=args.sla,
     )
 
+    # CLI-only detail: break out S3 storage vs transfer costs.
+    print("\n--- Cost breakdown ---")
+    print(
+        f"  S3 transfer cost/hour: ${result.s3_cost_usd_per_hour - result.s3_storage_cost_usd_per_hour:.4f}"
+    )
+    print(f"  S3 storage cost/hour:  ${result.s3_storage_cost_usd_per_hour:.4f}")
+    print(f"  S3 total cost/hour:    ${result.s3_cost_usd_per_hour:.4f}")
+
     # Print compact JSON for piping
     import json
 

@@ -68,6 +68,31 @@ def calculate_memory(model: Model, batch: list[Request], mode: str) -> int:
     return total_memory
 
 
+def add_result_metadata(
+    row: dict[str, object],
+    label: str,
+    cfg: dict[str, object],
+    color: str,
+) -> None:
+    """Layer webserver-specific metadata onto a SimulationResult.to_dict() row.
+
+    This helper is shared by execute_config.py and the webserver so the
+    results JSON schema stays consistent.
+    """
+    row.update({
+        "label": label,
+        "prefill_hardware": cfg.get("prefill_hardware", ""),
+        "decode_hardware": cfg.get("decode_hardware", ""),
+        "prefill_nodes": cfg.get("prefill_nodes", 0),
+        "decode_nodes": cfg.get("decode_nodes", 0),
+        "prefill_gpus_per_node": cfg.get("prefill_gpus_per_node", 0),
+        "decode_gpus_per_node": cfg.get("decode_gpus_per_node", 0),
+        "colocated": cfg.get("colocated", False),
+        "color": color,
+        "has_error": False,
+    })
+
+
 def get_shape(lst, shape=()):
     """Returns the shape of nested lists similarly to numpy's shape.
 
