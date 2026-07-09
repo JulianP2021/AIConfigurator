@@ -612,11 +612,12 @@ def _run_seperate_configs(
     while seperate_batches:
         config_batches = seperate_batches.pop(0)
         prefill_hw = config_batches[0][0][1]["prefill_hardware"]
+        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
+
         print(
-            f"Running single-node configs for prefill_hardware: {prefill_hw}",
+            f"Running single-node configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
             file=sys.stdout,
         )
-        prefill_nodes = config_batches[0][0][1]["prefill_nodes"]
         try:
             while config_batches:
                 batch = config_batches.pop(0)
@@ -706,6 +707,8 @@ def _run_seperate_configs(
                                     LOG_CONFIG_EXECUTOR,
                                     f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
                                 )
+                            else:
+                                raise exc
                         for i, successful_config in successful:
                             assert len(next_batch) > i, (
                                 f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
@@ -755,7 +758,8 @@ def _run_seperate_configs(
                     if len(prefill_batch) > 0
                     and not (
                         prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                        and prefill_batch[0][0][1]["prefill_nodes"] <= prefill_nodes
+                        and int(prefill_batch[0][0][1]["prefill_nodes"])
+                        <= prefill_nodes
                     )
                 ]
                 log(
@@ -772,7 +776,7 @@ def _run_seperate_configs(
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                    and prefill_batch[0][0][1]["prefill_nodes"] >= prefill_nodes
+                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
                 )
             ]
 
@@ -806,7 +810,6 @@ def main() -> None:
 
     config = load_config(args.config)
     set_log_mask(LOG_CONFIG_EXECUTOR)
-    set_log_mask(0)
 
     common = {
         "model": config.get("model", env.model),

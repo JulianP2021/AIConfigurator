@@ -262,8 +262,20 @@ class RequestGenerator:
     _next_available_ms: dict[int, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Initialize all users as idle."""
+        """Initialize all users as idle with a random startup offset.
+
+        Users are spread uniformly across ``[0, max_startup_offset_ms]`` so the
+        first batch of requests does not all arrive at ``t=0``.
+        """
         self._idle_users.update(range(self.users))
+        # Space initial arrivals over several think-time windows so the startup
+        # burst is not bunched within a single interval.  With ``think_time_ms``
+        # this keeps the long-term average rate intact while giving a much
+        # smoother initial arrival pattern.
+        startup_windows = 5
+        max_offset_ms = max(0.0, self.think_time_ms * startup_windows)
+        for user_id in range(self.users):
+            self._next_available_ms[user_id] = random.random() * max_offset_ms
 
     @property
     def total_requests(self) -> int:
@@ -331,6 +343,12 @@ class RequestGenerator:
         # If the user's current session is full, roll over to a new session.
         if self._user_session_turns.get(user_id, 0) >= self.max_session_turns:
             session_id += 1
+            # Reset cached state for the new session so its first request has
+            # no prior context (turn 1, no accumulated tokens).
+            self._user_session_id[user_id] = session_id
+            self._user_session_turns[user_id] = 0
+            key = (user_id, session_id)
+            self._last_total_tokens.pop(key, None)
 
         key = (user_id, session_id)
         min_input_tokens = self._last_total_tokens.get(key, 0)

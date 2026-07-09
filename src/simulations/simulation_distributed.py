@@ -89,7 +89,14 @@ def _finish_request(
             raise PrefillLatencyError(
                 f"Request {request.id} TTFT SLA violated: "
                 f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
-                f"SLA {ttft_sla:.2f} ms"
+                f"SLA {ttft_sla:.2f} ms, prefill time: {request.prefill_time_ms:.2f} ms, ",
+                f"prefill download active: {request.prefill_download_active_ms:.2f} ms, "
+                f"prefill upload active: {request.prefill_upload_active_ms:.2f} ms, "
+                f"decode kv download active: {request.decode_download_active_ms:.2f} ms, "
+                f"prefill download wait: {request.prefill_download_wait_ms:.2f} ms, "
+                f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
+                f"prefill upload wait: {request.prefill_upload_wait_ms:.2f} ms, "
+                f"decode download wait: {request.decode_download_wait_ms:.2f} ms",
             )
 
         tpot_sla = sla.get("tpot_ms")

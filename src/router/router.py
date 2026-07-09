@@ -162,11 +162,11 @@ class Router:
         assert cfg is not None, "Router cost config must be set"
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
-        active_prefill = self._active_prefill_tokens(node_id) / 10
+        active_prefill = self._active_prefill_tokens(node_id)
         return cfg.prefill_load_scale * (active_prefill + adjusted_prefill)
 
     def _decode_cost(self, req: Request, node_id: int) -> float:
-        active_decode = self._active_decode_tokens(node_id) / 10
+        active_decode = self._active_decode_tokens(node_id)
         return active_decode + req.osl
 
     def _total_cost(self, req: Request, node_id: int, is_prefill: bool) -> float:
