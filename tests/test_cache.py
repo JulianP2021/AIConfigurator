@@ -386,6 +386,7 @@ class TestCacheS3:
         # old_item is now in S3, recorded at t=0.
         assert cache.s3_usage_bytes > 0
         assert cache._s3_layer().content[(1, 40)]
+        old_size = cache.s3_usage_bytes
 
         # Advance the clock past the eviction window.
         clock.advance(eviction_window_ms + 1.0)
@@ -393,8 +394,76 @@ class TestCacheS3:
         # Trigger another SSD->S3 upload; this should run stale-object eviction.
         cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
 
+        # The old item was uploaded at t=0 and is now stale; the newly uploaded
+        # item was uploaded after the clock advance and is still fresh.
         assert (1, 40) not in cache._s3_layer().content
-        assert cache.s3_usage_bytes == 0
+        assert cache.s3_usage_bytes == old_size
+
+    def test_s3_upload_records_wall_clock_access_time(
+        self, fake_model: Model, s3_tiny_hardware: Hardware
+    ):
+        """Uploading to S3 must stamp last_access_ms with the current clock."""
+        clock = GlobalClock()
+        s3_spec = S3Spec.from_gbps(enabled=True, eviction_time_ms=1000.0)
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_spec,
+            clock=clock,
+        )
+
+        cache.insert_cache_item(CacheItem((1, 40), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+
+        s3_item = cache._s3_layer().content[(1, 40)][0]
+        # The upload happened at t=0, so the item should be fresh then.
+        assert s3_item.last_access_ms == clock.time_ms
+
+        clock.advance(500.0)
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+        # The original item was uploaded at t=0; at t=500 it is still within
+        # the 1000 ms window, so it must survive.
+        assert (1, 40) in cache._s3_layer().content
+
+    def test_s3_download_refreshes_access_time(
+        self, fake_model: Model, s3_tiny_hardware: Hardware
+    ):
+        """Downloading an S3 item refreshes its age so it is not evicted."""
+        clock = GlobalClock()
+        eviction_window_ms = 1000.0
+        s3_spec = S3Spec.from_gbps(enabled=True, eviction_time_ms=eviction_window_ms)
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_spec,
+            clock=clock,
+        )
+
+        # Put an item in S3.
+        cache.insert_cache_item(CacheItem((1, 40), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+
+        # Advance past the original upload time, but download right before the
+        # eviction cutoff to refresh the item's age.
+        clock.advance(eviction_window_ms - 1.0)
+        req = Request(512, 8, user_id=1, session_id=40)
+        cache.download_kv(0, req)
+
+        s3_item = cache._s3_layer().content[(1, 40)][0]
+        assert s3_item.last_access_ms == clock.time_ms
+
+        # Advance further; the refreshed item should still be alive.
+        clock.advance(eviction_window_ms * 0.9)
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+        assert (1, 40) in cache._s3_layer().content
 
     def test_s3_peak_usage_tracks_maximum(
         self, fake_model: Model, s3_tiny_hardware: Hardware

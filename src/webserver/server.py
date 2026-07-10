@@ -4,12 +4,14 @@ import asyncio
 import base64
 import concurrent.futures
 import io
+import json
 import sys
 import uuid
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, redirect_stdout
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -254,9 +256,10 @@ def _build_results_page(
     results: list[dict[str, float | int | str]],
     plot_urls: list[str] | None = None,
     error: str | None = None,
+    show_debug_tables: bool = False,
 ) -> str:
     """Build the results HTML page (for /simulate full page) or just the inner content."""
-    inner = _results_inner_html(results, plot_urls, error)
+    inner = _results_inner_html(results, plot_urls, error, show_debug_tables)
     return (
         """<!DOCTYPE html>
 <html lang="en">
@@ -363,6 +366,21 @@ def _build_results_page(
             gap: 1rem;
         }
         .plot-card { padding: 0; }
+        .debug-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        .debug-toggle input { width: auto; }
+        .debug-section { display: none; }
+        .debug-section.show { display: block; }
+        .user-list { margin-bottom: 1rem; }
+        .user-list h3 { margin: 0 0 0.5rem; font-size: 1rem; color: var(--text-secondary); }
+        .user-list ul { margin: 0; padding-left: 1.25rem; color: var(--text); }
+        .user-list li { margin-bottom: 0.25rem; }
     </style>
 </head>
 <body>
@@ -373,6 +391,14 @@ def _build_results_page(
         + inner
         + """
     </div>
+    <script>
+        function toggleDebugTables() {
+            const sections = document.querySelectorAll('.debug-section');
+            const checked = document.getElementById('debugToggle').checked;
+            sections.forEach(s => s.classList.toggle('show', checked));
+        }
+        toggleDebugTables();
+    </script>
 </body>
 </html>"""
     )
@@ -405,8 +431,40 @@ def _results_inner_html(
         html += _metric_card(f"{best['max_request_latency']:.2f}", "max Latency (ms)")
         html += "</div></div>\n"
 
-        # ---- Comparison table ----
-        html += '<div class="card"><h2>Configuration Comparison</h2><table><thead><tr>'
+        # ---- Users-based ordered legend (only when results have users) ----
+        if any("users" in row for row in results):
+            html += '<div class="card"><h2>Configurations by Users</h2>'
+            by_users: dict[int, list[dict[str, Any]]] = {}
+            for row in results:
+                users = int(row.get("users", 0))
+                if users > 0:
+                    by_users.setdefault(users, []).append(row)
+            for users in sorted(by_users):
+                html += f'<div class="user-list"><h3>Users = {users}</h3><ul>'
+                for row in sorted(
+                    by_users[users],
+                    key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
+                ):
+                    color = row.get("color", "#58a6ff")
+                    html += (
+                        f'<li><span class="legend-color" style="background:{color}"></span>'
+                        f"{row['label']} — ${row['total_cost_usd_per_hour']:.2f}/h"
+                        f"</li>"
+                    )
+                html += "</ul></div>"
+            html += "</div>\n"
+
+        # ---- Debug toggle ----
+        html += (
+            '<div class="card"><h2>Debug Details</h2>'
+            '<label class="debug-toggle">'
+            '<input type="checkbox" id="debugToggle" onchange="toggleDebugTables()">'
+            "Show comparison and timing breakdown tables"
+            "</label></div>\n"
+        )
+
+        # ---- Comparison table (hidden by default) ----
+        html += '<div class="card debug-section"><h2>Configuration Comparison</h2><table><thead><tr>'
         html += "<th>Label</th><th>Prefill HW</th><th>Decode HW</th><th>Nodes (P/D)</th><th>Batch</th>"
         html += "<th>TTFT</th><th>max TTFT</th><th>TPOT</th><th>max TPOT</th>"
         html += (
@@ -445,8 +503,8 @@ def _results_inner_html(
             )
         html += "</tbody></table></div>\n"
 
-        # ---- Timing breakdown table ----
-        html += '<div class="card"><h2>Timing Breakdown</h2><table><thead><tr>'
+        # ---- Timing breakdown table (hidden by default) ----
+        html += '<div class="card debug-section"><h2>Timing Breakdown</h2><table><thead><tr>'
         html += "<th>Label</th><th>Prefill active</th><th>Prefill wait</th>"
         html += "<th>Prefill dl active</th><th>Prefill dl wait</th><th>Prefill up active</th><th>Prefill up wait</th>"
         html += "<th>Decode dl active</th><th>Decode dl wait</th><th>Decode active</th><th>Decode wait</th><th>Decode up active</th><th>Decode up wait</th>"
@@ -537,6 +595,93 @@ def _build_single_plot(
     return f"/plot/{pid}"
 
 
+def _load_results_from_dir(results_dir: Path) -> list[dict[str, Any]]:
+    """Load every results_*.json file from a directory and tag rows with users."""
+    rows: list[dict[str, Any]] = []
+    for path in sorted(results_dir.glob("results_*.json")):
+        with path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+        for row in data.get("results", []):
+            if "users" not in row:
+                # Infer users from filename like results_users_100.json
+                stem = path.stem.replace("results_users_", "")
+                try:
+                    row["users"] = int(stem)
+                except ValueError:
+                    continue
+            rows.append(row)
+    return rows
+
+
+def _top_n_per_user_count(
+    rows: list[dict[str, Any]],
+    n: int = 10,
+) -> list[dict[str, Any]]:
+    """Return the top ``n`` cheapest configs for each distinct user count."""
+    by_users: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        users = int(row.get("users", 0))
+        if users <= 0:
+            continue
+        by_users.setdefault(users, []).append(row)
+
+    selected: list[dict[str, Any]] = []
+    for users in sorted(by_users):
+        ranked = sorted(
+            by_users[users],
+            key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
+        )
+        for row in ranked[:n]:
+            row["users"] = users
+            selected.append(row)
+    return selected
+
+
+def _build_users_cost_plot(
+    rows: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """Generate a users-vs-cost line/scatter plot.
+
+    Returns the plot URL and the selected top-N rows that appear in the plot,
+    with stable colors assigned per config label.
+    """
+    selected = _top_n_per_user_count(rows, n=10)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    # Group by label so each config traces a line across user counts.
+    by_label: dict[str, list[dict[str, Any]]] = {}
+    for row in selected:
+        by_label.setdefault(row["label"], []).append(row)
+
+    # Assign a stable color to each surviving config label.
+    labels = sorted(by_label.keys())
+    label_color = {label: COLORS[i % len(COLORS)] for i, label in enumerate(labels)}
+
+    for label, series in sorted(by_label.items()):
+        series = sorted(series, key=lambda r: r["users"])
+        xs = [r["users"] for r in series]
+        ys = [r["total_cost_usd_per_hour"] for r in series]
+        color = label_color[label]
+        for row in series:
+            row["color"] = color
+        ax.plot(xs, ys, marker="o", color=color, linewidth=1.5)
+
+    ax.set_xlabel("Users")
+    ax.set_ylabel("Total cost ($/hour)")
+    ax.set_title("Top 10 cheapest configs per user count")
+    ax.set_xscale("log")
+    ax.set_ylim(bottom=0)
+    ax.grid(True, alpha=0.3, which="both", linestyle="--")
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    pid = str(uuid.uuid4())
+    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+    return f"/plot/{pid}", selected
+
+
 async def _run_configs_parallel(
     config_kwargs: list[dict[str, object]],
 ) -> list[SimulationResult | BaseException | None]:
@@ -596,6 +741,8 @@ COLORS = [
     "#79c0ff",
     "#56d364",
     "#f0883e",
+    "#db61a2",
+    "#39c5cf",
 ]
 
 
@@ -807,32 +954,72 @@ async def simulate(
         return HTMLResponse(content=_build_results_page([], None, err))
 
 
-@app.post("/import_results", response_class=HTMLResponse)
-async def import_results(payload: dict[str, list[dict[str, float | int | str]]]):
-    """Render a results page from a previously exported results_data JSON.
+@app.get("/import", response_class=HTMLResponse)
+async def import_page():
+    """Serve the import page where users can paste JSON or select a directory."""
+    html_path = Path(__file__).parent / "templates" / "import.html"
+    with Path(html_path).open(encoding="utf-8") as fh:
+        return HTMLResponse(content=fh.read())
 
-    This lets users import the raw results list produced by compare.py or the
-    webserver's /simulate handler and regenerate the comparison plots/table.
+
+@app.post("/import_results", response_class=HTMLResponse)
+async def import_results(
+    results_json: str = Form(""),
+    results_dir: str = Form(""),
+):
+    """Render a results page from pasted JSON or from a results directory.
+
+    Accepts either a raw JSON body (legacy / JS fetch) or form fields from the
+    import page: ``results_json`` or ``results_dir``.
     """
     try:
-        results = payload.get("results", payload)
-        if not isinstance(results, list):
-            raise ValueError(
-                "Payload must be a list of result rows or {'results': [...]}"
-            )
+        results: list[dict[str, float | int | str]] = []
+
+        from_directory = False
+        if results_dir:
+            from_directory = True
+            path = Path(results_dir)
+            if not path.is_dir():
+                raise ValueError(f"Not a directory: {results_dir}")
+            rows = _load_results_from_dir(path)
+            if not rows:
+                raise ValueError(f"No results_*.json files found in {results_dir}")
+            results.extend(rows)
+        elif results_json:
+            payload = json.loads(results_json)
+            if isinstance(payload, list):
+                results = payload
+            elif isinstance(payload, dict):
+                results = payload.get("results", [])
+                if not isinstance(results, list):
+                    raise ValueError("Payload 'results' must be a list")
+            else:
+                raise ValueError("Payload must be a list or {'results': [...]}")
+        else:
+            raise ValueError("Provide either results_json or results_dir")
+
+        if not isinstance(results, list) or not results:
+            raise ValueError("No result rows found")
 
         # Ensure every row has a plot color.
         for i, row in enumerate(results):
             if "color" not in row:
                 row["color"] = COLORS[i % len(COLORS)]
 
-        plot_urls = _build_comparison_plots(results)
+        # Directory imports always render the users/cost plot. Single JSON
+        # imports render the full set of comparison plots.
+        if from_directory:
+            plot_url, selected = _build_users_cost_plot(results)
+            plot_urls = [plot_url]
+            results = selected
+        else:
+            plot_urls = _build_comparison_plots(results)
         return HTMLResponse(content=_build_results_page(results, plot_urls, None))
     except Exception as exc:
         import traceback
 
         err = f"{exc}\n{traceback.format_exc()}"
-        return HTMLResponse(content=_build_results_page([], None, err))
+        return HTMLResponse(content=_build_results_page([], None, err), status_code=400)
 
 
 @app.get("/api/hardware")
@@ -847,6 +1034,43 @@ async def get_plot(plot_id: str):
     if not b64:
         return PlainTextResponse("Plot not found", status_code=404)
     return Response(content=base64.b64decode(b64), media_type="image/png")
+
+
+@app.post("/plot_users_cost", response_class=HTMLResponse)
+async def plot_users_cost(results_dir: str = Form(...)):
+    """Render a plot of users vs total cost from a directory of results files.
+
+    The directory must contain files named ``results_users_<N>.json``. For each
+    user count, only the 10 cheapest configurations (by total cost/hour) are
+    plotted.
+    """
+    try:
+        path = Path(results_dir)
+        if not path.is_dir():
+            return HTMLResponse(
+                content=_build_results_page(
+                    [], None, f"Not a directory: {results_dir}"
+                ),
+                status_code=400,
+            )
+
+        rows = _load_results_from_dir(path)
+        if not rows:
+            return HTMLResponse(
+                content=_build_results_page(
+                    [], None, f"No results_*.json files found in {results_dir}"
+                ),
+                status_code=404,
+            )
+
+        plot_url, selected = _build_users_cost_plot(rows)
+        html = _build_results_page(selected, [plot_url], None)
+        return HTMLResponse(content=html)
+    except Exception as exc:
+        import traceback
+
+        err = f"{exc}\n{traceback.format_exc()}"
+        return HTMLResponse(content=_build_results_page([], None, err), status_code=500)
 
 
 if __name__ == "__main__":

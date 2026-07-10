@@ -101,6 +101,10 @@ class Cache:
 
     cost_usd: float = 0.0
 
+    # S3 transfer diagnostics (number of API operations, not bytes).
+    s3_upload_requests: int = 0
+    s3_download_requests: int = 0
+
     def __init__(
         self,
         layers: dict,
@@ -129,6 +133,8 @@ class Cache:
         self.ssd_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.s3_usage_bytes = 0
         self.s3_peak_usage_bytes = 0
+        self.s3_upload_requests = 0
+        self.s3_download_requests = 0
         self._access_tick = 0
         self._clock = clock or GlobalClock()
 
@@ -271,11 +277,12 @@ class Cache:
             s3_layer = self._s3_layer()
             copied = CacheItem(victim.session_id, victim.token_start, victim.token_end)
             s3_layer.content.setdefault(victim.session_id, []).append(copied)
-            s3_layer.touch(copied, self._access_tick)
+            self._touch(copied, s3_layer)
             self.s3_usage_bytes += victim_size
             if self.s3_usage_bytes > self.s3_peak_usage_bytes:
                 self.s3_peak_usage_bytes = self.s3_usage_bytes
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
+            self.s3_upload_requests += 1
             self.cost_usd += (
                 float(victim_size) / 1024 / 1024 / 1024 * self.s3_spec.S3_UPLOAD_COST_GB
             )
@@ -578,6 +585,7 @@ class Cache:
 
         # S3 fallback for anything still missing.
         if miss_start < effective_end and self.s3_spec.enabled:
+            s3_layer = self._s3_layer()
             for item in all_items:
                 layer = self.find_cache_layer(item)
                 if layer is None or layer.node_id != S3_NODE_ID:
@@ -585,9 +593,13 @@ class Cache:
                 if item.token_start <= miss_start < item.token_end:
                     seg_end = min(item.token_end, effective_end)
                     segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
+                    # Reading from S3 refreshes the object's access time so it
+                    # is not evicted while still being actively downloaded.
+                    self._touch(item, s3_layer)
 
                     tokens = seg_end - miss_start
                     bytes_to_transfer = self.kv_size(self.model, tokens)
+                    self.s3_download_requests += 1
                     self.cost_usd += (
                         float(bytes_to_transfer)
                         / 1024

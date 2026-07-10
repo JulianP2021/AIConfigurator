@@ -45,6 +45,10 @@ class SimulationResult:
     s3_storage_cost_usd_per_hour: float = 0.0
     total_cost_usd_per_hour: float = 0.0
 
+    # S3 transfer diagnostics (operation counts)
+    s3_upload_requests: int = 0
+    s3_download_requests: int = 0
+
     # Cache usage statistics (bytes)
     ram_cache_usage_bytes: float = 0.0
     ssd_cache_usage_bytes: float = 0.0
@@ -102,6 +106,8 @@ class SimulationResult:
             "s3_cost_usd_per_hour": 6,
             "s3_storage_cost_usd_per_hour": 6,
             "total_cost_usd_per_hour": 4,
+            "s3_upload_requests": 0,
+            "s3_download_requests": 0,
             "avg_prefill_time_ms": 3,
             "avg_prefill_wait_ms": 3,
             "max_prefill_wait_ms": 3,

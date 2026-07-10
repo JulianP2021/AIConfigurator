@@ -29,6 +29,7 @@ from src.simulations.simulation_distributed import (
     simulate_run_distributed,
 )
 from src.utils.env_reader import load_env
+from src.utils.output_filter import compact_json
 from src.utils.parser import get_main_parser
 
 
@@ -170,11 +171,15 @@ def main():
     print(f"  S3 storage cost/hour:  ${result.s3_storage_cost_usd_per_hour:.4f}")
     print(f"  S3 total cost/hour:    ${result.s3_cost_usd_per_hour:.4f}")
 
-    # Print compact JSON for piping
-    import json
+    # Diagnostic counters are only logged here in the CLI, never in the
+    # webserver or execute_config.py output.
+    print("\n--- S3 counters ---")
+    print(f"  S3 upload requests:   {result.s3_upload_requests}")
+    print(f"  S3 download requests: {result.s3_download_requests}")
 
+    # Print compact JSON for piping (full result is still exported via files / webserver)
     print("\n--- JSON ---")
-    print(json.dumps(result.to_dict()))
+    print(compact_json(result.to_dict()))
 
 
 if __name__ == "__main__":

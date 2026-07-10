@@ -73,12 +73,15 @@ def add_result_metadata(
     label: str,
     cfg: dict[str, object],
     color: str,
+    users: int | None = None,
 ) -> None:
     """Layer webserver-specific metadata onto a SimulationResult.to_dict() row.
 
     This helper is shared by execute_config.py and the webserver so the
-    results JSON schema stays consistent.
+    results JSON schema stays consistent. Per-request stats are stripped from
+    the exported row to keep JSON output compact.
     """
+    row.pop("per_request_stats", None)
     row.update({
         "label": label,
         "prefill_hardware": cfg.get("prefill_hardware", ""),
@@ -91,6 +94,8 @@ def add_result_metadata(
         "color": color,
         "has_error": False,
     })
+    if users is not None:
+        row["users"] = users
 
 
 def get_shape(lst, shape=()):

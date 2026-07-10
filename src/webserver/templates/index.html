@@ -237,7 +237,7 @@
             <div class="toolbar">
                 <button type="button" class="btn btn-success" onclick="exportConfig()">Export JSON</button>
                 <button type="button" class="btn btn-outline" onclick="toggleImport()">Import / Inject JSON</button>
-                <button type="button" class="btn btn-outline" onclick="toggleImportResults()">Import Results</button>
+                <a href="/import" class="btn btn-outline">Import Results</a>
                 <button type="button" class="btn btn-outline" onclick="saveToStorage()">Save to Browser</button>
                 <button type="button" class="btn btn-outline" onclick="loadFromStorage()">Load from Browser</button>
                 <button type="button" class="btn btn-danger" onclick="clearStorage()">Clear Saved</button>
@@ -246,11 +246,6 @@
                 <label>Paste JSON config here</label>
                 <textarea id="importArea" placeholder="Paste JSON here…"></textarea>
                 <button type="button" class="btn btn-block" onclick="importConfig()" style="margin-top:0.5rem;">Apply JSON</button>
-            </div>
-            <div id="importResultsBox" style="display:none; margin-top:1rem;">
-                <label>Paste previously exported results JSON here</label>
-                <textarea id="importResultsArea" placeholder="Paste results JSON here…" style="min-height:8rem;"></textarea>
-                <button type="button" class="btn btn-block" onclick="importResults()" style="margin-top:0.5rem;">Render Results</button>
             </div>
             <div class="config-header">
                 <span>Prefill HW</span>
@@ -625,13 +620,6 @@
             box.style.display = box.style.display === 'none' ? 'block' : 'none';
         }
 
-        function toggleImportResults() {
-            const box = document.getElementById('importResultsBox');
-            const cfgBox = document.getElementById('importBox');
-            cfgBox.style.display = 'none';
-            box.style.display = box.style.display === 'none' ? 'block' : 'none';
-        }
-
         function importConfig() {
             const text = document.getElementById('importArea').value.trim();
             if (!text) return;
@@ -643,37 +631,6 @@
                 saveToStorage();
             } catch (e) {
                 showToast('Invalid JSON: ' + e.message, false);
-            }
-        }
-
-        async function importResults() {
-            const text = document.getElementById('importResultsArea').value.trim();
-            if (!text) return;
-            let payload;
-            try {
-                payload = JSON.parse(text);
-            } catch (e) {
-                showToast('Invalid JSON: ' + e.message, false);
-                return;
-            }
-            const results = Array.isArray(payload) ? payload : payload.results;
-            if (!Array.isArray(results)) {
-                showToast('JSON must be an array of result rows or {"results": [...]}', false);
-                return;
-            }
-            try {
-                const response = await fetch('/import_results', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({results: results})
-                });
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                const html = await response.text();
-                document.open();
-                document.write(html);
-                document.close();
-            } catch (e) {
-                showToast('Import failed: ' + e.message, false);
             }
         }
 

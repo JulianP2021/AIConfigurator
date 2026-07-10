@@ -465,7 +465,11 @@ def simulate_run_distributed(
             + req.decode_download_wait_ms
         )
         req.clean_latency_ms = req.clean_ttft_ms + req.decode_time_ms
-        req.wait_inclusive_latency_ms = req.clean_latency_ms + req.decode_wait_ms
+        # Wait-inclusive latency must include all wait-inclusive TTFT waits plus
+        # decode execution and decode wait time.
+        req.wait_inclusive_latency_ms = (
+            req.wait_inclusive_ttft_ms + req.decode_time_ms + req.decode_wait_ms
+        )
 
         # Reported TTFT/latency include waiting time.
         ttft_val = req.wait_inclusive_ttft_ms
@@ -653,6 +657,8 @@ def simulate_run_distributed(
         s3_cost_usd_per_hour=s3_cost_per_hour,
         s3_storage_cost_usd_per_hour=s3_storage_cost_per_hour,
         total_cost_usd_per_hour=total_price_per_hour,
+        s3_upload_requests=cache.s3_upload_requests,
+        s3_download_requests=cache.s3_download_requests,
         per_request_stats=per_request_stats,
         avg_prefill_time_ms=avg_prefill_time,
         avg_prefill_wait_ms=avg_prefill_wait,

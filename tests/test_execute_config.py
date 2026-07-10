@@ -4,9 +4,12 @@ These tests focus on the config-grouping logic that splits a flat list of
 configs into batches of compatible hardware for parallel execution.
 """
 
+import pytest
+
 from execute_config import (
     _group_colocated_configs,
     _group_seperate_configs,
+    parse_users_arg,
 )
 
 
@@ -32,6 +35,25 @@ def _cfg(
         "prefill_gpus_per_node": str(prefill_gpus),
         "decode_gpus_per_node": str(decode_gpus),
     }
+
+
+class TestParseUsersArg:
+    def test_none_returns_none(self) -> None:
+        assert parse_users_arg(None) is None
+
+    def test_comma_separated_list(self) -> None:
+        assert parse_users_arg("1,10,100") == [1, 10, 100]
+
+    def test_comma_separated_unsorted_returns_sorted_unique(self) -> None:
+        assert parse_users_arg("100,10,10,1") == [1, 10, 100]
+
+    def test_rejects_range_notation(self) -> None:
+        with pytest.raises(ValueError, match=r".*"):
+            parse_users_arg("[1,1000]")
+
+    def test_rejects_negative_values(self) -> None:
+        with pytest.raises(ValueError, match=r".*"):
+            parse_users_arg("-10,10")
 
 
 class TestColocatedGrouping:

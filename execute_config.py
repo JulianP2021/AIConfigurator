@@ -57,6 +57,7 @@ Colocated example (prefill + decode share each node):
 
 import argparse
 import concurrent.futures
+import copy
 import json
 import sys
 
@@ -86,12 +87,38 @@ from src.simulations.simulation_distributed import (
     simulate_run_distributed,
 )
 from src.utils.env_reader import load_env
+from src.utils.output_filter import compact_json
 from src.utils.utils import add_result_metadata
 
 
 def load_config(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def parse_users_arg(raw: str | None) -> list[int] | None:
+    """Parse a --users string into a sorted list of unique positive integers.
+
+    Accepts a comma-separated list of explicit user counts, e.g. ``1,10,100``.
+    Each value is validated to be a positive integer.
+    """
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    values: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        value = int(part)
+        if value <= 0:
+            raise ValueError(f"--users values must be positive integers, got: {part}")
+        values.append(value)
+    if not values:
+        raise ValueError(f"--users list is empty: {raw}")
+    return sorted(set(values))
 
 
 def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedScenario:
@@ -309,40 +336,30 @@ def _collect_future_results(
 
 
 def print_table(results: list[tuple[str, str, SimulationResult]]) -> None:
-    """Print a simple comparison table to stdout."""
-    header = (
-        f"{'Label':<50} {'avg prefill time':>10} {'TTFT':>10} {'TPOT':>10} {'KV Download':>10} {'KV Upload':>10} {'Latency':>10} "
-        f"{'Tokens/s':>12} {'Compute $/h':>12} {'S3 $/h':>10} {'Total $/h':>10}"
-    )
-    print(header)
-    print("-" * len(header))
+    """Print compact JSON rows for each configuration to stdout.
+
+    The full result rows (including capacity, per-request stats, and phase
+    breakdowns) are still written unchanged to the JSON output file.
+    """
     for _, label, result in results:
-        print(
-            f"{label:<50} "
-            f"{result.avg_prefill_time_ms:>10.2f} "
-            f"{result.ttft:>10.2f} "
-            f"{result.tpot:>10.2f} "
-            f"{result.kv_download_time:>10.2f} "
-            f"{result.kv_upload_time:>10.2f} "
-            f"{result.request_latency:>10.2f} "
-            f"{result.tokens_per_second:>12.2f} "
-            f"{result.compute_price_usd_per_hour:>12.4f} "
-            f"{result.s3_cost_usd_per_hour:>10.4f} "
-            f"{result.total_cost_usd_per_hour:>10.4f}"
-        )
+        row = result.to_dict()
+        row["label"] = label
+        print(compact_json(row))
 
 
 def build_results_data(
     results: list[tuple[str, str, SimulationResult]],
     configs: list[dict[str, Any]],
     colors: list[str],
+    user_counts: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert simulation results into the webserver results JSON schema."""
     results_data: list[dict[str, Any]] = []
     for i, (_, label, result) in enumerate(results):
-        cfg = configs[i]
+        cfg = configs[i % len(configs)]
+        users = user_counts[i // len(configs)] if user_counts else None
         row = result.to_dict()
-        add_result_metadata(row, label, cfg, colors[i % len(colors)])
+        add_result_metadata(row, label, cfg, colors[i % len(colors)], users=users)
         results_data.append(row)
     return results_data
 
@@ -675,8 +692,9 @@ def _run_seperate_configs(
                                     LOG_CONFIG_EXECUTOR,
                                     f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
                                 )
-                            else:
-                                raise exc
+                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
+                                continue
+                            raise exc
                         for i, successful_config in successful:
                             assert len(next_batch) > i, (
                                 f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
@@ -751,6 +769,84 @@ def _run_seperate_configs(
     return results
 
 
+def run_all_colocated_configs(
+    config_batches: list[list[tuple[str, dict[str, Any]]]],
+    common: dict[str, Any],
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_spec: S3Spec,
+    timeout_s: float = 120.0,
+) -> list[tuple[str, str, SimulationResult]]:
+    results: list[tuple[str, str, SimulationResult]] = []
+    for batch in config_batches:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(
+                    _run_single_config,
+                    common,
+                    cfg,
+                    ram_usage_fraction,
+                    ssd_usage_fraction,
+                    s3_spec,
+                ): (i, cfg)
+                for (i, (status, cfg)) in enumerate(batch)
+                if status == "valid"
+            }
+
+            collected, _ = _collect_future_results(futures, timeout_s)
+            for _, config, result in collected:
+                results.append((
+                    config["prefill_hardware"],
+                    config["label"],
+                    result,
+                ))
+    return results
+
+
+def run_all_seperate_configs(
+    seperate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+    common: dict[str, Any],
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_spec: S3Spec,
+    timeout_s: float = 120.0,
+) -> list[tuple[str, str, SimulationResult]]:
+    results: list[tuple[str, str, SimulationResult]] = []
+    while seperate_batches:
+        config_batches = seperate_batches.pop(0)
+        prefill_hw = config_batches[0][0][1]["prefill_hardware"]
+        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
+
+        print(
+            f"Running single-node configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            file=sys.stdout,
+        )
+        while config_batches:
+            batch = config_batches.pop(0)
+            with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+                futures = {
+                    executor.submit(
+                        _run_single_config,
+                        common,
+                        cfg,
+                        ram_usage_fraction,
+                        ssd_usage_fraction,
+                        s3_spec,
+                    ): (i, cfg)
+                    for (i, (status, cfg)) in enumerate(batch)
+                    if status == "valid"
+                }
+
+                collected, _ = _collect_future_results(futures, timeout_s)
+                for _, config, result in collected:
+                    results.append((
+                        config["prefill_hardware"],
+                        config["label"],
+                        result,
+                    ))
+    return results
+
+
 def main() -> None:
     env = load_env()
     parser = argparse.ArgumentParser(
@@ -763,16 +859,28 @@ def main() -> None:
         help="Path to the JSON config file",
     )
     parser.add_argument(
-        "--output",
+        "--results-dir",
         type=Path,
-        default=None,
-        help="Path to write webserver-compatible results JSON (default: <config_dir>/results.json)",
+        required=True,
+        help="Directory to write one results JSON file per user count",
     )
     parser.add_argument(
         "--timeout",
         type=float,
         default=None,
         help="Per-config timeout in seconds (default: 120.0, override config file 'timeout_s')",
+    )
+    parser.add_argument(
+        "--run-all",
+        action="store_true",
+        default=False,
+        help="Run every valid config without pruning based on prior successes/failures",
+    )
+    parser.add_argument(
+        "--users",
+        type=str,
+        default=None,
+        help="Comma-separated user counts to run, e.g. '1,10,100'",
     )
     args = parser.parse_args()
 
@@ -863,37 +971,75 @@ def main() -> None:
         get_shape(seperate_config_splitted),
     )
 
-    results: list[tuple[str, str, SimulationResult]] = []
-
     timeout_s = (
         args.timeout
         if args.timeout is not None
         else float(config.get("timeout_s", 120.0))
     )
 
-    results.extend(
-        _run_colocated_configs(
-            colocated_config_batches,
-            common,
-            ram_usage_fraction,
-            ssd_usage_fraction,
-            s3_spec,
-            timeout_s=timeout_s,
-        )
-    )
-    results.sort(key=lambda x: x[0])
-    seperate_results = _run_seperate_configs(
-        seperate_config_batches,
-        common,
-        ram_usage_fraction,
-        ssd_usage_fraction,
-        s3_spec,
-        timeout_s=timeout_s,
-    )
-    seperate_results.sort(key=lambda x: x[0])
-    results.extend(seperate_results)
+    def _run_all_configs(
+        run_all: bool,
+        users: int,
+    ) -> list[tuple[str, str, SimulationResult]]:
+        """Run colocated and separate configs for a single user count.
 
-    print_table(results)
+        The grouped config structures are deep-copied for each user count
+        because the smart runner mutates batch status tuples in place.
+        """
+        local_common = dict(common)
+        local_common["users"] = users
+
+        local_colocated = copy.deepcopy(colocated_config_batches)
+        local_seperate = copy.deepcopy(seperate_config_batches)
+
+        run_results: list[tuple[str, str, SimulationResult]] = []
+        if run_all:
+            run_results.extend(
+                run_all_colocated_configs(
+                    local_colocated,
+                    local_common,
+                    ram_usage_fraction,
+                    ssd_usage_fraction,
+                    s3_spec,
+                    timeout_s=timeout_s,
+                )
+            )
+            run_results.sort(key=lambda x: x[0])
+            seperate_results = run_all_seperate_configs(
+                local_seperate,
+                local_common,
+                ram_usage_fraction,
+                ssd_usage_fraction,
+                s3_spec,
+                timeout_s=timeout_s,
+            )
+        else:
+            run_results.extend(
+                _run_colocated_configs(
+                    local_colocated,
+                    local_common,
+                    ram_usage_fraction,
+                    ssd_usage_fraction,
+                    s3_spec,
+                    timeout_s=timeout_s,
+                )
+            )
+            run_results.sort(key=lambda x: x[0])
+            seperate_results = _run_seperate_configs(
+                local_seperate,
+                local_common,
+                ram_usage_fraction,
+                ssd_usage_fraction,
+                s3_spec,
+                timeout_s=timeout_s,
+            )
+        seperate_results.sort(key=lambda x: x[0])
+        run_results.extend(seperate_results)
+        return run_results
+
+    user_counts = parse_users_arg(args.users)
+    if user_counts is None:
+        user_counts = [int(common["users"])]
 
     # Re-order configs to match sorted results so the JSON rows line up.
     sorted_configs = sorted(configs, key=lambda c: c["label"])
@@ -908,12 +1054,28 @@ def main() -> None:
         "#56d364",
         "#f0883e",
     ]
-    results_data = build_results_data(results, sorted_configs, colors)
 
-    output_path = args.output or args.config.with_name("results.json")
-    with output_path.open("w", encoding="utf-8") as fh:
-        json.dump({"results": results_data}, fh, indent=2)
-    print(f"\nWrote webserver-compatible results to {output_path}")
+    all_results: list[tuple[str, str, SimulationResult]] = []
+    for users in user_counts:
+        print(f"\n### Running with users={users} ###", file=sys.stdout)
+        run_results = _run_all_configs(args.run_all, users)
+        # Tag each result row with the user count in its label and metadata.
+        tagged_results: list[tuple[str, str, SimulationResult]] = []
+        for key, label, result in run_results:
+            tagged_label = f"{label} (users={users})"
+            tagged_results.append((key, tagged_label, result))
+            all_results.append((key, tagged_label, result))
+        print_table(run_results)
+
+        results_dir = args.results_dir
+        results_dir.mkdir(parents=True, exist_ok=True)
+        results_data = build_results_data(
+            tagged_results, sorted_configs, colors, [users]
+        )
+        output_path = results_dir / f"results_users_{users}.json"
+        with output_path.open("w", encoding="utf-8") as fh:
+            json.dump({"results": results_data}, fh, indent=2)
+        print(f"\nWrote results for users={users} to {output_path}")
 
 
 if __name__ == "__main__":
