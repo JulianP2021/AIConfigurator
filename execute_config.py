@@ -23,6 +23,8 @@ The input JSON schema mirrors the webserver export/import state:
         "s3_up_bw_gbps": 25.0,
         "s3_down_bw_gbps": 25.0,
         "s3_eviction_time_ms": 0.0,
+        "inter_node_network_up_gbps": 100.0,
+        "inter_node_network_down_gbps": 100.0,
         "configs": [
             {
                 "label": "Config 1",
@@ -59,6 +61,7 @@ import argparse
 import concurrent.futures
 import copy
 import json
+import os
 import sys
 
 from collections.abc import Callable
@@ -76,8 +79,9 @@ from src.eroors.errors import (
     PrefillError,
     PrefillLatencyError,
 )
-from src.hardware.hardware import S3Spec
-from src.hardware.scraper import resolve_machine_name
+from src.hardware.hardware import GPUHardwareSpec, S3Spec
+from src.hardware.mixed_gpu import fetch_mixed_gpu_hardware
+from src.hardware.scraper import fetch_machine_hardware, resolve_machine_name
 from src.logger import LOG_CONFIG_EXECUTOR, log, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -146,8 +150,6 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     prefill_hw_name = resolve_machine_name(cfg["prefill_hardware"])
     decode_hw_name = resolve_machine_name(cfg["decode_hardware"])
 
-    from src.hardware.scraper import fetch_machine_hardware
-
     prefill_hw = fetch_machine_hardware(prefill_hw_name)
     decode_hw = fetch_machine_hardware(decode_hw_name)
 
@@ -167,31 +169,64 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     prefill_gpus = int(cfg.get("prefill_gpus_per_node", prefill_total_gpus))
     decode_gpus = int(cfg.get("decode_gpus_per_node", decode_total_gpus))
 
+    mixed_gpu_donor = cfg.get("mixed_gpu_donor")
+    mixed_gpu_count = cfg.get("mixed_gpu_count")
+    mixed_gpu_count = int(mixed_gpu_count) if mixed_gpu_count is not None else None
+
+    is_mixed = cfg.get("mixed", "").lower() in ["true", "1", "t", "y", "yes"]
+
     nodes: list[Node] = []
-    if colocated:
+    if colocated or is_mixed:
         if prefill_nodes != decode_nodes:
             raise ValueError(
-                f"Config '{cfg.get('label')}' is colocated but prefill_nodes ({prefill_nodes}) "
-                f"!= decode_nodes ({decode_nodes}). In colocated mode both values represent the number of shared nodes."
-            )
-        if prefill_hw_name != decode_hw_name:
-            raise ValueError(
-                f"Config '{cfg.get('label')}' is colocated but prefill_hardware ({prefill_hw_name}) "
-                f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type.; {cfg.get('colocated')}"
+                f"Config '{cfg.get('label')}' is colocated/mixed but prefill_nodes ({prefill_nodes}) "
+                f"!= decode_nodes ({decode_nodes}). In colocated/mixed mode both values represent the number of shared nodes."
             )
         if prefill_gpus + decode_gpus != prefill_total_gpus:
             raise ValueError(
                 f"Config '{cfg.get('label')}' GPU split {prefill_gpus}+{decode_gpus} does not equal "
                 f"total GPUs per node ({prefill_total_gpus})."
             )
+
+        if is_mixed or mixed_gpu_donor:
+            if mixed_gpu_count is None:
+                mixed_gpu_count = decode_gpus
+            donor_hw_name = resolve_machine_name(mixed_gpu_donor or decode_hw_name)
+            node_hw = fetch_mixed_gpu_hardware(
+                prefill_hw_name,
+                prefill_gpus,
+                donor_hw_name,
+                mixed_gpu_count,
+            )
+            from src.hardware.scraper import lookup as lookup_gpu
+            from src.hardware.scraper import lookup_machine
+
+            donor_machine_config = lookup_machine(donor_hw_name)
+            donor_gpu_name = donor_machine_config["gpu_name"]
+            donor_gpu_config = lookup_gpu(donor_gpu_name)
+            donor_gpu_spec = GPUHardwareSpec(
+                flops=donor_gpu_config["flops"],
+                gpu_mem=donor_gpu_config["gpu_mem"],
+                gpu_bw=donor_gpu_config["gpu_bw"],
+            )
+        else:
+            if prefill_hw_name != decode_hw_name:
+                raise ValueError(
+                    f"Config '{cfg.get('label')}' is colocated but prefill_hardware ({prefill_hw_name}) "
+                    f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type unless mixed_gpu_donor is set.; {cfg.get('colocated')}"
+                )
+            node_hw = fetch_machine_hardware(prefill_hw_name)
+            donor_gpu_spec = None
+
         for _ in range(prefill_nodes):
             nodes.append(
                 Node(
-                    hardware=prefill_hw,
+                    hardware=node_hw,
                     model_name=common["model"],
                     batch_size=batch_size,
                     prefill_instances=prefill_gpus,
                     decode_instances=decode_gpus,
+                    decode_gpu_hardware=donor_gpu_spec,
                 )
             )
     else:
@@ -257,6 +292,27 @@ def eytzinger_layout[T](
 
     build(0)
     return result
+
+
+def extreme_first_eytzinger_layout[T](
+    arr: list[T],
+    key: Callable[[T], Any],
+) -> list[T]:
+    """Return arr ordered as [largest, smallest, ...rest in Eytzinger order].
+
+    This probes the two extremes first so the smart runner can invalidate the
+    full range quickly: a failure at the largest key can eliminate everything
+    smaller, a failure at the smallest key can eliminate everything larger, and
+    a success/failure in between is handled by the normal Eytzinger traversal of
+    the remaining configs.
+    """
+    if len(arr) <= 2:
+        return sorted(arr, key=key, reverse=True)
+    sorted_arr = sorted(arr, key=key)
+    largest = sorted_arr[-1]
+    smallest = sorted_arr[0]
+    middle = sorted_arr[1:-1]
+    return [largest, smallest, *eytzinger_layout(middle, key)]
 
 
 def _run_single_config(
@@ -423,6 +479,45 @@ def _group_seperate_configs(
     return groups
 
 
+def _group_mixed_configs(
+    configs: list[dict[str, Any]],
+) -> list[list[list[dict[str, Any]]]]:
+    """Group mixed-GPU configs for batched execution.
+
+    Mixed configs are colocated nodes where the prefill GPUs come from one
+    machine and the decode GPUs come from another.  First level groups by
+    ``(prefill_hardware, prefill_gpus_per_node, prefill_nodes)``.  Within each
+    first-level group, configs are grouped by ``decode_hardware`` (the donor
+    GPU type) and ``mixed_gpu_count``.
+    """
+    groups: list[list[list[dict[str, Any]]]] = []
+    for config in configs:
+        placed = False
+        for prefill_batch in groups:
+            first = prefill_batch[0][0]
+            if (
+                first["prefill_hardware"] == config["prefill_hardware"]
+                and first["prefill_gpus_per_node"] == config["prefill_gpus_per_node"]
+                and first["prefill_nodes"] == config["prefill_nodes"]
+            ):
+                for decode_batch in prefill_batch:
+                    if all(
+                        c["decode_hardware"] == config["decode_hardware"]
+                        and c["mixed_gpu_count"] == config["mixed_gpu_count"]
+                        for c in decode_batch
+                    ):
+                        decode_batch.append(config)
+                        placed = True
+                        break
+                if not placed:
+                    prefill_batch.append([config])
+                    placed = True
+                break
+        if not placed:
+            groups.append([[config]])
+    return groups
+
+
 def create_colocated_batches(
     splitted_configs: list[list[dict[str, Any]]],
 ) -> list[list[tuple[str, dict[str, Any]]]]:
@@ -466,6 +561,16 @@ def create_seperate_batches(
         f"Running {len(splitted_configs)} configs in {len(config_batches)} batches...",
     )
     return config_batches
+
+
+def create_mixed_batches(
+    splitted_configs: list[list[list[dict[str, Any]]]],
+) -> list[list[list[tuple[str, dict[str, Any]]]]]:
+    """Create batches for mixed-GPU configs.
+
+    Same structure as ``create_seperate_batches``.
+    """
+    return create_seperate_batches(splitted_configs)
 
 
 def _run_colocated_configs(
@@ -847,6 +952,246 @@ def run_all_seperate_configs(
     return results
 
 
+def _run_mixed_configs(
+    mixed_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+    common: dict[str, Any],
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_spec: S3Spec,
+    timeout_s: float = 120.0,
+) -> list[tuple[str, str, SimulationResult]]:
+    """Run mixed-GPU configs with the same smart invalidation as separate configs.
+
+    Mixed configs are colocated nodes with prefill GPUs from one machine and
+    decode (donor) GPUs from another.  Invalidation logic mirrors
+    ``_run_seperate_configs`` but uses ``mixed_gpu_count`` instead of
+    ``decode_nodes``.
+    """
+    results: list[tuple[str, str, SimulationResult]] = []
+
+    while mixed_batches:
+        config_batches = mixed_batches.pop(0)
+        prefill_hw = config_batches[0][0][1]["prefill_hardware"]
+        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
+
+        print(
+            f"Running mixed-GPU configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            file=sys.stdout,
+        )
+        try:
+            while config_batches:
+                batch = config_batches.pop(0)
+
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"\nRunning batch of {len(batch)} mixed configs:",
+                )
+                for status, cfg in batch:
+                    if status == "valid":
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"  {cfg['label']} (prefill: {cfg['prefill_hardware']} x{cfg['prefill_nodes']}, "
+                            f"decode: {cfg['decode_hardware']} x{cfg['mixed_gpu_count']})",
+                        )
+                successful: list[tuple[int, dict[str, Any]]] = []
+                failed: list[tuple[int, dict[str, Any], Exception]] = []
+                with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+                    futures = {
+                        executor.submit(
+                            _run_single_config,
+                            common,
+                            cfg,
+                            ram_usage_fraction,
+                            ssd_usage_fraction,
+                            s3_spec,
+                        ): (i, cfg)
+                        for (i, (status, cfg)) in enumerate(batch)
+                        if status == "valid"
+                    }
+
+                    collected, failed_in_batch = _collect_future_results(
+                        futures, timeout_s
+                    )
+                    for i, config, result in collected:
+                        results.append((
+                            config["prefill_hardware"]
+                            + " + "
+                            + config["decode_hardware"],
+                            config["label"],
+                            result,
+                        ))
+                        successful.append((i, config))
+                    failed.extend(failed_in_batch)
+                    invalidated = 0
+                    for next_batch in config_batches:
+                        if len(next_batch) == 0:
+                            config_batches.remove(next_batch)
+                            continue
+                        for i, failed_config, exc in failed:
+                            assert len(next_batch) > i, (
+                                f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
+                            )
+                            (status, cfg) = next_batch[i]
+                            if status != "valid":
+                                continue
+                            assert (
+                                cfg["prefill_hardware"]
+                                == failed_config["prefill_hardware"]
+                            ), (
+                                f"Config mismatch for failed config {failed_config['label']}, {cfg['prefill_hardware']} != {failed_config['prefill_hardware']}"
+                            )
+                            assert (
+                                cfg["decode_hardware"]
+                                == failed_config["decode_hardware"]
+                            ), (
+                                f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
+                            )
+                            if isinstance(exc, DecodeError) and (
+                                int(cfg["mixed_gpu_count"])
+                                <= int(failed_config["mixed_gpu_count"])
+                                and int(cfg["batch_size"])
+                                < int(failed_config["batch_size"])
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                                invalidated += 1
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
+                            if isinstance(exc, DecodeLatencyError) and (
+                                int(cfg["mixed_gpu_count"])
+                                <= int(failed_config["mixed_gpu_count"])
+                                and int(cfg["batch_size"])
+                                > int(failed_config["batch_size"])
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                                invalidated += 1
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
+                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
+                                continue
+                            raise exc
+                        for i, successful_config in successful:
+                            assert len(next_batch) > i, (
+                                f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
+                            )
+                            (status, cfg) = next_batch[i]
+                            if status != "valid":
+                                continue
+                            assert (
+                                cfg["prefill_hardware"]
+                                == successful_config["prefill_hardware"]
+                            ), (
+                                f"Config mismatch for successful config {successful_config['label']}, {cfg['prefill_hardware']} != {successful_config['prefill_hardware']}"
+                            )
+                            assert (
+                                cfg["decode_hardware"]
+                                == successful_config["decode_hardware"]
+                            ), (
+                                f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
+                            )
+                            if int(cfg["mixed_gpu_count"]) > int(
+                                successful_config["mixed_gpu_count"]
+                            ) or (
+                                int(cfg["mixed_gpu_count"])
+                                == int(successful_config["mixed_gpu_count"])
+                                and int(cfg["batch_size"])
+                                > int(successful_config["batch_size"])
+                            ):
+                                invalidated += 1
+                                next_batch[i] = ("invalid", cfg)
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                                )
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
+                        )
+                    log(
+                        LOG_CONFIG_EXECUTOR,
+                        f"Invalidated {invalidated} configs in the config batches.",
+                    )
+        except Exception as e:
+            if isinstance(e, (PrefillError, PrefillLatencyError)):
+                mixed_batches = [
+                    prefill_batch
+                    for prefill_batch in mixed_batches
+                    if len(prefill_batch) > 0
+                    and not (
+                        prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                        and int(prefill_batch[0][0][1]["prefill_nodes"])
+                        <= prefill_nodes
+                    )
+                ]
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Prefill error occurred for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
+                )
+            else:
+                raise e
+        else:
+            # remove every mixed config with more prefill nodes
+            mixed_batches = [
+                prefill_batch
+                for prefill_batch in mixed_batches
+                if len(prefill_batch) > 0
+                and not (
+                    prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
+                )
+            ]
+
+    return results
+
+
+def run_all_mixed_configs(
+    mixed_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+    common: dict[str, Any],
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_spec: S3Spec,
+    timeout_s: float = 120.0,
+) -> list[tuple[str, str, SimulationResult]]:
+    """Run all mixed-GPU configs without smart invalidation."""
+    results: list[tuple[str, str, SimulationResult]] = []
+    while mixed_batches:
+        config_batches = mixed_batches.pop(0)
+        prefill_hw = config_batches[0][0][1]["prefill_hardware"]
+        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
+
+        print(
+            f"Running all mixed-GPU configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            file=sys.stdout,
+        )
+        while config_batches:
+            batch = config_batches.pop(0)
+            with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+                futures = {
+                    executor.submit(
+                        _run_single_config,
+                        common,
+                        cfg,
+                        ram_usage_fraction,
+                        ssd_usage_fraction,
+                        s3_spec,
+                    ): (i, cfg)
+                    for (i, (status, cfg)) in enumerate(batch)
+                    if status == "valid"
+                }
+
+                collected, _ = _collect_future_results(futures, timeout_s)
+                for _, config, result in collected:
+                    results.append((
+                        config["prefill_hardware"] + " + " + config["decode_hardware"],
+                        config["label"],
+                        result,
+                    ))
+    return results
+
+
 def main() -> None:
     env = load_env()
     parser = argparse.ArgumentParser(
@@ -914,6 +1259,15 @@ def main() -> None:
         ),
     )
 
+    # Apply inter-node bandwidth override globally so fetch_machine_hardware()
+    # uses it when constructing HardwareSpec instances.
+    os.environ["INTER_NODE_NETWORK_UP_GBPS"] = str(
+        config.get("inter_node_network_up_gbps", env.inter_node_network_up_gbps)
+    )
+    os.environ["INTER_NODE_NETWORK_DOWN_GBPS"] = str(
+        config.get("inter_node_network_down_gbps", env.inter_node_network_down_gbps)
+    )
+
     configs = config.get("configs", [])
     if not configs:
         raise ValueError("No configs found in the input JSON file.")
@@ -924,11 +1278,19 @@ def main() -> None:
         resolve_machine_name(cfg["decode_hardware"])
 
     colocated_configs = [
-        cfg for cfg in configs if cfg.get("colocated", False) == "true"
+        cfg
+        for cfg in configs
+        if cfg.get("colocated", False) == "true" and cfg.get("mixed", "") != "true"
     ]
-    seperate_configs = [cfg for cfg in configs if cfg.get("colocated", False) != "true"]
+    mixed_configs = [cfg for cfg in configs if cfg.get("mixed", "") == "true"]
+    seperate_configs = [
+        cfg
+        for cfg in configs
+        if cfg.get("colocated", False) != "true" and cfg.get("mixed", "") != "true"
+    ]
 
     colocated_config_splitted = _group_colocated_configs(colocated_configs)
+    mixed_config_splitted = _group_mixed_configs(mixed_configs)
     seperate_config_splitted = _group_seperate_configs(seperate_configs)
 
     for i, batch in enumerate(colocated_config_splitted):
@@ -936,7 +1298,7 @@ def main() -> None:
             LOG_CONFIG_EXECUTOR,
             f"B{i}: {[cfg['label'] for cfg in batch]}, {[cfg['prefill_nodes'] for cfg in batch]}",
         )
-        colocated_config_splitted[i] = eytzinger_layout(
+        colocated_config_splitted[i] = extreme_first_eytzinger_layout(
             batch,
             key=lambda c: int(c["prefill_nodes"]) * 1000 + int(c["batch_size"]),
         )
@@ -945,13 +1307,28 @@ def main() -> None:
             f"A{i}: {[cfg['label'] for cfg in colocated_config_splitted[i]]}, {[cfg['prefill_nodes'] for cfg in colocated_config_splitted[i]]}",
         )
 
+    for i, prefill_batch in enumerate(mixed_config_splitted):
+        for j, decode_batch in enumerate(prefill_batch):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['mixed_gpu_count'] for cfg in decode_batch]}",
+            )
+            mixed_config_splitted[i][j] = extreme_first_eytzinger_layout(
+                decode_batch,
+                key=lambda c: int(c["mixed_gpu_count"]) * 100 + int(c["batch_size"]),
+            )
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"A{i}.{j}: {[cfg['label'] for cfg in mixed_config_splitted[i][j]]}, {[cfg['mixed_gpu_count'] for cfg in mixed_config_splitted[i][j]]}",
+            )
+
     for i, prefill_batch in enumerate(seperate_config_splitted):
         for j, decode_batch in enumerate(prefill_batch):
             log(
                 LOG_CONFIG_EXECUTOR,
                 f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['decode_nodes'] for cfg in decode_batch]}",
             )
-            seperate_config_splitted[i][j] = eytzinger_layout(
+            seperate_config_splitted[i][j] = extreme_first_eytzinger_layout(
                 decode_batch,
                 key=lambda c: int(c["decode_nodes"]) * 100 + int(c["batch_size"]),
             )
@@ -961,6 +1338,7 @@ def main() -> None:
             )
 
     colocated_config_batches = create_colocated_batches(colocated_config_splitted)
+    mixed_config_batches = create_mixed_batches(mixed_config_splitted)
     seperate_config_batches = create_seperate_batches(seperate_config_splitted)
 
     from src.utils.utils import get_shape
@@ -968,6 +1346,7 @@ def main() -> None:
     print(
         "Shapes: ",
         get_shape(colocated_config_splitted),
+        get_shape(mixed_config_splitted),
         get_shape(seperate_config_splitted),
     )
 
@@ -981,7 +1360,7 @@ def main() -> None:
         run_all: bool,
         users: int,
     ) -> list[tuple[str, str, SimulationResult]]:
-        """Run colocated and separate configs for a single user count.
+        """Run colocated, mixed, and separate configs for a single user count.
 
         The grouped config structures are deep-copied for each user count
         because the smart runner mutates batch status tuples in place.
@@ -990,6 +1369,7 @@ def main() -> None:
         local_common["users"] = users
 
         local_colocated = copy.deepcopy(colocated_config_batches)
+        local_mixed = copy.deepcopy(mixed_config_batches)
         local_seperate = copy.deepcopy(seperate_config_batches)
 
         run_results: list[tuple[str, str, SimulationResult]] = []
@@ -1005,6 +1385,16 @@ def main() -> None:
                 )
             )
             run_results.sort(key=lambda x: x[0])
+            mixed_results = run_all_mixed_configs(
+                local_mixed,
+                local_common,
+                ram_usage_fraction,
+                ssd_usage_fraction,
+                s3_spec,
+                timeout_s=timeout_s,
+            )
+            mixed_results.sort(key=lambda x: x[0])
+            run_results.extend(mixed_results)
             seperate_results = run_all_seperate_configs(
                 local_seperate,
                 local_common,
@@ -1025,6 +1415,16 @@ def main() -> None:
                 )
             )
             run_results.sort(key=lambda x: x[0])
+            mixed_results = _run_mixed_configs(
+                local_mixed,
+                local_common,
+                ram_usage_fraction,
+                ssd_usage_fraction,
+                s3_spec,
+                timeout_s=timeout_s,
+            )
+            mixed_results.sort(key=lambda x: x[0])
+            run_results.extend(mixed_results)
             seperate_results = _run_seperate_configs(
                 local_seperate,
                 local_common,

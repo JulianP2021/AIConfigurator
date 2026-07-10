@@ -28,6 +28,7 @@ src/simulations/simulation_distributed.py
 Other key modules:
 - `src/request/request.py` — `Request`, `RequestScenario`, `RequestGenerator`, `TransferLeg`, `DownloadRequest`, `UploadRequest`.
 - `src/hardware/hardware.py` — `Hardware`, `HardwareSpec`, `GPUHardwareSpec` loaded from `_machine_db.json`.
+- `src/hardware/mixed_gpu.py` — mixed-GPU node pricing and `fetch_mixed_gpu_hardware`.
 - `src/model/model.py` — thin wrapper around a HF model name; provides `kv_size_per_token`.
 - `src/logger.py` — bitmask-based logging.
 - `src/utils/env_reader.py` — `.env` loader and `EnvConfig` defaults.
@@ -81,6 +82,9 @@ NUM_DECODE_NODES=1
 COLOCATED=false
 PREFILL_GPUS_PER_NODE=-1 # -1 means use all GPUs from the hardware preset
 MACHINE_HARDWARE=B200 x8 #15825275
+MIXED=false              # mixed-GPU colocated node
+MIXED_GPU_DONOR=         # donor machine for decode GPUs
+MIXED_GPU_COUNT=-1       # -1 means use the decode-side GPU count
 
 RAM_USAGE_FRACTION=0.8
 SSD_USAGE_FRACTION=0.8
@@ -88,6 +92,9 @@ SSD_USAGE_FRACTION=0.8
 S3_ENABLED=true
 S3_UP_BW_GBPS=25.0
 S3_DOWN_BW_GBPS=25.0
+
+INTER_NODE_NETWORK_UP_GBPS=100.0    # datacenter NIC for node-to-node KV transfers
+INTER_NODE_NETWORK_DOWN_GBPS=100.0
 
 ROUTER_PREFILL_LOAD_SCALE=1.0
 ROUTER_DEVICE_CREDIT=1.0
@@ -143,7 +150,8 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime. In new 
 - Bottlenecks:
   - `RAM_LOCAL` shares the node's `pcie_bw`.
   - `SSD_LOCAL` shares the node's `nvme_bw`.
-  - `NETWORK` uses the minimum of the source node's `network_inet_up` share and the destination node's `network_inet_down` share.
+  - `NETWORK` (node-to-node KV transfers) uses the minimum of the source node's `network_inter_node_up` share and the destination node's `network_inter_node_down` share.
+  - `S3_UPLOAD` / `S3_DOWNLOAD` use the node's `network_inet_up` / `network_inet_down` internet link.
   - `S3_UPLOAD` / `S3_DOWNLOAD` use the configured S3 link bandwidth.
 - `DownloadRequest` / `UploadRequest` contain parallel *tracks* of sequential `TransferLeg`s. Only the active leg on each track receives bandwidth.
 - Instances register/unregister transfers with the scheduler as they start and finish.

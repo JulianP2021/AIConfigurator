@@ -31,6 +31,8 @@ def _tiny_hardware() -> Hardware:
         nvme_bw=1_000_000_000,
         network_inet_up=10_000_000_000,
         network_inet_down=10_000_000_000,
+        network_inter_node_up=10_000_000_000,
+        network_inter_node_down=10_000_000_000,
         cpu_cores=1,
         cpu_cores_effective=1.0,
         cpu_ghz=1.0,

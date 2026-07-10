@@ -6,6 +6,7 @@ re-populate the file from Vast.ai when needed.
 """
 
 import json
+import os
 import pathlib
 import re
 
@@ -22,6 +23,16 @@ _PRICING_PAGE = "https://vast.ai/pricing/gpu"
 _MARKET_API = "https://vast.ai/api/v0/bundles"
 
 _DB_PATH = pathlib.Path(__file__).parent / "_gpu_db.json"
+
+
+def _resolve_inter_node_bw(value: str | None, default_gbps: float = 100.0) -> int:
+    """Resolve an optional Gbps override to bytes per second.
+
+    Falls back to ``default_gbps`` when ``value`` is None or empty.
+    """
+    if value is None or value.strip() == "":
+        return int(default_gbps * 1e9 / 8.0)
+    return int(float(value) * 1e9 / 8.0)
 
 
 def _to_url_slug(gpu_name: str) -> str:
@@ -382,11 +393,29 @@ def lookup_machine(machine_name: str) -> dict[str, Any]:
         raise KeyError(msg) from None
 
 
-def fetch_machine_hardware(machine_name: str) -> Hardware:
-    """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache."""
+def fetch_machine_hardware(
+    machine_name: str,
+    machine_config_override: dict[str, Any] | None = None,
+) -> Hardware:
+    """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache.
+
+    Parameters
+    ----------
+    machine_name:
+        Exact key in ``_machine_db.json``.
+    machine_config_override:
+        Optional machine config dict to use instead of looking up
+        ``machine_name`` in the database.  This allows callers such as
+        ``mixed_gpu`` to inject a modified config while still using the
+        normal GPU lookup and bandwidth-resolution logic.
+    """
     from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
-    scraped = lookup_machine(machine_name)
+    scraped = (
+        machine_config_override
+        if machine_config_override is not None
+        else lookup_machine(machine_name)
+    )
     gpu = lookup(scraped["gpu_name"])
     if not gpu:
         gpu = _fetch_specs(scraped["gpu_name"])
@@ -396,15 +425,31 @@ def fetch_machine_hardware(machine_name: str) -> Hardware:
         gpu_mem=gpu["gpu_mem"],
         gpu_bw=gpu["gpu_bw"],
     )
+
+    # Network bandwidths.  Internet up/down come from the machine DB; inter-node
+    # (datacenter NIC) bandwidths default to 100 Gb/s and can be overridden via
+    # environment variables / CLI / webserver.
+    # Internet up/down use the scraped machine DB values.
+    network_inet_up = int(scraped.get("network_inet_up", 0.0))
+    network_inet_down = int(scraped.get("network_inet_down", 0.0))
+    network_inter_node_up = _resolve_inter_node_bw(
+        os.environ.get("INTER_NODE_NETWORK_UP_GBPS"),
+        default_gbps=100.0,
+    )
+    network_inter_node_down = _resolve_inter_node_bw(
+        os.environ.get("INTER_NODE_NETWORK_DOWN_GBPS"),
+        default_gbps=100.0,
+    )
+
     spec = HardwareSpec(
         gpu_hardware=gpu_spec,
         num_gpus=scraped["num_gpus"],
         nvme_mem=scraped["nvme_mem"],
         nvme_bw=scraped["nvme_bw"],
-        # network_inet_up=scraped["network_inet_up"],
-        # network_inet_down=scraped["network_inet_down"],
-        network_inet_up=100 * 10**9,
-        network_inet_down=100 * 10**9,
+        network_inet_up=network_inet_up,
+        network_inet_down=network_inet_down,
+        network_inter_node_up=network_inter_node_up,
+        network_inter_node_down=network_inter_node_down,
         cpu_cores=scraped.get("cpu_cores", 0),
         cpu_cores_effective=scraped.get("cpu_cores_effective", 0.0),
         cpu_ghz=scraped.get("cpu_ghz", 0.0),

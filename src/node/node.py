@@ -1,4 +1,4 @@
-from src.hardware.hardware import Hardware
+from src.hardware.hardware import GPUHardwareSpec, Hardware
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.model.model import Model
@@ -20,6 +20,8 @@ class Node:
         model_name: str = "Qwen/Qwen3-8B",
         prefill_instances: int = 0,
         decode_instances: int = 0,
+        prefill_gpu_hardware: GPUHardwareSpec | None = None,
+        decode_gpu_hardware: GPUHardwareSpec | None = None,
     ):
         global node_id_counter
         self.id = node_id_counter
@@ -36,7 +38,7 @@ class Node:
         self.prefill_instances = [
             PrefillInstance(
                 node_id=self.id,
-                hardware=hardware.spec.gpu_hardware,
+                hardware=prefill_gpu_hardware or hardware.spec.gpu_hardware,
                 model=Model(model_name),
                 max_batch_size=batch_size,
             )
@@ -46,7 +48,7 @@ class Node:
         self.decode_instances = [
             DecodeInstance(
                 node_id=self.id,
-                hardware=hardware.spec.gpu_hardware,
+                hardware=decode_gpu_hardware or hardware.spec.gpu_hardware,
                 max_batch_size=batch_size,
                 model=Model(model_name),
             )

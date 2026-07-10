@@ -229,6 +229,14 @@
                     <label for="s3_down_bw_gbps">S3 Download Bandwidth (Gbps)</label>
                     <input type="number" id="s3_down_bw_gbps" name="s3_down_bw_gbps" value="25.0" step="1" min="0" form="simForm" required>
                 </div>
+                <div>
+                    <label for="inter_node_network_up_gbps">Inter-node Up (Gbps)</label>
+                    <input type="number" id="inter_node_network_up_gbps" name="inter_node_network_up_gbps" value="100.0" step="1" min="0" form="simForm" required>
+                </div>
+                <div>
+                    <label for="inter_node_network_down_gbps">Inter-node Down (Gbps)</label>
+                    <input type="number" id="inter_node_network_down_gbps" name="inter_node_network_down_gbps" value="100.0" step="1" min="0" form="simForm" required>
+                </div>
             </div>
         </div>
 
@@ -376,6 +384,8 @@
                 })(),
                 s3_up_bw_gbps: fd.get('s3_up_bw_gbps') || '',
                 s3_down_bw_gbps: fd.get('s3_down_bw_gbps') || '',
+                inter_node_network_up_gbps: fd.get('inter_node_network_up_gbps') || '',
+                inter_node_network_down_gbps: fd.get('inter_node_network_down_gbps') || '',
                 configs: []
             };
             // Collect configs by index
@@ -418,6 +428,8 @@
             document.getElementById('s3_enabled').checked = state.s3_enabled === true || state.s3_enabled === 'true';
             document.getElementById('s3_up_bw_gbps').value = state.s3_up_bw_gbps || '25.0';
             document.getElementById('s3_down_bw_gbps').value = state.s3_down_bw_gbps || '25.0';
+            document.getElementById('inter_node_network_up_gbps').value = state.inter_node_network_up_gbps || '100.0';
+            document.getElementById('inter_node_network_down_gbps').value = state.inter_node_network_down_gbps || '100.0';
             updateS3DisabledState();
 
             const list = document.getElementById('configList');

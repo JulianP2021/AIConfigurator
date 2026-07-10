@@ -15,10 +15,10 @@ class TransferLeg:
     Bottleneck values:
       * ``RAM_LOCAL``  : shares the node's ``ram_bw``.
       * ``SSD_LOCAL``  : shares the node's ``nvme_bw``.
-      * ``NETWORK``    : shares ``network_inet_up`` at source and
-        ``network_inet_down`` at destination.
-      * ``S3_UPLOAD``  : shared S3 upload link.
-      * ``S3_DOWNLOAD``: shared S3 download link.
+      * ``NETWORK``    : shares ``network_inter_node_up`` at source and
+        ``network_inter_node_down`` at destination.
+      * ``S3_UPLOAD``  : uses the source node's ``network_inet_up`` link.
+      * ``S3_DOWNLOAD``: uses the destination node's ``network_inet_down`` link.
 
     Each leg carries a fixed startup ``latency_ms`` that must elapse before
     bytes begin to move.  Default latencies:

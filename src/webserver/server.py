@@ -5,6 +5,7 @@ import base64
 import concurrent.futures
 import io
 import json
+import os
 import sys
 import uuid
 
@@ -85,7 +86,14 @@ def _build_nodes(
     batch_size: int,
     model: str,
     colocated: bool = False,
+    inter_node_network_up_gbps: float = 100.0,
+    inter_node_network_down_gbps: float = 100.0,
 ) -> list[Node]:
+    # Apply per-request inter-node bandwidth overrides from the webserver form
+    # before resolving/loading any machine hardware.
+    os.environ["INTER_NODE_NETWORK_UP_GBPS"] = str(inter_node_network_up_gbps)
+    os.environ["INTER_NODE_NETWORK_DOWN_GBPS"] = str(inter_node_network_down_gbps)
+
     prefill_hw_name = resolve_machine_name(prefill_hardware_name)
     decode_hw_name = resolve_machine_name(decode_hardware_name)
     prefill_total_gpus = parse_gpu_count(prefill_hw_name)
@@ -174,6 +182,8 @@ def _run_single_config(
     s3_up_bw_gbps: float,
     s3_down_bw_gbps: float,
     s3_eviction_time_ms: float,
+    inter_node_network_up_gbps: float,
+    inter_node_network_down_gbps: float,
     router_prefill_load_scale: float,
     router_device_credit: float,
     router_remote_ram_credit: float,
@@ -192,6 +202,8 @@ def _run_single_config(
         batch_size,
         model,
         colocated,
+        inter_node_network_up_gbps=inter_node_network_up_gbps,
+        inter_node_network_down_gbps=inter_node_network_down_gbps,
     )
     scenario = DistributedScenario(
         name=label,
@@ -408,6 +420,7 @@ def _results_inner_html(
     results: list[dict[str, float | int | str]],
     plot_urls: list[str] | None = None,
     error: str | None = None,
+    _show_debug_tables: bool = False,
 ) -> str:
     """Inner HTML for results (used when injecting via JS)."""
     html = ""
@@ -613,6 +626,20 @@ def _load_results_from_dir(results_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _resolve_results_dir(results_dir: str) -> Path:
+    """Resolve a results directory relative to the server or project root."""
+    path = Path(results_dir)
+    if path.is_dir():
+        return path
+    # If the server was started from a different working directory, fall back
+    # to resolving the path relative to the project root.
+    project_root = Path(__file__).resolve().parents[2]
+    alt = project_root / path
+    if alt.is_dir():
+        return alt
+    return path
+
+
 def _top_n_per_user_count(
     rows: list[dict[str, Any]],
     n: int = 10,
@@ -778,6 +805,8 @@ async def simulate(
     s3_up_bw_gbps: float = Form(_env.s3_up_bw_gbps),
     s3_down_bw_gbps: float = Form(_env.s3_down_bw_gbps),
     s3_eviction_time_ms: float = Form(_env.s3_eviction_time_ms),
+    inter_node_network_up_gbps: float = Form(_env.inter_node_network_up_gbps),
+    inter_node_network_down_gbps: float = Form(_env.inter_node_network_down_gbps),
     router_prefill_load_scale: float = Form(_env.router_prefill_load_scale),
     router_device_credit: float = Form(_env.router_device_credit),
     router_remote_ram_credit: float = Form(_env.router_remote_ram_credit),
@@ -824,6 +853,8 @@ async def simulate(
             "s3_up_bw_gbps": s3_up_bw_gbps,
             "s3_down_bw_gbps": s3_down_bw_gbps,
             "s3_eviction_time_ms": s3_eviction_time_ms,
+            "inter_node_network_up_gbps": inter_node_network_up_gbps,
+            "inter_node_network_down_gbps": inter_node_network_down_gbps,
             "router_prefill_load_scale": router_prefill_load_scale,
             "router_device_credit": router_device_credit,
             "router_remote_ram_credit": router_remote_ram_credit,
@@ -978,12 +1009,14 @@ async def import_results(
         from_directory = False
         if results_dir:
             from_directory = True
-            path = Path(results_dir)
+            path = _resolve_results_dir(results_dir)
             if not path.is_dir():
                 raise ValueError(f"Not a directory: {results_dir}")
             rows = _load_results_from_dir(path)
             if not rows:
-                raise ValueError(f"No results_*.json files found in {results_dir}")
+                raise ValueError(
+                    f"Directory '{results_dir}' has results_*.json files, but none contain valid result rows."
+                )
             results.extend(rows)
         elif results_json:
             payload = json.loads(results_json)
@@ -1045,7 +1078,7 @@ async def plot_users_cost(results_dir: str = Form(...)):
     plotted.
     """
     try:
-        path = Path(results_dir)
+        path = _resolve_results_dir(results_dir)
         if not path.is_dir():
             return HTMLResponse(
                 content=_build_results_page(

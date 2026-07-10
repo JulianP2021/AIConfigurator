@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any
 
-from src.hardware.scraper import load_gpu_db, load_machine_db
+from src.hardware.scraper import load_gpu_db, load_machine_db, parse_gpu_count
 from src.utils.env_reader import load_env
 from src.utils.parser import get_create_config_parser
 
@@ -28,6 +28,8 @@ if __name__ == "__main__":
     config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
     config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
     config["s3_eviction_time_ms"] = args.s3_eviction_time_ms
+    config["inter_node_network_up_gbps"] = args.inter_node_network_up_gbps
+    config["inter_node_network_down_gbps"] = args.inter_node_network_down_gbps
     config["sla"] = args.sla
     config["batch_size"] = args.batch_size
     config["num_prefill_nodes"] = args.num_prefill_nodes
@@ -53,6 +55,7 @@ if __name__ == "__main__":
     sorted_possible_machines = sorted(possible_machines, key=lambda x: x[0])
 
     colocation_configs: list[dict[str, str]] = []
+    mixed_configs: list[dict[str, str]] = []
     seperate_configs: list[dict[str, str]] = []
 
     colocated_nodes_values = [1, 2, 4, 8, 12, 16]
@@ -60,6 +63,13 @@ if __name__ == "__main__":
     prefill_node_values = [1, 2, 4, 8, 12, 14]
     decode_node_values = [1, 2, 4, 8]
     batch_size_values = [64, 128]
+
+    # For mixed-GPU colocated configs, use these donor GPU types.
+    mixed_gpu_donor_pool = sorted({
+        name
+        for name, _ in sorted_possible_machines
+        if "B200" in name or "H200" in name or "H100" in name or "RTX 4090" in name
+    })
 
     for machine_name, prefill_machine in sorted_possible_machines:
         print(f"Machine: {machine_name}")
@@ -99,6 +109,52 @@ if __name__ == "__main__":
                         },
                     )
 
+    # Generate mixed-GPU configs as a separate category.
+    for machine_name, prefill_machine in sorted_possible_machines:
+        if prefill_machine["num_gpus"] < 2:
+            continue
+        prefill_gpus_per_node_values = []
+        if prefill_machine["num_gpus"] == 2:
+            prefill_gpus_per_node_values = [1]
+        if prefill_machine["num_gpus"] == 4:
+            prefill_gpus_per_node_values = [2, 3]
+        if prefill_machine["num_gpus"] == 6:
+            prefill_gpus_per_node_values = [3, 4]
+        if prefill_machine["num_gpus"] == 8:
+            prefill_gpus_per_node_values = [4, 6]
+
+        for nodes in colocated_nodes_values:
+            for batch_size in batch_size_values:
+                for prefill_gpus_per_node in prefill_gpus_per_node_values:
+                    decode_gpus_per_node = (
+                        int(prefill_machine["num_gpus"]) - prefill_gpus_per_node
+                    )
+                    for donor_name in mixed_gpu_donor_pool:
+                        if donor_name == machine_name:
+                            continue
+                        donor_total_gpus = parse_gpu_count(donor_name)
+                        if donor_total_gpus < decode_gpus_per_node:
+                            continue
+                        print(
+                            f"label: Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}"
+                        )
+                        mixed_configs.append(
+                            {
+                                "mixed": "true",
+                                "colocated": "false",
+                                "prefill_hardware": machine_name,
+                                "decode_hardware": donor_name,
+                                "prefill_gpus_per_node": str(prefill_gpus_per_node),
+                                "decode_gpus_per_node": str(decode_gpus_per_node),
+                                "prefill_nodes": str(nodes),
+                                "decode_nodes": str(nodes),
+                                "batch_size": str(batch_size),
+                                "mixed_gpu_donor": donor_name,
+                                "mixed_gpu_count": str(decode_gpus_per_node),
+                                "label": f"Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}",
+                            },
+                        )
+
     for prefill_machine_name, _ in sorted_possible_machines:
         for decode_machine_name, _ in sorted_possible_machines:
             for prefill_nodes in prefill_node_values:
@@ -119,10 +175,10 @@ if __name__ == "__main__":
                         )
 
     print(
-        f"Generated {len(colocation_configs)} colocation configs and {len(seperate_configs)} seperate configs."
+        f"Generated {len(colocation_configs)} colocation configs, {len(mixed_configs)} mixed configs, and {len(seperate_configs)} seperate configs."
     )
 
-    config["configs"] = colocation_configs + seperate_configs
+    config["configs"] = colocation_configs + mixed_configs + seperate_configs
 
     with Path(args.config_name).open("w", encoding="utf-8") as f:
         import json

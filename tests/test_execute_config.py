@@ -9,6 +9,7 @@ import pytest
 from execute_config import (
     _group_colocated_configs,
     _group_seperate_configs,
+    extreme_first_eytzinger_layout,
     parse_users_arg,
 )
 
@@ -35,6 +36,39 @@ def _cfg(
         "prefill_gpus_per_node": str(prefill_gpus),
         "decode_gpus_per_node": str(decode_gpus),
     }
+
+
+class TestExtremeFirstEytzingerLayout:
+    def test_empty(self) -> None:
+        assert extreme_first_eytzinger_layout([], key=lambda x: x) == []
+
+    def test_single(self) -> None:
+        assert extreme_first_eytzinger_layout([5], key=lambda x: x) == [5]
+
+    def test_two_descending(self) -> None:
+        assert extreme_first_eytzinger_layout([1, 5], key=lambda x: x) == [5, 1]
+
+    def test_three_extremes_first(self) -> None:
+        # sorted: [1, 3, 5]; largest=5, smallest=1, middle=[3]
+        assert extreme_first_eytzinger_layout([3, 1, 5], key=lambda x: x) == [5, 1, 3]
+
+    def test_seven_order(self) -> None:
+        arr = list(range(7))  # 0..6
+        result = extreme_first_eytzinger_layout(arr, key=lambda x: x)
+        # largest=6, smallest=0, middle=[1,2,3,4,5] -> Eytzinger of middle
+        # sorted middle [1,2,3,4,5]; Eytzinger build gives [4,2,5,1,3]
+        assert result[0] == 6
+        assert result[1] == 0
+        assert result[2:] == [4, 2, 5, 1, 3]
+
+    def test_key_uses_field(self) -> None:
+        cfg = [
+            {"k": 1, "label": "a"},
+            {"k": 5, "label": "b"},
+            {"k": 3, "label": "c"},
+        ]
+        result = extreme_first_eytzinger_layout(cfg, key=lambda c: c["k"])
+        assert [c["k"] for c in result] == [5, 1, 3]
 
 
 class TestParseUsersArg:

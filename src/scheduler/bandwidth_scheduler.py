@@ -22,9 +22,11 @@ class BandwidthScheduler:
     bottlenecks:
       * ``RAM_LOCAL``  : shares the node's ``ram_bw`` bus;
       * ``SSD_LOCAL``  : shares the node's ``nvme_bw`` bus;
-      * ``NETWORK``    : uses the source node's ``network_inet_up`` and the
-        destination node's ``network_inet_down``; effective rate is the
+      * ``NETWORK``    : uses the source node's ``network_inter_node_up`` and the
+        destination node's ``network_inter_node_down``; effective rate is the
         minimum of the two shares.
+      * ``S3_UPLOAD`` / ``S3_DOWNLOAD`` : use the node's ``network_inet_up`` /
+        ``network_inet_down`` link to the internet.
 
     All bandwidth values are stored as bytes/second in ``HardwareSpec``.
     The scheduler exposes bytes/ms rates to instances so they can decrement
@@ -50,8 +52,10 @@ class BandwidthScheduler:
                 f"Node {node.id} bandwidths: "
                 f"RAM {node.hardware.spec.pcie_bw / 1e6:.2f} MB/s, "
                 f"SSD {node.hardware.spec.nvme_bw / 1e6:.2f} MB/s, "
-                f"Network Up {node.hardware.spec.network_inet_up / 1e6:.2f} MB/s, "
-                f"Network Down {node.hardware.spec.network_inet_down / 1e6:.2f} MB/s",
+                f"Inter-node Up {node.hardware.spec.network_inter_node_up / 1e6:.2f} MB/s, "
+                f"Inter-node Down {node.hardware.spec.network_inter_node_down / 1e6:.2f} MB/s, "
+                f"Internet Up {node.hardware.spec.network_inet_up / 1e6:.2f} MB/s, "
+                f"Internet Down {node.hardware.spec.network_inet_down / 1e6:.2f} MB/s",
             )
         self.s3_spec = s3_spec or S3Spec.from_gbps(enabled=False)
         if self.s3_spec.enabled:
@@ -125,11 +129,11 @@ class BandwidthScheduler:
                     leg.bandwidth_bytes_per_ms = node_bw / 1000.0
                 elif leg.bottleneck == "NETWORK":
                     source_bw = (
-                        self.node_specs[leg.source_node_id].network_inet_up
+                        self.node_specs[leg.source_node_id].network_inter_node_up
                         / remote_up_counts[leg.source_node_id]
                     )
                     dest_bw = (
-                        self.node_specs[leg.dest_node_id].network_inet_down
+                        self.node_specs[leg.dest_node_id].network_inter_node_down
                         / remote_down_counts[leg.dest_node_id]
                     )
                     leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 1000.0

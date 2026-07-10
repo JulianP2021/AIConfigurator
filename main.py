@@ -18,8 +18,15 @@ Usage examples:
     # total_requests = users * sessions_per_user * max_session_turns
 """
 
-from src.hardware.hardware import Hardware, S3Spec
-from src.hardware.scraper import fetch_machine_hardware
+import os
+
+from src.hardware.hardware import GPUHardwareSpec, Hardware, S3Spec
+from src.hardware.mixed_gpu import fetch_mixed_gpu_hardware
+from src.hardware.scraper import (
+    fetch_machine_hardware,
+    load_machine_db,
+    resolve_machine_name,
+)
 from src.logger import set_debug, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -62,6 +69,17 @@ def main():
         max_output_tokens=args.osl,
     )
 
+    # Inter-node bandwidth can be overridden from CLI/env; set it globally so
+    # fetch_machine_hardware() applies it to the constructed HardwareSpec.
+    os.environ["INTER_NODE_NETWORK_UP_GBPS"] = str(args.inter_node_network_up_gbps)
+    os.environ["INTER_NODE_NETWORK_DOWN_GBPS"] = str(args.inter_node_network_down_gbps)
+
+    mixed_mode = args.mixed
+    if mixed_mode and not args.mixed_gpu_donor:
+        # Mixed mode is a colocated topology with different GPU types for
+        # prefill and decode.  A donor machine must be supplied.
+        raise ValueError("--mixed requires --mixed-gpu-donor to be set.")
+
     hardware = fetch_machine_hardware(args.machine_hardware)
     assert type(hardware) is Hardware, (
         f"Expected Hardware instance, got {type(hardware)}"
@@ -75,13 +93,48 @@ def main():
     )
 
     nodes: list[Node] = []
-    if args.colocated:
+    if args.colocated or mixed_mode:
         if prefill_gpus_per_node >= total_gpus:
             raise ValueError(
                 f"--prefill-gpus-per-node ({prefill_gpus_per_node}) must be "
-                f"less than total GPUs per node ({total_gpus}) in colocated mode."
+                f"less than total GPUs per node ({total_gpus}) in colocated/mixed mode."
             )
         decode_gpus_per_node = total_gpus - prefill_gpus_per_node
+        decode_gpu_spec: GPUHardwareSpec | None = None
+
+        if mixed_mode:
+            mixed_gpu_count = (
+                args.mixed_gpu_count
+                if args.mixed_gpu_count >= 0
+                else decode_gpus_per_node
+            )
+            donor_hw_name = resolve_machine_name(args.mixed_gpu_donor)
+            hardware = fetch_mixed_gpu_hardware(
+                args.machine_hardware,
+                prefill_gpus_per_node,
+                donor_hw_name,
+                mixed_gpu_count,
+            )
+            donor_gpu_name = load_machine_db()[donor_hw_name]["gpu_name"]
+            from src.hardware.scraper import lookup as lookup_gpu
+
+            donor_gpu_config = lookup_gpu(donor_gpu_name)
+            decode_gpu_spec = GPUHardwareSpec(
+                flops=donor_gpu_config["flops"],
+                gpu_mem=donor_gpu_config["gpu_mem"],
+                gpu_bw=donor_gpu_config["gpu_bw"],
+            )
+            print(
+                f"Mixed-GPU mode: {args.num_prefill_nodes} node(s), each with "
+                f"{prefill_gpus_per_node} prefill GPU(s) from {args.machine_hardware} + "
+                f"{mixed_gpu_count} decode GPU(s) from {donor_hw_name}."
+            )
+        else:
+            print(
+                f"Colocated mode: {args.num_prefill_nodes} node(s), each with "
+                f"{prefill_gpus_per_node} prefill + {decode_gpus_per_node} decode GPU(s)."
+            )
+
         for _ in range(args.num_prefill_nodes):
             nodes.append(
                 Node(
@@ -90,12 +143,9 @@ def main():
                     batch_size=args.batch_size,
                     prefill_instances=prefill_gpus_per_node,
                     decode_instances=decode_gpus_per_node,
+                    decode_gpu_hardware=decode_gpu_spec,
                 )
             )
-        print(
-            f"Colocated mode: {args.num_prefill_nodes} node(s), each with "
-            f"{prefill_gpus_per_node} prefill + {decode_gpus_per_node} decode GPU(s)."
-        )
     else:
         prefill_instances_per_node = total_gpus
         decode_instances_per_node = total_gpus

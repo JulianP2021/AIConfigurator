@@ -51,8 +51,10 @@ class HardwareSpec:
     num_gpus: int
     nvme_mem: int
     nvme_bw: int
-    network_inet_up: int  # in bytes per second
-    network_inet_down: int  # in bytes per second
+    network_inet_up: int  # in bytes per second (internet / S3)
+    network_inet_down: int  # in bytes per second (internet / S3)
+    network_inter_node_up: int  # in bytes per second (datacenter NIC)
+    network_inter_node_down: int  # in bytes per second (datacenter NIC)
     cpu_cores: int
     cpu_cores_effective: float
     cpu_ghz: float

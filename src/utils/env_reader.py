@@ -35,6 +35,11 @@ class EnvConfig:
     colocated: bool = False
     prefill_gpus_per_node: int = -1
 
+    # Mixed-GPU topology (colocated node with different prefill/decode GPU types)
+    mixed: bool = False
+    mixed_gpu_donor: str = ""
+    mixed_gpu_count: int = -1
+
     # Cache
     ram_usage_fraction: float = 0.8
     ssd_usage_fraction: float = 0.8
@@ -44,6 +49,11 @@ class EnvConfig:
     s3_up_bw_gbps: float = 25.0
     s3_down_bw_gbps: float = 25.0
     s3_eviction_time_ms: float = 0.0
+
+    # Inter-node (datacenter NIC) bandwidth used for node-to-node KV transfers.
+    # Defaults to 100 Gbps symmetric.
+    inter_node_network_up_gbps: float = 100.0
+    inter_node_network_down_gbps: float = 100.0
 
     # Dynamo-style KV cache routing cost parameters (tokens).
     # Credits reduce the effective prefill load when the worker already holds
@@ -83,12 +93,17 @@ _DEFAULTS = {
     "NUM_DECODE_NODES": "1",
     "COLOCATED": "false",
     "PREFILL_GPUS_PER_NODE": "-1",
+    "MIXED": "false",
+    "MIXED_GPU_DONOR": "",
+    "MIXED_GPU_COUNT": "-1",
     "RAM_USAGE_FRACTION": "0.8",
     "SSD_USAGE_FRACTION": "0.8",
     "S3_ENABLED": "true",
     "S3_UP_BW_GBPS": "25.0",
     "S3_DOWN_BW_GBPS": "25.0",
     "S3_EVICTION_TIME_MS": "0.0",
+    "INTER_NODE_NETWORK_UP_GBPS": "100.0",
+    "INTER_NODE_NETWORK_DOWN_GBPS": "100.0",
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
     "ROUTER_DEVICE_CREDIT": "1.0",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
@@ -117,6 +132,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "NUM_PREFILL_NODES",
         "NUM_DECODE_NODES",
         "PREFILL_GPUS_PER_NODE",
+        "MIXED_GPU_COUNT",
     }:
         return int(value)
     if key in {
@@ -124,6 +140,8 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "SSD_USAGE_FRACTION",
         "S3_UP_BW_GBPS",
         "S3_DOWN_BW_GBPS",
+        "INTER_NODE_NETWORK_UP_GBPS",
+        "INTER_NODE_NETWORK_DOWN_GBPS",
         "SLA_TTFT_MS",
         "SLA_TPOT_MS",
         "THINK_TIME_MS",
@@ -137,7 +155,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         return float(value)
     if key == "LOG_MASK":
         return int(value, 0)
-    if key in {"DEBUG", "S3_ENABLED", "COLOCATED"}:
+    if key in {"DEBUG", "S3_ENABLED", "COLOCATED", "MIXED"}:
         return _parse_bool(value)
     if key == "MAX_SESSION_TURNS":
         return int(value)
@@ -201,12 +219,17 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         num_decode_nodes=int(merged["NUM_DECODE_NODES"]),
         colocated=_parse_bool(merged["COLOCATED"]),
         prefill_gpus_per_node=int(merged["PREFILL_GPUS_PER_NODE"]),
+        mixed=_parse_bool(merged["MIXED"]),
+        mixed_gpu_donor=str(merged["MIXED_GPU_DONOR"]),
+        mixed_gpu_count=int(merged["MIXED_GPU_COUNT"]),
         ram_usage_fraction=float(merged["RAM_USAGE_FRACTION"]),
         ssd_usage_fraction=float(merged["SSD_USAGE_FRACTION"]),
         s3_enabled=_parse_bool(merged["S3_ENABLED"]),
         s3_up_bw_gbps=float(merged["S3_UP_BW_GBPS"]),
         s3_down_bw_gbps=float(merged["S3_DOWN_BW_GBPS"]),
         s3_eviction_time_ms=float(merged["S3_EVICTION_TIME_MS"]),
+        inter_node_network_up_gbps=float(merged["INTER_NODE_NETWORK_UP_GBPS"]),
+        inter_node_network_down_gbps=float(merged["INTER_NODE_NETWORK_DOWN_GBPS"]),
         router_prefill_load_scale=float(merged["ROUTER_PREFILL_LOAD_SCALE"]),
         router_device_credit=float(merged["ROUTER_DEVICE_CREDIT"]),
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),

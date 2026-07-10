@@ -207,6 +207,8 @@ class TestSchedulerCreditsProcessedTime:
             nvme_bw=1,
             network_inet_up=1,
             network_inet_down=1,
+            network_inter_node_up=1,
+            network_inter_node_down=1,
             cpu_cores=1,
             cpu_cores_effective=1.0,
             cpu_ghz=1.0,

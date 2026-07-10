@@ -39,6 +39,8 @@ def _make_spec(
     nvme_bw: int,
     network_inet_up: int,
     network_inet_down: int,
+    network_inter_node_up: int = 12_500_000_000,
+    network_inter_node_down: int = 12_500_000_000,
 ) -> HardwareSpec:
     """Build a HardwareSpec with all required fields from the Vast.ai schema."""
     gpu_spec = GPUHardwareSpec(flops=1, gpu_mem=1_000_000_000, gpu_bw=1_000_000_000)
@@ -49,6 +51,8 @@ def _make_spec(
         nvme_bw=nvme_bw,
         network_inet_up=network_inet_up,
         network_inet_down=network_inet_down,
+        network_inter_node_up=network_inter_node_up,
+        network_inter_node_down=network_inter_node_down,
         cpu_cores=1,
         cpu_cores_effective=1.0,
         cpu_ghz=1.0,

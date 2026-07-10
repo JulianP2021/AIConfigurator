@@ -131,6 +131,24 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--inter-node-network-up-gbps",
+        type=float,
+        default=env.inter_node_network_up_gbps,
+        help=(
+            "Inter-node (datacenter NIC) upload bandwidth in Gbps for "
+            f"node-to-node KV transfers (default: {env.inter_node_network_up_gbps})"
+        ),
+    )
+    parser.add_argument(
+        "--inter-node-network-down-gbps",
+        type=float,
+        default=env.inter_node_network_down_gbps,
+        help=(
+            "Inter-node (datacenter NIC) download bandwidth in Gbps for "
+            f"node-to-node KV transfers (default: {env.inter_node_network_down_gbps})"
+        ),
+    )
+    parser.add_argument(
         "--router-prefill-load-scale",
         type=float,
         default=env.router_prefill_load_scale,
@@ -235,6 +253,36 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
             '"H200 x8 #692c33bd"'
         ),
     )
+    parser.add_argument(
+        "--mixed",
+        action="store_true",
+        default=env.mixed,
+        help=(
+            "Build a mixed-GPU colocated node: the base machine provides "
+            "prefill GPUs and the donor machine provides decode GPUs "
+            f"(default: {env.mixed})"
+        ),
+    )
+    parser.add_argument(
+        "--mixed-gpu-donor",
+        type=str,
+        default=env.mixed_gpu_donor,
+        help=(
+            "Machine name to use as the decode GPU donor in --mixed mode. "
+            "If omitted and --mixed is set, falls back to the decode hardware "
+            f"(default: {env.mixed_gpu_donor!r})"
+        ),
+    )
+    parser.add_argument(
+        "--mixed-gpu-count",
+        type=int,
+        default=env.mixed_gpu_count,
+        help=(
+            "Number of donor GPUs to install in each mixed node. "
+            "-1 means use the decode-side GPU count "
+            f"(default: {env.mixed_gpu_count})"
+        ),
+    )
     return parser
 
 
@@ -248,8 +296,3 @@ def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help="Name of the output configuration file (default: config.json)",
     )
     return parser
-
-
-# Alias kept for backwards compatibility with any direct imports.
-def get_simulation_parser(env: EnvConfig) -> argparse.ArgumentParser:
-    return get_main_parser(env)
