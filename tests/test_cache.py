@@ -648,3 +648,40 @@ class TestCacheUpload:
 
         ur = cache_with_fake_model.upload_kv(0, req)
         assert bottleneck_names(ur.tracks) == ["RAM_LOCAL"]
+
+    def test_upload_zero_bytes_raises(self, fake_model: Model, tiny_hardware: Hardware):
+        # Shrink RAM to exactly hold one 64-token item so the second insert
+        # evicts the prior copy and creates a zero-increment update.
+        cache = Cache(
+            layers={},
+            node_hardware={0: tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+        )
+        cache.ram_capacity_bytes[0] = 6_400
+        cache.ssd_capacity_bytes[0] = 6_400
+
+        user_id, session_id = 1, 22
+        req = Request(64, 8, user_id, session_id)
+        cache.insert_cache_item(CacheItem((user_id, session_id), 0, 64), 0)
+        req.prefilled_tokens = 64
+        req.decoded_tokens = 0
+
+        with pytest.raises(ValueError, match="Zero-byte upload"):
+            cache.upload_kv(0, req)
+
+    def test_upload_includes_eviction_track(self, small_cache: Cache):
+        req = Request(1024, 8, 0, 1)
+        req.id = 23
+        req.prefilled_tokens = 1024
+        req.decoded_tokens = 0
+
+        # Force eviction by inserting another item first. The eviction legs are
+        # created when RAM overflows, so the upload tracks include them in
+        # addition to the actual upload leg.
+        small_cache.insert_cache_item(CacheItem((9, 9), 0, 512), 0)
+
+        ur = small_cache.upload_kv(0, req)
+        assert len(ur.tracks) == 2
+        assert ur.is_upload_done() is False

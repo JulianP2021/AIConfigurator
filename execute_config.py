@@ -1480,7 +1480,6 @@ def main() -> None:
             tagged_label = f"{label} (users={users})"
             tagged_results.append((key, tagged_label, result))
             all_results.append((key, tagged_label, result))
-        print_table(run_results)
 
         results_dir = args.results_dir
         results_dir.mkdir(parents=True, exist_ok=True)

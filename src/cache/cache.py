@@ -732,17 +732,23 @@ class Cache:
             f"new tokens uploaded: {new_tokens}",
         )
 
-        assert bytes_to_transfer > 0, (
-            f"Zero-byte upload for request {request.id} (user {request.user_id}, session {request.session_id}): "
-            f"node {node_id} already has {prior_cached_tokens} tokens, current total {current_total_tokens}"
-        )
-
         if bytes_to_transfer <= 0:
-            # Only eviction work to do; represent it as a single-track transfer.
-            return UploadRequest(request, [eviction_legs])
+            raise ValueError(
+                f"Zero-byte upload for request {request.id} (user {request.user_id}, "
+                f"session {request.session_id}): node {node_id} already has "
+                f"{prior_cached_tokens} tokens, current total {current_total_tokens}"
+            )
+
+        if eviction_legs and not any(leg.remaining_bytes > 0 for leg in eviction_legs):
+            eviction_legs = []
 
         upload_track = [TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")]
-        return UploadRequest(request, [eviction_legs, upload_track])
+        # The eviction legs are the physical work of making room.  They are
+        # returned as a separate track that runs in parallel with the actual
+        # upload; however, the request is considered uploaded once the last
+        # (upload) track finishes.
+        tracks = [eviction_legs, upload_track] if eviction_legs else [upload_track]
+        return UploadRequest(request, tracks)
 
     def download_kv(self, node_id: int, request: Request) -> DownloadRequest:
         """Assemble KV for ``request`` on ``node_id`` RAM from all cached sources.

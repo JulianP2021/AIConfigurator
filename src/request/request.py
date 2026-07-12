@@ -134,7 +134,42 @@ class _MultiTrackTransfer:
 
 
 class UploadRequest(_MultiTrackTransfer):
-    """Tracks for an upload.  Eviction and upload tracks run in parallel."""
+    """Tracks for an upload.  Eviction and upload tracks run in parallel.
+
+    The last track is the actual upload leg; the request is considered
+    finished once that track completes, while any eviction tracks keep running
+    in the background.
+    """
+
+    def is_upload_done(self) -> bool:
+        """Return True when the actual upload leg (last track) is exhausted."""
+        if not self.tracks:
+            return True
+        last_idx = len(self.tracks) - 1
+        return self.current_legs[last_idx] >= len(self.tracks[last_idx])
+
+    def upload_active_duration_ms(self) -> float:
+        """Active duration of the actual upload leg (last track) only."""
+        if not self.tracks:
+            return 0.0
+        return sum(leg.processed_time_ms for leg in self.tracks[-1])
+
+    def background_active_duration_ms(self) -> float:
+        """Active duration of all tracks except the actual upload leg.
+
+        This measures the background eviction work that continues after the
+        request itself is considered uploaded.
+        """
+        if not self.tracks:
+            return 0.0
+        return (
+            max(
+                sum(leg.processed_time_ms for leg in track)
+                for track in self.tracks[:-1]
+            )
+            if len(self.tracks) > 1
+            else 0.0
+        )
 
 
 class DownloadRequest(_MultiTrackTransfer):
@@ -172,8 +207,10 @@ class Request:
     # Scheduler-reported active transfer durations for each phase.
     prefill_download_active_ms: float = 0.0
     prefill_upload_active_ms: float = 0.0
+    prefill_upload_background_active_ms: float = 0.0
     decode_download_active_ms: float = 0.0
     decode_upload_active_ms: float = 0.0
+    decode_upload_background_active_ms: float = 0.0
 
     # Derived user-facing metrics (computed once at simulation end).
     prefill_time_ms: float = 0.0

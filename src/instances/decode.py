@@ -22,6 +22,7 @@ class DecodeInstance:
     queue: list[tuple[Request, float]]
     download_queue: list[tuple[DownloadRequest, float]]
     upload_queue: list[tuple[UploadRequest, float]]
+    background_upload_queue: list[UploadRequest]
     max_batch_size: int
     model: Model
     session: Any
@@ -42,6 +43,7 @@ class DecodeInstance:
         self.queue = []
         self.download_queue = []
         self.upload_queue = []
+        self.background_upload_queue = []
         self.max_batch_size = max_batch_size
         self.cache = None
         self.scheduler = None
@@ -181,13 +183,36 @@ class DecodeInstance:
             self.queue.append((request, 0))
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
 
-        # Drain completed decode uploads.
-        while self.upload_queue and not self.upload_queue[0][0].active_legs:
+        # Drain completed decode uploads.  The actual upload is the last track;
+        # once it finishes the request is done, while any eviction tracks keep
+        # running in the background.
+        while self.upload_queue and self.upload_queue[0][0].is_upload_done():
             upload_request, _ = self.upload_queue.pop(0)
             request = upload_request.request
             request.decode_upload_end_ms = now
-            request.decode_upload_active_ms = upload_request.active_transfer_duration_ms
+            request.decode_upload_active_ms = upload_request.upload_active_duration_ms()
             finished_requests.append(request)
+            # Remove the request's KV from the decode instance working set.
+            self._kv_cache_bytes = max(
+                0,
+                int(self._kv_cache_bytes)
+                - int(self.model.kv_size_per_token) * int(request.cache_length),
+            )
+            # Keep the UploadRequest around so the full background eviction
+            # duration can be captured once every track is exhausted.
+            self.background_upload_queue.append(upload_request)
+
+        # Drain completed background uploads and record their eviction duration.
+        still_running: list[UploadRequest] = []
+        for upload_request in self.background_upload_queue:
+            if upload_request.is_complete():
+                request = upload_request.request
+                request.decode_upload_background_active_ms = (
+                    upload_request.background_active_duration_ms()
+                )
+            else:
+                still_running.append(upload_request)
+        self.background_upload_queue = still_running
 
         # Active decode batch
         self._ensure_batch()

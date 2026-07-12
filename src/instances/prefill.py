@@ -21,6 +21,7 @@ class PrefillInstance:
     hardware: GPUHardwareSpec
     queue: list[tuple[Request, float]]
     upload_queue: list[tuple[UploadRequest, float]]
+    background_upload_queue: list[UploadRequest]
     download_queue: list[tuple[DownloadRequest, float]]
     cache: Cache | None
     scheduler: BandwidthScheduler | None
@@ -40,6 +41,7 @@ class PrefillInstance:
         self.hardware = hardware
         self.queue = []
         self.upload_queue = []
+        self.background_upload_queue = []
         self.download_queue = []
         self.cache = None
         self.scheduler = None
@@ -139,15 +141,32 @@ class PrefillInstance:
             request.prefill_queue_start_ms = now
             self.queue.append((request, 0))
 
-        # Drain completed prefill uploads.
-        while self.upload_queue and not self.upload_queue[0][0].active_legs:
+        # Drain completed prefill uploads.  The actual upload is the last track;
+        # once it finishes the request is considered uploaded and can move on,
+        # while any eviction tracks keep running in the background.
+        while self.upload_queue and self.upload_queue[0][0].is_upload_done():
             upload_request, _ = self.upload_queue.pop(0)
             request = upload_request.request
             request.prefill_upload_end_ms = now
             request.prefill_upload_active_ms = (
-                upload_request.active_transfer_duration_ms
+                upload_request.upload_active_duration_ms()
             )
             finished_requests.append(request)
+            # Keep the UploadRequest around so the full background eviction
+            # duration can be captured once every track is exhausted.
+            self.background_upload_queue.append(upload_request)
+
+        # Drain completed background uploads and record their eviction duration.
+        still_running: list[UploadRequest] = []
+        for upload_request in self.background_upload_queue:
+            if upload_request.is_complete():
+                request = upload_request.request
+                request.prefill_upload_background_active_ms = (
+                    upload_request.background_active_duration_ms()
+                )
+            else:
+                still_running.append(upload_request)
+        self.background_upload_queue = still_running
 
         # Active prefill
         if self.queue:
@@ -220,7 +239,8 @@ class PrefillInstance:
         log(
             LOG_INSTANCE,
             f"Prefill instance state: {len(self.queue)} requests in queue, "
-            f"{len(self.upload_queue)} requests in upload queue",
+            f"{len(self.upload_queue)} requests in upload queue, "
+            f"{len(self.background_upload_queue)} background uploads",
         )
         for request, _ in self.queue:
             log(

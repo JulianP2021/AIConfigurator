@@ -67,6 +67,7 @@ class SimulationResult:
     avg_prefill_download_active_ms: float = 0.0
     avg_prefill_download_wait_ms: float = 0.0
     avg_prefill_upload_active_ms: float = 0.0
+    avg_prefill_upload_background_active_ms: float = 0.0
     avg_prefill_upload_wait_ms: float = 0.0
     avg_decode_time_ms: float = 0.0
     avg_decode_wait_ms: float = 0.0
@@ -74,6 +75,7 @@ class SimulationResult:
     avg_decode_download_active_ms: float = 0.0
     avg_decode_download_wait_ms: float = 0.0
     avg_decode_upload_active_ms: float = 0.0
+    avg_decode_upload_background_active_ms: float = 0.0
     avg_decode_upload_wait_ms: float = 0.0
     avg_clean_ttft_ms: float = 0.0
     max_clean_ttft_ms: float = 0.0
@@ -114,6 +116,7 @@ class SimulationResult:
             "avg_prefill_download_active_ms": 3,
             "avg_prefill_download_wait_ms": 3,
             "avg_prefill_upload_active_ms": 3,
+            "avg_prefill_upload_background_active_ms": 3,
             "avg_prefill_upload_wait_ms": 3,
             "avg_decode_time_ms": 3,
             "avg_decode_wait_ms": 3,
@@ -121,6 +124,7 @@ class SimulationResult:
             "avg_decode_download_active_ms": 3,
             "avg_decode_download_wait_ms": 3,
             "avg_decode_upload_active_ms": 3,
+            "avg_decode_upload_background_active_ms": 3,
             "avg_decode_upload_wait_ms": 3,
             "avg_clean_ttft_ms": 3,
             "max_clean_ttft_ms": 3,

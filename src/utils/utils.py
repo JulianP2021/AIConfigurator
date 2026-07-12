@@ -7,17 +7,16 @@ from src.request.request import Request
 @lru_cache(maxsize=1280)
 def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
-    qk_proj = tokens_to_process * 4 * c["hidden_size"] ** 2
+    embedding = 2 * tokens_to_process * c["hidden_size"] * c["vocab_size"]
+    qo_proj = tokens_to_process * 4 * c["hidden_size"] ** 2
     kv_proj = (
         tokens_to_process * 4 * c["hidden_size"] * c["num_key_value_heads"] * c["d_kv"]
     )
-    attn = tokens_to_process * 4 * (tokens_to_process + cache_len) * c["hidden_size"]
+    attn = 2 * ((tokens_to_process + cache_len) ** 2 - cache_len**2) * c["hidden_size"]
     ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
-    per_layer_flops = qk_proj + kv_proj + attn + ffn
-    return int(
-        per_layer_flops * c["num_hidden_layers"]
-        + 2 * c["hidden_size"] * c["vocab_size"]
-    )
+    per_layer_flops = qo_proj + kv_proj + attn + ffn
+    output_proj = 2 * c["hidden_size"] * c["vocab_size"]
+    return int(embedding + per_layer_flops * c["num_hidden_layers"] + output_proj)
 
 
 def calculate_flops(model: Model, batch: list[Request], mode: str) -> int:
@@ -44,7 +43,8 @@ def _mem_model(model: Model) -> int:
 
 def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
-    qk_proj = tokens_to_process * 2 * model.dtype_size * c["hidden_size"]
+    embedding = 2 * tokens_to_process * c["hidden_size"] * c["vocab_size"]
+    qo_proj = tokens_to_process * 2 * model.dtype_size * c["hidden_size"]
     kv_proj = (
         tokens_to_process
         * 2
@@ -54,8 +54,9 @@ def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> i
     )
     kv_entries = 2 * model.dtype_size * (cache_len) * c["hidden_size"]
     layer_norm = 2 * model.dtype_size * c["hidden_size"]
-    per_layer_memory = qk_proj + kv_proj + kv_entries + layer_norm
-    return per_layer_memory * c["num_hidden_layers"]
+    per_layer_memory = qo_proj + kv_proj + kv_entries + layer_norm
+    output_proj = 2 * model.dtype_size * c["hidden_size"] * c["vocab_size"]
+    return embedding + per_layer_memory * c["num_hidden_layers"] + output_proj
 
 
 def calculate_memory(model: Model, batch: list[Request], mode: str) -> int:

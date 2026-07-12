@@ -27,6 +27,7 @@ def fake_decode_instance() -> DecodeInstance:
     instance.queue = []
     instance.download_queue = []
     instance.upload_queue = []
+    instance.background_upload_queue = []
     instance.cache = MagicMock(spec=Cache)
     instance.cache.upload_kv.return_value = MagicMock(
         active_legs=[MagicMock()], tracks=[[MagicMock()]]
@@ -140,6 +141,71 @@ class TestDecodeBatchLifecycle:
             assert long.decoded_tokens == 1
             assert inst.current_batch is None
             assert len(inst.queue) == 1
+
+    def test_finished_upload_drains_when_last_track_done(
+        self, fake_decode_instance: DecodeInstance
+    ):
+        inst = fake_decode_instance
+        inst.model.kv_size_per_token = 1
+
+        # Build a concrete UploadRequest-like object that simulates an upload
+        # with one eviction track and one actual upload track.
+        class FakeUpload:
+            def __init__(
+                self, request: Request, done: bool = False, complete: bool = False
+            ):
+                self.request = request
+                self.tracks: list[list] = [[MagicMock()], [MagicMock()]]
+                self._upload_active = 1.5
+                self._background_active = 3.0
+                self._done = done
+                self._complete = complete
+
+            @property
+            def active_legs(self) -> list:
+                active: list = []
+                if not self._done:
+                    active.append(self.tracks[-1][0])
+                if not self._complete:
+                    active.append(self.tracks[0][0])
+                return active
+
+            def is_upload_done(self) -> bool:
+                return self._done
+
+            def is_complete(self) -> bool:
+                return self._complete
+
+            def upload_active_duration_ms(self) -> float:
+                return self._upload_active
+
+            def background_active_duration_ms(self) -> float:
+                return self._background_active
+
+        with patch.object(inst, "calculate_decode_time", return_value=2.0):
+            req = Request(10, 1, 0)
+            inst.cache.upload_kv.return_value = FakeUpload(req)
+            inst.add_request(req)
+            inst.process_queue(2.0)
+            assert len(inst.queue) == 0
+            assert len(inst.upload_queue) == 1
+            assert len(inst.background_upload_queue) == 0
+
+            # Mark only the upload leg done; request should finish, background
+            # duration is not recorded yet.
+            inst.upload_queue[0][0]._done = True
+            finished = inst.process_queue(0.0)
+            assert len(finished) == 1
+            assert req.decode_upload_active_ms == pytest.approx(1.5)
+            assert req.decode_upload_background_active_ms == pytest.approx(0.0)
+            assert len(inst.upload_queue) == 0
+            assert len(inst.background_upload_queue) == 1
+
+            # Mark the eviction track done; background duration is now captured.
+            inst.background_upload_queue[0]._complete = True
+            inst.process_queue(0.0)
+            assert req.decode_upload_background_active_ms == pytest.approx(3.0)
+            assert len(inst.background_upload_queue) == 0
 
 
 class TestDecodeTimeRecalculation:

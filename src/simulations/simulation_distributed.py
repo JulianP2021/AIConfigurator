@@ -426,12 +426,14 @@ def simulate_run_distributed(
     prefill_download_active_list: list[float] = []
     prefill_download_wait_list: list[float] = []
     prefill_upload_active_list: list[float] = []
+    prefill_upload_background_active_list: list[float] = []
     prefill_upload_wait_list: list[float] = []
     decode_download_active_list: list[float] = []
     decode_download_wait_list: list[float] = []
     decode_time_list: list[float] = []
     decode_wait_list: list[float] = []
     decode_upload_active_list: list[float] = []
+    decode_upload_background_active_list: list[float] = []
     decode_upload_wait_list: list[float] = []
     clean_ttft_list: list[float] = []
     clean_latency_list: list[float] = []
@@ -499,12 +501,18 @@ def simulate_run_distributed(
         prefill_download_active_list.append(req.prefill_download_active_ms)
         prefill_download_wait_list.append(req.prefill_download_wait_ms)
         prefill_upload_active_list.append(req.prefill_upload_active_ms)
+        prefill_upload_background_active_list.append(
+            req.prefill_upload_background_active_ms
+        )
         prefill_upload_wait_list.append(req.prefill_upload_wait_ms)
         decode_download_active_list.append(req.decode_download_active_ms)
         decode_download_wait_list.append(req.decode_download_wait_ms)
         decode_time_list.append(req.decode_time_ms)
         decode_wait_list.append(req.decode_wait_ms)
         decode_upload_active_list.append(req.decode_upload_active_ms)
+        decode_upload_background_active_list.append(
+            req.decode_upload_background_active_ms
+        )
         decode_upload_wait_list.append(req.decode_upload_wait_ms)
         clean_ttft_list.append(req.clean_ttft_ms)
         clean_latency_list.append(req.clean_latency_ms)
@@ -519,12 +527,14 @@ def simulate_run_distributed(
             "prefill_download_active_ms": req.prefill_download_active_ms,
             "prefill_download_wait_ms": req.prefill_download_wait_ms,
             "prefill_upload_active_ms": req.prefill_upload_active_ms,
+            "prefill_upload_background_active_ms": req.prefill_upload_background_active_ms,
             "prefill_upload_wait_ms": req.prefill_upload_wait_ms,
             "decode_download_active_ms": req.decode_download_active_ms,
             "decode_download_wait_ms": req.decode_download_wait_ms,
             "decode_time_ms": req.decode_time_ms,
             "decode_wait_ms": req.decode_wait_ms,
             "decode_upload_active_ms": req.decode_upload_active_ms,
+            "decode_upload_background_active_ms": req.decode_upload_background_active_ms,
             "decode_upload_wait_ms": req.decode_upload_wait_ms,
             "kv_upload_time_ms": req.kv_upload_time_ms,
             "kv_download_time_ms": req.kv_download_time_ms,
@@ -556,6 +566,7 @@ def simulate_run_distributed(
     avg_prefill_download_active = _avg(prefill_download_active_list)
     avg_prefill_download_wait = _avg(prefill_download_wait_list)
     avg_prefill_upload_active = _avg(prefill_upload_active_list)
+    avg_prefill_upload_background_active = _avg(prefill_upload_background_active_list)
     avg_prefill_upload_wait = _avg(prefill_upload_wait_list)
     avg_decode_download_active = _avg(decode_download_active_list)
     avg_decode_download_wait = _avg(decode_download_wait_list)
@@ -563,6 +574,7 @@ def simulate_run_distributed(
     avg_decode_wait = _avg(decode_wait_list)
     max_decode_wait = _max(decode_wait_list)
     avg_decode_upload_active = _avg(decode_upload_active_list)
+    avg_decode_upload_background_active = _avg(decode_upload_background_active_list)
     avg_decode_upload_wait = _avg(decode_upload_wait_list)
     avg_clean_ttft = _avg(clean_ttft_list)
     max_clean_ttft = _max(clean_ttft_list)
@@ -666,6 +678,7 @@ def simulate_run_distributed(
         avg_prefill_download_active_ms=avg_prefill_download_active,
         avg_prefill_download_wait_ms=avg_prefill_download_wait,
         avg_prefill_upload_active_ms=avg_prefill_upload_active,
+        avg_prefill_upload_background_active_ms=avg_prefill_upload_background_active,
         avg_prefill_upload_wait_ms=avg_prefill_upload_wait,
         avg_decode_time_ms=avg_decode_time,
         avg_decode_wait_ms=avg_decode_wait,
@@ -673,6 +686,7 @@ def simulate_run_distributed(
         avg_decode_download_active_ms=avg_decode_download_active,
         avg_decode_download_wait_ms=avg_decode_download_wait,
         avg_decode_upload_active_ms=avg_decode_upload_active,
+        avg_decode_upload_background_active_ms=avg_decode_upload_background_active,
         avg_decode_upload_wait_ms=avg_decode_upload_wait,
         avg_clean_ttft_ms=avg_clean_ttft,
         max_clean_ttft_ms=max_clean_ttft,
@@ -718,7 +732,9 @@ def simulate_run_distributed(
         f"  Prefill download:     active {result.avg_prefill_download_active_ms:.2f} ms   wait {result.avg_prefill_download_wait_ms:.2f}"
     )
     print(
-        f"  Prefill upload:       active {result.avg_prefill_upload_active_ms:.2f} ms   wait {result.avg_prefill_upload_wait_ms:.2f}"
+        f"  Prefill upload:       active {result.avg_prefill_upload_active_ms:.2f} ms   "
+        f"bg {result.avg_prefill_upload_background_active_ms:.2f} ms   "
+        f"wait {result.avg_prefill_upload_wait_ms:.2f}"
     )
     print(f"  Decode active:        {result.avg_decode_time_ms:.2f} ms")
     print(
@@ -728,7 +744,9 @@ def simulate_run_distributed(
         f"  Decode download:      active {result.avg_decode_download_active_ms:.2f} ms   wait {result.avg_decode_download_wait_ms:.2f}"
     )
     print(
-        f"  Decode upload:        active {result.avg_decode_upload_active_ms:.2f} ms   wait {result.avg_decode_upload_wait_ms:.2f}"
+        f"  Decode upload:        active {result.avg_decode_upload_active_ms:.2f} ms   "
+        f"bg {result.avg_decode_upload_background_active_ms:.2f} ms   "
+        f"wait {result.avg_decode_upload_wait_ms:.2f}"
     )
     print(f"{'-' * 60}")
     print(f"  tokens/s:             {result.tokens_per_second:,.2f}")

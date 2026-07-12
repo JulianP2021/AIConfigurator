@@ -44,6 +44,7 @@ def fake_prefill_instance():
     instance.hardware = hardware
     instance.queue = []
     instance.upload_queue = []
+    instance.background_upload_queue = []
     instance.download_queue = []
     instance.cache = MagicMock(spec=Cache)
     instance.cache.download_kv.return_value = MagicMock(
@@ -76,6 +77,7 @@ def fake_decode_instance():
     instance.queue = []
     instance.download_queue = []
     instance.upload_queue = []
+    instance.background_upload_queue = []
     instance.cache = MagicMock(spec=Cache)
     instance.cache.upload_kv.return_value = MagicMock(
         active_legs=[MagicMock()], tracks=[[MagicMock()]]
