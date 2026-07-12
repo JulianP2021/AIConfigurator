@@ -8,7 +8,7 @@ import pytest
 
 from execute_config import (
     _group_colocated_configs,
-    _group_seperate_configs,
+    _group_separate_configs,
     extreme_first_eytzinger_layout,
     parse_users_arg,
 )
@@ -69,6 +69,24 @@ class TestExtremeFirstEytzingerLayout:
         ]
         result = extreme_first_eytzinger_layout(cfg, key=lambda c: c["k"])
         assert [c["k"] for c in result] == [5, 1, 3]
+
+    def test_outer_prefill_group_order(self) -> None:
+        """Outer prefill groups should be ordered largest-first, smallest-second, then Eytzinger."""
+        groups = [
+            [[{"prefill_hardware": "A", "prefill_nodes": "1"}]],
+            [[{"prefill_hardware": "A", "prefill_nodes": "8"}]],
+            [[{"prefill_hardware": "A", "prefill_nodes": "4"}]],
+            [[{"prefill_hardware": "A", "prefill_nodes": "2"}]],
+        ]
+        result = extreme_first_eytzinger_layout(
+            groups,
+            key=lambda pb: (
+                pb[0][0]["prefill_hardware"],
+                int(pb[0][0]["prefill_nodes"]),
+            ),
+        )
+        # largest=8, smallest=1, middle=[2,4] -> Eytzinger of middle = [4,2]
+        assert [pb[0][0]["prefill_nodes"] for pb in result] == ["8", "1", "4", "2"]
 
 
 class TestParseUsersArg:
@@ -188,11 +206,11 @@ class TestColocatedGrouping:
 
 class TestSingleNodeGrouping:
     def test_empty_list(self) -> None:
-        assert _group_seperate_configs([]) == []
+        assert _group_separate_configs([]) == []
 
     def test_single_config(self) -> None:
         cfg = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
-        groups = _group_seperate_configs([cfg])
+        groups = _group_separate_configs([cfg])
         assert groups == [[[cfg]]]
 
     def test_grouped_by_prefill_hardware_then_prefill_nodes(self) -> None:
@@ -200,7 +218,7 @@ class TestSingleNodeGrouping:
         # inside one prefill batch.
         c1 = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
         c2 = _cfg("c2", "H200 x8 #a", "H200 x8 #c", 1, 2, 64)
-        groups = _group_seperate_configs([c1, c2])
+        groups = _group_separate_configs([c1, c2])
         assert len(groups) == 1
         # Two decode batches within the single prefill batch.
         assert len(groups[0]) == 2
@@ -211,7 +229,7 @@ class TestSingleNodeGrouping:
         c1 = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
         c2 = _cfg("c2", "H200 x8 #a", "H200 x8 #b", 1, 4, 64)
         c3 = _cfg("c3", "H200 x8 #a", "H200 x8 #b", 1, 2, 128)
-        groups = _group_seperate_configs([c1, c2, c3])
+        groups = _group_separate_configs([c1, c2, c3])
         assert len(groups) == 1
         assert len(groups[0]) == 1
         assert sorted(groups[0][0], key=lambda c: c["label"]) == sorted(
@@ -221,7 +239,7 @@ class TestSingleNodeGrouping:
     def test_different_prefill_nodes_create_separate_prefill_batches(self) -> None:
         c1 = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
         c2 = _cfg("c2", "H200 x8 #a", "H200 x8 #b", 2, 2, 64)
-        groups = _group_seperate_configs([c1, c2])
+        groups = _group_separate_configs([c1, c2])
         assert len(groups) == 2
         assert len(groups[0]) == 1
         assert len(groups[1]) == 1
@@ -231,7 +249,7 @@ class TestSingleNodeGrouping:
     def test_different_prefill_hardware_create_separate_prefill_batches(self) -> None:
         c1 = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
         c2 = _cfg("c2", "B200 x8 #b", "H200 x8 #b", 1, 2, 64)
-        groups = _group_seperate_configs([c1, c2])
+        groups = _group_separate_configs([c1, c2])
         assert len(groups) == 2
         assert groups[0][0] == [c1]
         assert groups[1][0] == [c2]
@@ -241,7 +259,7 @@ class TestSingleNodeGrouping:
         # decode batch and then unconditionally appended it again as a new batch.
         c1 = _cfg("c1", "H200 x8 #a", "H200 x8 #b", 1, 2, 64)
         c2 = _cfg("c2", "H200 x8 #a", "H200 x8 #b", 1, 4, 64)
-        groups = _group_seperate_configs([c1, c2])
+        groups = _group_separate_configs([c1, c2])
         flat = [
             cfg
             for prefill_batch in groups
@@ -255,7 +273,7 @@ class TestSingleNodeGrouping:
         c2 = _cfg("c2", "H200 x8 #a", "H200 x8 #b", 2, 2, 64)
         c3 = _cfg("c3", "H200 x8 #a", "H200 x8 #c", 1, 2, 64)
         c4 = _cfg("c4", "B200 x8 #b", "H200 x8 #b", 1, 2, 64)
-        groups = _group_seperate_configs([c1, c2, c3, c4])
+        groups = _group_separate_configs([c1, c2, c3, c4])
 
         # Three prefill batches keyed by (prefill_hardware, prefill_nodes):
         #   (H200 x8 #a, 1): c1 and c3 -> two decode batches

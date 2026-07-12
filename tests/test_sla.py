@@ -96,7 +96,7 @@ def _fake_model() -> Model:
     return model
 
 
-def _seperate_scenario(
+def _separate_scenario(
     isl: int, osl: int, sessions_per_user: int
 ) -> DistributedScenario:
     hardware = _tiny_hardware()
@@ -136,7 +136,7 @@ def _seperate_scenario(
 
 
 def test_no_sla_does_not_raise():
-    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
+    scenario = _separate_scenario(isl=128, osl=4, sessions_per_user=1)
     result = simulate_run_distributed(scenario, should_print=False)
     assert result is not None
     assert len(result.per_request_stats) == 10
@@ -146,7 +146,7 @@ def test_no_sla_does_not_raise():
 
 
 def test_inf_sla_does_not_raise():
-    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
+    scenario = _separate_scenario(isl=128, osl=4, sessions_per_user=1)
     result = simulate_run_distributed(
         scenario,
         should_print=False,
@@ -159,7 +159,7 @@ def test_inf_sla_does_not_raise():
 
 
 def test_ttft_sla_violation_raises():
-    scenario = _seperate_scenario(isl=128, osl=4, sessions_per_user=1)
+    scenario = _separate_scenario(isl=128, osl=4, sessions_per_user=1)
     with pytest.raises(PrefillLatencyError) as exc_info:
         simulate_run_distributed(
             scenario,
@@ -172,7 +172,7 @@ def test_ttft_sla_violation_raises():
 def test_tpot_sla_violation_raises():
     # Use many output tokens so the tiny fake model's decode_time exceeds the
     # extremely tight 0.001 ms per-token SLA.
-    scenario = _seperate_scenario(isl=128, osl=500, sessions_per_user=1)
+    scenario = _separate_scenario(isl=128, osl=500, sessions_per_user=1)
     with pytest.raises(DecodeLatencyError) as exc_info:
         simulate_run_distributed(
             scenario,

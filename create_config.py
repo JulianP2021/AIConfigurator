@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
     colocation_configs: list[dict[str, str]] = []
     mixed_configs: list[dict[str, str]] = []
-    seperate_configs: list[dict[str, str]] = []
+    separate_configs: list[dict[str, str]] = []
 
     colocated_nodes_values = [1, 2, 4, 8, 12, 16]
     max_num_nodes = max(colocated_nodes_values)
@@ -150,7 +150,6 @@ if __name__ == "__main__":
                                 "decode_nodes": str(nodes),
                                 "batch_size": str(batch_size),
                                 "mixed_gpu_donor": donor_name,
-                                "mixed_gpu_count": str(decode_gpus_per_node),
                                 "label": f"Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}",
                             },
                         )
@@ -162,7 +161,7 @@ if __name__ == "__main__":
                     if prefill_nodes + decode_nodes > max_num_nodes:
                         continue
                     for batch_size in batch_size_values:
-                        seperate_configs.append(
+                        separate_configs.append(
                             {
                                 "colocated": "false",
                                 "prefill_hardware": prefill_machine_name,
@@ -170,15 +169,15 @@ if __name__ == "__main__":
                                 "prefill_nodes": str(prefill_nodes),
                                 "decode_nodes": str(decode_nodes),
                                 "batch_size": str(batch_size),
-                                "label": f"Seperate: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
+                                "label": f"separate: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
                             },
                         )
 
     print(
-        f"Generated {len(colocation_configs)} colocation configs, {len(mixed_configs)} mixed configs, and {len(seperate_configs)} seperate configs."
+        f"Generated {len(colocation_configs)} colocation configs, {len(mixed_configs)} mixed configs, and {len(separate_configs)} separate configs."
     )
 
-    config["configs"] = colocation_configs + mixed_configs + seperate_configs
+    config["configs"] = colocation_configs + mixed_configs + separate_configs
 
     with Path(args.config_name).open("w", encoding="utf-8") as f:
         import json

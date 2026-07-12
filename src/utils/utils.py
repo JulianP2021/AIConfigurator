@@ -110,17 +110,12 @@ def get_shape(lst, shape=()):
         # base case
         return shape
 
-    # peek ahead and assure all lists in the next depth
-    # have the same length
-    if len(lst) == 0:
-        return (*shape, 0)
-    if isinstance(lst[0], list):
-        len_item_0 = len(lst[0])
-        if not all(len(item) == len_item_0 for item in lst):
-            msg = "not all lists have the same length"
-            raise ValueError(msg)
-
     shape += (len(lst),)
 
     # recurse
-    return get_shape(lst[0], shape)
+    if len(lst) == 0:
+        return shape
+    max_v = max(len(item) for item in lst)
+    if max_v == 0:
+        return shape
+    return get_shape(next(filter(lambda x: len(x) == max_v, lst)), shape)

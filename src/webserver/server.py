@@ -696,7 +696,6 @@ def _build_users_cost_plot(
     ax.set_xlabel("Users")
     ax.set_ylabel("Total cost ($/hour)")
     ax.set_title("Top 10 cheapest configs per user count")
-    ax.set_xscale("log")
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3, which="both", linestyle="--")
     plt.tight_layout()

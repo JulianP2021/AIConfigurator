@@ -443,10 +443,10 @@ def _group_colocated_configs(
     return groups
 
 
-def _group_seperate_configs(
+def _group_separate_configs(
     configs: list[dict[str, Any]],
 ) -> list[list[list[dict[str, Any]]]]:
-    """Group single-node (non-colocated) configs for batched execution.
+    """Group separate (non-colocated) configs for batched execution.
 
     First level groups by ``(prefill_hardware, prefill_nodes)``.
     Within each first-level group, configs are further grouped by
@@ -497,13 +497,11 @@ def _group_mixed_configs(
             first = prefill_batch[0][0]
             if (
                 first["prefill_hardware"] == config["prefill_hardware"]
-                and first["prefill_gpus_per_node"] == config["prefill_gpus_per_node"]
                 and first["prefill_nodes"] == config["prefill_nodes"]
             ):
                 for decode_batch in prefill_batch:
                     if all(
                         c["decode_hardware"] == config["decode_hardware"]
-                        and c["mixed_gpu_count"] == config["mixed_gpu_count"]
                         for c in decode_batch
                     ):
                         decode_batch.append(config)
@@ -539,7 +537,7 @@ def create_colocated_batches(
     return config_batches
 
 
-def create_seperate_batches(
+def create_separate_batches(
     splitted_configs: list[list[list[dict[str, Any]]]],
 ) -> list[list[list[tuple[str, dict[str, Any]]]]]:
     config_batches: list[list[list[tuple[str, dict[str, Any]]]]] = []
@@ -568,9 +566,9 @@ def create_mixed_batches(
 ) -> list[list[list[tuple[str, dict[str, Any]]]]]:
     """Create batches for mixed-GPU configs.
 
-    Same structure as ``create_seperate_batches``.
+    Same structure as ``create_separate_batches``.
     """
-    return create_seperate_batches(splitted_configs)
+    return create_separate_batches(splitted_configs)
 
 
 def _run_colocated_configs(
@@ -579,7 +577,7 @@ def _run_colocated_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     while config_batches:
@@ -689,23 +687,23 @@ def _run_colocated_configs(
     return results
 
 
-def _run_seperate_configs(
-    seperate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+def _run_separate_configs(
+    separate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
     common: dict[str, Any],
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
 
-    while seperate_batches:
-        config_batches = seperate_batches.pop(0)
+    while separate_batches:
+        config_batches = separate_batches.pop(0)
         prefill_hw = config_batches[0][0][1]["prefill_hardware"]
         prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
 
         print(
-            f"Running single-node configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            f"Running separate configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
             file=sys.stdout,
         )
         try:
@@ -843,9 +841,9 @@ def _run_seperate_configs(
                     )
         except Exception as e:
             if isinstance(e, (PrefillError, PrefillLatencyError)):
-                seperate_batches = [
+                separate_batches = [
                     prefill_batch
-                    for prefill_batch in seperate_batches
+                    for prefill_batch in separate_batches
                     if len(prefill_batch) > 0
                     and not (
                         prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
@@ -861,9 +859,9 @@ def _run_seperate_configs(
                 raise e
         else:
             # remove every prefill config with more prefill nodes
-            seperate_batches = [
+            separate_batches = [
                 prefill_batch
-                for prefill_batch in seperate_batches
+                for prefill_batch in separate_batches
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
@@ -880,7 +878,7 @@ def run_all_colocated_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     for batch in config_batches:
@@ -908,22 +906,22 @@ def run_all_colocated_configs(
     return results
 
 
-def run_all_seperate_configs(
-    seperate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+def run_all_separate_configs(
+    separate_batches: list[list[list[tuple[str, dict[str, Any]]]]],
     common: dict[str, Any],
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
-    while seperate_batches:
-        config_batches = seperate_batches.pop(0)
+    while separate_batches:
+        config_batches = separate_batches.pop(0)
         prefill_hw = config_batches[0][0][1]["prefill_hardware"]
         prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
 
         print(
-            f"Running single-node configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            f"Running separate configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
             file=sys.stdout,
         )
         while config_batches:
@@ -958,13 +956,13 @@ def _run_mixed_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run mixed-GPU configs with the same smart invalidation as separate configs.
 
     Mixed configs are colocated nodes with prefill GPUs from one machine and
     decode (donor) GPUs from another.  Invalidation logic mirrors
-    ``_run_seperate_configs`` but uses ``mixed_gpu_count`` instead of
+    ``_run_separate_configs`` but uses ``mixed_gpu_count`` instead of
     ``decode_nodes``.
     """
     results: list[tuple[str, str, SimulationResult]] = []
@@ -990,8 +988,8 @@ def _run_mixed_configs(
                     if status == "valid":
                         log(
                             LOG_CONFIG_EXECUTOR,
-                            f"  {cfg['label']} (prefill: {cfg['prefill_hardware']} x{cfg['prefill_nodes']}, "
-                            f"decode: {cfg['decode_hardware']} x{cfg['mixed_gpu_count']})",
+                            f"  {cfg['label']} x{cfg['prefill_nodes']}(prefill: {cfg['prefill_hardware']} {cfg['prefill_gpus_per_node']}, "
+                            f"decode: {cfg['decode_hardware']} x{cfg['decode_gpus_per_node']})",
                         )
                 successful: list[tuple[int, dict[str, Any]]] = []
                 failed: list[tuple[int, dict[str, Any], Exception]] = []
@@ -1047,8 +1045,8 @@ def _run_mixed_configs(
                                 f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
                             )
                             if isinstance(exc, DecodeError) and (
-                                int(cfg["mixed_gpu_count"])
-                                <= int(failed_config["mixed_gpu_count"])
+                                int(cfg["decode_gpus_per_node"])
+                                <= int(failed_config["decode_gpus_per_node"])
                                 and int(cfg["batch_size"])
                                 < int(failed_config["batch_size"])
                             ):
@@ -1059,8 +1057,8 @@ def _run_mixed_configs(
                                     f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
                                 )
                             if isinstance(exc, DecodeLatencyError) and (
-                                int(cfg["mixed_gpu_count"])
-                                <= int(failed_config["mixed_gpu_count"])
+                                int(cfg["decode_gpus_per_node"])
+                                <= int(failed_config["decode_gpus_per_node"])
                                 and int(cfg["batch_size"])
                                 > int(failed_config["batch_size"])
                             ):
@@ -1092,11 +1090,11 @@ def _run_mixed_configs(
                             ), (
                                 f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
                             )
-                            if int(cfg["mixed_gpu_count"]) > int(
-                                successful_config["mixed_gpu_count"]
+                            if int(cfg["decode_gpus_per_node"]) > int(
+                                successful_config["decode_gpus_per_node"]
                             ) or (
-                                int(cfg["mixed_gpu_count"])
-                                == int(successful_config["mixed_gpu_count"])
+                                int(cfg["decode_gpus_per_node"])
+                                == int(successful_config["decode_gpus_per_node"])
                                 and int(cfg["batch_size"])
                                 > int(successful_config["batch_size"])
                             ):
@@ -1153,7 +1151,7 @@ def run_all_mixed_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    timeout_s: float = 120.0,
+    timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run all mixed-GPU configs without smart invalidation."""
     results: list[tuple[str, str, SimulationResult]] = []
@@ -1213,7 +1211,7 @@ def main() -> None:
         "--timeout",
         type=float,
         default=None,
-        help="Per-config timeout in seconds (default: 120.0, override config file 'timeout_s')",
+        help="Per-config timeout in seconds (default: 240.0, override config file 'timeout_s')",
     )
     parser.add_argument(
         "--run-all",
@@ -1283,7 +1281,7 @@ def main() -> None:
         if cfg.get("colocated", False) == "true" and cfg.get("mixed", "") != "true"
     ]
     mixed_configs = [cfg for cfg in configs if cfg.get("mixed", "") == "true"]
-    seperate_configs = [
+    separate_configs = [
         cfg
         for cfg in configs
         if cfg.get("colocated", False) != "true" and cfg.get("mixed", "") != "true"
@@ -1291,7 +1289,7 @@ def main() -> None:
 
     colocated_config_splitted = _group_colocated_configs(colocated_configs)
     mixed_config_splitted = _group_mixed_configs(mixed_configs)
-    seperate_config_splitted = _group_seperate_configs(seperate_configs)
+    separate_config_splitted = _group_separate_configs(separate_configs)
 
     for i, batch in enumerate(colocated_config_splitted):
         log(
@@ -1300,46 +1298,63 @@ def main() -> None:
         )
         colocated_config_splitted[i] = extreme_first_eytzinger_layout(
             batch,
-            key=lambda c: int(c["prefill_nodes"]) * 1000 + int(c["batch_size"]),
+            key=lambda c: (int(c["prefill_nodes"]), int(c["batch_size"])),
         )
         log(
             LOG_CONFIG_EXECUTOR,
             f"A{i}: {[cfg['label'] for cfg in colocated_config_splitted[i]]}, {[cfg['prefill_nodes'] for cfg in colocated_config_splitted[i]]}",
         )
 
+    # Order the outer prefill groups for mixed and separate configs using the
+    # same extreme-first Eytzinger strategy, then order the inner decode batches.
+    mixed_config_splitted = extreme_first_eytzinger_layout(
+        mixed_config_splitted,
+        key=lambda pb: (
+            pb[0][0]["prefill_hardware"],
+            int(pb[0][0]["prefill_nodes"]),
+            int(pb[0][0]["prefill_gpus_per_node"]),
+        ),
+    )
     for i, prefill_batch in enumerate(mixed_config_splitted):
         for j, decode_batch in enumerate(prefill_batch):
             log(
                 LOG_CONFIG_EXECUTOR,
-                f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['mixed_gpu_count'] for cfg in decode_batch]}",
+                f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['decode_gpus_per_node'] for cfg in decode_batch]}",
             )
             mixed_config_splitted[i][j] = extreme_first_eytzinger_layout(
                 decode_batch,
-                key=lambda c: int(c["mixed_gpu_count"]) * 100 + int(c["batch_size"]),
+                key=lambda c: (int(c["decode_gpus_per_node"]), int(c["batch_size"])),
             )
             log(
                 LOG_CONFIG_EXECUTOR,
-                f"A{i}.{j}: {[cfg['label'] for cfg in mixed_config_splitted[i][j]]}, {[cfg['mixed_gpu_count'] for cfg in mixed_config_splitted[i][j]]}",
+                f"A{i}.{j}: {[cfg['label'] for cfg in mixed_config_splitted[i][j]]}, {[cfg['decode_gpus_per_node'] for cfg in mixed_config_splitted[i][j]]}",
             )
 
-    for i, prefill_batch in enumerate(seperate_config_splitted):
+    separate_config_splitted = extreme_first_eytzinger_layout(
+        separate_config_splitted,
+        key=lambda pb: (
+            pb[0][0]["prefill_hardware"],
+            int(pb[0][0]["prefill_nodes"]),
+        ),
+    )
+    for i, prefill_batch in enumerate(separate_config_splitted):
         for j, decode_batch in enumerate(prefill_batch):
             log(
                 LOG_CONFIG_EXECUTOR,
                 f"B{i}.{j}: {[cfg['label'] for cfg in decode_batch]}, {[cfg['decode_nodes'] for cfg in decode_batch]}",
             )
-            seperate_config_splitted[i][j] = extreme_first_eytzinger_layout(
+            separate_config_splitted[i][j] = extreme_first_eytzinger_layout(
                 decode_batch,
-                key=lambda c: int(c["decode_nodes"]) * 100 + int(c["batch_size"]),
+                key=lambda c: (int(c["decode_nodes"]), int(c["batch_size"])),
             )
             log(
                 LOG_CONFIG_EXECUTOR,
-                f"A{i}.{j}: {[cfg['label'] for cfg in seperate_config_splitted[i][j]]}, {[cfg['decode_nodes'] for cfg in seperate_config_splitted[i][j]]}",
+                f"A{i}.{j}: {[cfg['label'] for cfg in separate_config_splitted[i][j]]}, {[cfg['decode_nodes'] for cfg in separate_config_splitted[i][j]]}",
             )
 
     colocated_config_batches = create_colocated_batches(colocated_config_splitted)
     mixed_config_batches = create_mixed_batches(mixed_config_splitted)
-    seperate_config_batches = create_seperate_batches(seperate_config_splitted)
+    separate_config_batches = create_separate_batches(separate_config_splitted)
 
     from src.utils.utils import get_shape
 
@@ -1347,13 +1362,13 @@ def main() -> None:
         "Shapes: ",
         get_shape(colocated_config_splitted),
         get_shape(mixed_config_splitted),
-        get_shape(seperate_config_splitted),
+        get_shape(separate_config_splitted),
     )
 
     timeout_s = (
         args.timeout
         if args.timeout is not None
-        else float(config.get("timeout_s", 120.0))
+        else float(config.get("timeout_s", 240.0))
     )
 
     def _run_all_configs(
@@ -1370,7 +1385,7 @@ def main() -> None:
 
         local_colocated = copy.deepcopy(colocated_config_batches)
         local_mixed = copy.deepcopy(mixed_config_batches)
-        local_seperate = copy.deepcopy(seperate_config_batches)
+        local_separate = copy.deepcopy(separate_config_batches)
 
         run_results: list[tuple[str, str, SimulationResult]] = []
         if run_all:
@@ -1395,8 +1410,8 @@ def main() -> None:
             )
             mixed_results.sort(key=lambda x: x[0])
             run_results.extend(mixed_results)
-            seperate_results = run_all_seperate_configs(
-                local_seperate,
+            separate_results = run_all_separate_configs(
+                local_separate,
                 local_common,
                 ram_usage_fraction,
                 ssd_usage_fraction,
@@ -1425,16 +1440,16 @@ def main() -> None:
             )
             mixed_results.sort(key=lambda x: x[0])
             run_results.extend(mixed_results)
-            seperate_results = _run_seperate_configs(
-                local_seperate,
+            separate_results = _run_separate_configs(
+                local_separate,
                 local_common,
                 ram_usage_fraction,
                 ssd_usage_fraction,
                 s3_spec,
                 timeout_s=timeout_s,
             )
-        seperate_results.sort(key=lambda x: x[0])
-        run_results.extend(seperate_results)
+        separate_results.sort(key=lambda x: x[0])
+        run_results.extend(separate_results)
         return run_results
 
     user_counts = parse_users_arg(args.users)
