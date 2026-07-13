@@ -102,6 +102,22 @@ def _finish_request(
                 if inter_request_delay_ms is not None
                 else "inter-request delay: n/a"
             )
+
+            assert request.prefill_end_ms is not None
+            assert request.prefill_start_ms is not None
+            assert request.prefill_download_end_ms is not None
+            assert request.prefill_download_start_ms is not None
+
+            assert request.prefill_upload_end_ms is not None
+            assert request.prefill_upload_start_ms is not None
+
+            assert request.prefill_upload_end_ms is not None
+            assert request.prefill_upload_start_ms is not None
+
+            assert request.decode_download_end_ms is not None
+            assert request.decode_download_start_ms is not None
+
+            prefill_only_ttft_ms = request.prefill_end_ms - request.prefill_start_ms
             raise PrefillLatencyError(
                 f"Request {request.id} TTFT SLA violated: "
                 f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
@@ -112,11 +128,13 @@ def _finish_request(
                 f"prefill download active: {request.prefill_download_active_ms:.2f} ms, "
                 f"prefill upload active: {request.prefill_upload_active_ms:.2f} ms, "
                 f"decode kv download active: {request.decode_download_active_ms:.2f} ms, "
-                f"prefill download wait: {request.prefill_download_wait_ms:.2f} ms, "
+                f"prefill download wait: {request.prefill_download_end_ms - request.prefill_download_start_ms - request.prefill_download_active_ms:.2f} ms, "
                 f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
-                f"prefill upload wait: {request.prefill_upload_wait_ms:.2f} ms, "
-                f"decode download wait: {request.decode_download_wait_ms:.2f} ms, "
-                f"{delay_msg}"
+                f"prefill upload wait: {request.prefill_upload_end_ms - request.prefill_upload_start_ms - request.prefill_upload_active_ms:.2f} ms, "
+                f"decode download wait: {request.decode_download_end_ms - request.decode_download_start_ms - request.decode_download_active_ms:.2f} ms, "
+                f"{delay_msg}",
+                prefill_only_ttft_ms=prefill_only_ttft_ms,
+                ttft_sla_ms=ttft_sla,
             )
 
         tpot_sla = sla.get("tpot_ms")

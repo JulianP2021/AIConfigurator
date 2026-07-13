@@ -335,7 +335,7 @@ def _run_single_config(
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
         user_delay_min_ms=float(common.get("user_delay_min_ms", 0.0)),
         user_delay_max_ms=float(common.get("user_delay_max_ms", 0.0)),
-        random_seed=int(common["random_seed"], 0)
+        random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
     )
@@ -577,6 +577,45 @@ def create_mixed_batches(
     return create_separate_batches(splitted_configs)
 
 
+def check_failed_config(
+    next_batch: list[tuple[str, dict[str, Any]]], i: int, failed_config: dict[str, Any]
+) -> tuple[tuple[str, dict[str, Any]], bool]:
+    assert len(next_batch) > i, (
+        f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
+    )
+    (status, cfg) = next_batch[i]
+    if status != "valid":
+        return next_batch[i], True
+    assert cfg["prefill_hardware"] == failed_config["prefill_hardware"], (
+        f"Config mismatch for failed config {failed_config['label']}, {cfg['prefill_hardware']} != {failed_config['prefill_hardware']}"
+    )
+    assert cfg["decode_hardware"] == failed_config["decode_hardware"], (
+        f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
+    )
+    return next_batch[i], False
+
+
+def check_successful_config(
+    next_batch: list[tuple[str, dict[str, Any]]],
+    i: int,
+    successful_config: dict[str, Any],
+) -> tuple[tuple[str, dict[str, Any]], bool]:
+    assert len(next_batch) > i, (
+        f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
+    )
+    (status, cfg) = next_batch[i]
+    if status != "valid":
+        return next_batch[i], True
+
+    assert cfg["prefill_hardware"] == successful_config["prefill_hardware"], (
+        f"Config mismatch for successful config {successful_config['label']}, {cfg['prefill_hardware']} != {successful_config['prefill_hardware']}"
+    )
+    assert cfg["decode_hardware"] == successful_config["decode_hardware"], (
+        f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
+    )
+    return next_batch[i], False
+
+
 def _run_colocated_configs(
     config_batches: list[list[tuple[str, dict[str, Any]]]],
     common: dict[str, Any],
@@ -627,22 +666,26 @@ def _run_colocated_configs(
                     config_batches.remove(next_batch)
                     continue
                 for i, failed_config, exc in failed:
-                    assert len(next_batch) > i, (
-                        f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
+                    (status, cfg), should_continue = check_failed_config(
+                        next_batch, i, failed_config
                     )
-                    (status, cfg) = next_batch[i]
-                    if status != "valid":
+                    if should_continue:
                         continue
-                    assert (
-                        cfg["prefill_hardware"] == failed_config["prefill_hardware"]
-                    ), (
-                        f"Config mismatch for failed config {failed_config['label']}, {cfg['prefill_hardware']} != {failed_config['prefill_hardware']}"
-                    )
-                    assert cfg["decode_hardware"] == failed_config["decode_hardware"], (
-                        f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
-                    )
-                    if isinstance(exc, (PrefillError, PrefillLatencyError)) and (
+                    if isinstance(exc, PrefillError) and (
                         int(cfg["prefill_nodes"]) < int(failed_config["prefill_nodes"])
+                    ):
+                        next_batch[i] = ("invalid", cfg)
+                    if (
+                        isinstance(exc, PrefillLatencyError)
+                        and (
+                            getattr(exc, "prefill_only_ttft_ms", None) is not None
+                            and getattr(exc, "ttft_sla_ms", None) is not None
+                            and exc.prefill_only_ttft_ms > exc.ttft_sla_ms
+                        )
+                        and (
+                            int(cfg["prefill_nodes"])
+                            < int(failed_config["prefill_nodes"])
+                        )
                     ):
                         next_batch[i] = ("invalid", cfg)
                     if isinstance(exc, DecodeError) and (
@@ -659,24 +702,12 @@ def _run_colocated_configs(
                             LOG_CONFIG_EXECUTOR,
                             f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
                         )
-
                 for i, successful_config in successful:
-                    assert len(next_batch) > i, (
-                        f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
+                    (status, cfg), should_continue = check_successful_config(
+                        next_batch, i, successful_config
                     )
-                    (status, cfg) = next_batch[i]
-                    if status != "valid":
+                    if should_continue:
                         continue
-                    assert (
-                        cfg["prefill_hardware"] == successful_config["prefill_hardware"]
-                    ), (
-                        f"Config mismatch for successful config {successful_config['label']}, {cfg['prefill_hardware']} != {successful_config['prefill_hardware']}"
-                    )
-                    assert (
-                        cfg["decode_hardware"] == successful_config["decode_hardware"]
-                    ), (
-                        f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
-                    )
                     if int(cfg["prefill_nodes"]) > int(
                         successful_config["prefill_nodes"]
                     ) or (
@@ -707,7 +738,6 @@ def _run_separate_configs(
         config_batches = separate_batches.pop(0)
         prefill_hw = config_batches[0][0][1]["prefill_hardware"]
         prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
-
         print(
             f"Running separate configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
             file=sys.stdout,
@@ -759,24 +789,13 @@ def _run_separate_configs(
                             config_batches.remove(next_batch)
                             continue
                         for i, failed_config, exc in failed:
-                            assert len(next_batch) > i, (
-                                f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
+                            if isinstance(exc, PrefillError):
+                                raise exc
+                            (status, cfg), should_continue = check_failed_config(
+                                next_batch, i, failed_config
                             )
-                            (status, cfg) = next_batch[i]
-                            if status != "valid":
+                            if should_continue:
                                 continue
-                            assert (
-                                cfg["prefill_hardware"]
-                                == failed_config["prefill_hardware"]
-                            ), (
-                                f"Config mismatch for failed config {failed_config['label']}, {cfg['prefill_hardware']} != {failed_config['prefill_hardware']}"
-                            )
-                            assert (
-                                cfg["decode_hardware"]
-                                == failed_config["decode_hardware"]
-                            ), (
-                                f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
-                            )
                             if isinstance(exc, DecodeError) and (
                                 int(cfg["decode_nodes"])
                                 <= int(failed_config["decode_nodes"])
@@ -787,7 +806,7 @@ def _run_separate_configs(
                                 invalidated += 1
                                 log(
                                     LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                    f"Invalidated config {cfg['label']} in the next batch due to decode error in failed config {failed_config['label']}.",
                                 )
                             if isinstance(exc, DecodeLatencyError) and (
                                 int(cfg["decode_nodes"])
@@ -799,30 +818,32 @@ def _run_separate_configs(
                                 invalidated += 1
                                 log(
                                     LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                    f"Invalidated config {cfg['label']} in the next batch due to decode latency error in failed config {failed_config['label']}.",
                                 )
                             if isinstance(exc, (DecodeError, DecodeLatencyError)):
                                 continue
+                            if isinstance(exc, PrefillLatencyError) and (
+                                getattr(exc, "prefill_only_ttft_ms", None) is not None
+                                and getattr(exc, "ttft_sla_ms", None) is not None
+                                and exc.prefill_only_ttft_ms < exc.ttft_sla_ms
+                            ):
+                                if int(cfg["decode_nodes"]) <= int(
+                                    failed_config["decode_nodes"]
+                                ):
+                                    next_batch[i] = ("invalid", cfg)
+                                    invalidated += 1
+                                    log(
+                                        LOG_CONFIG_EXECUTOR,
+                                        f"Invalidated config {cfg['label']} in the next batch due to prefill error in failed config {failed_config['label']}.",
+                                    )
+                                continue
                             raise exc
                         for i, successful_config in successful:
-                            assert len(next_batch) > i, (
-                                f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
+                            (status, cfg), should_continue = check_successful_config(
+                                next_batch, i, successful_config
                             )
-                            (status, cfg) = next_batch[i]
-                            if status != "valid":
+                            if should_continue:
                                 continue
-                            assert (
-                                cfg["prefill_hardware"]
-                                == successful_config["prefill_hardware"]
-                            ), (
-                                f"Config mismatch for successful config {successful_config['label']}, {cfg['prefill_hardware']} != {successful_config['prefill_hardware']}"
-                            )
-                            assert (
-                                cfg["decode_hardware"]
-                                == successful_config["decode_hardware"]
-                            ), (
-                                f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
-                            )
                             if int(cfg["decode_nodes"]) > int(
                                 successful_config["decode_nodes"]
                             ) or (
@@ -846,7 +867,7 @@ def _run_separate_configs(
                         f"Invalidated {invalidated} configs in the config batches.",
                     )
         except Exception as e:
-            if isinstance(e, (PrefillError, PrefillLatencyError)):
+            if isinstance(e, PrefillError):
                 separate_batches = [
                     prefill_batch
                     for prefill_batch in separate_batches
@@ -861,6 +882,25 @@ def _run_separate_configs(
                     LOG_CONFIG_EXECUTOR,
                     f"Prefill error occurred for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
+            elif isinstance(e, PrefillLatencyError) and (
+                getattr(e, "prefill_only_ttft_ms", None) is not None
+                and getattr(e, "ttft_sla_ms", None) is not None
+                and e.prefill_only_ttft_ms > e.ttft_sla_ms
+            ):
+                separate_batches = [
+                    prefill_batch
+                    for prefill_batch in separate_batches
+                    if len(prefill_batch) > 0
+                    and not (
+                        prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                        and int(prefill_batch[0][0][1]["prefill_nodes"])
+                        <= prefill_nodes
+                    )
+                ]
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Prefill-side TTFT exceeded SLA for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
+                )
             else:
                 raise e
         else:
@@ -868,6 +908,211 @@ def _run_separate_configs(
             separate_batches = [
                 prefill_batch
                 for prefill_batch in separate_batches
+                if len(prefill_batch) > 0
+                and not (
+                    prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
+                )
+            ]
+
+    return results
+
+
+def _run_mixed_configs(
+    mixed_batches: list[list[list[tuple[str, dict[str, Any]]]]],
+    common: dict[str, Any],
+    ram_usage_fraction: float,
+    ssd_usage_fraction: float,
+    s3_spec: S3Spec,
+    timeout_s: float = 240.0,
+) -> list[tuple[str, str, SimulationResult]]:
+    """Run mixed-GPU configs with the same smart invalidation as separate configs.
+
+    Mixed configs are colocated nodes with prefill GPUs from one machine and
+    decode (donor) GPUs from another.  Invalidation logic mirrors
+    ``_run_separate_configs`` but uses ``mixed_gpu_count`` instead of
+    ``decode_nodes``.
+    """
+    results: list[tuple[str, str, SimulationResult]] = []
+
+    while mixed_batches:
+        config_batches = mixed_batches.pop(0)
+        prefill_hw = config_batches[0][0][1]["prefill_hardware"]
+        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
+
+        print(
+            f"Running mixed-GPU configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
+            file=sys.stdout,
+        )
+        try:
+            while config_batches:
+                batch = config_batches.pop(0)
+
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"\nRunning batch of {len(batch)} mixed configs:",
+                )
+                for status, cfg in batch:
+                    if status == "valid":
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"  {cfg['label']} x{cfg['prefill_nodes']}(prefill: {cfg['prefill_hardware']} {cfg['prefill_gpus_per_node']}, "
+                            f"decode: {cfg['decode_hardware']} x{cfg['decode_gpus_per_node']})",
+                        )
+                successful: list[tuple[int, dict[str, Any]]] = []
+                failed: list[tuple[int, dict[str, Any], Exception]] = []
+                with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+                    futures = {
+                        executor.submit(
+                            _run_single_config,
+                            common,
+                            cfg,
+                            ram_usage_fraction,
+                            ssd_usage_fraction,
+                            s3_spec,
+                        ): (i, cfg)
+                        for (i, (status, cfg)) in enumerate(batch)
+                        if status == "valid"
+                    }
+
+                    collected, failed_in_batch = _collect_future_results(
+                        futures, timeout_s
+                    )
+                    for i, config, result in collected:
+                        results.append((
+                            config["prefill_hardware"]
+                            + " + "
+                            + config["decode_hardware"],
+                            config["label"],
+                            result,
+                        ))
+                        successful.append((i, config))
+                    failed.extend(failed_in_batch)
+                    invalidated = 0
+                    for next_batch in config_batches:
+                        if len(next_batch) == 0:
+                            config_batches.remove(next_batch)
+                            continue
+                        for i, failed_config, exc in failed:
+                            if isinstance(exc, PrefillError):
+                                raise exc
+                            (status, cfg), should_continue = check_failed_config(
+                                next_batch, i, failed_config
+                            )
+                            if should_continue:
+                                continue
+                            if isinstance(exc, DecodeError) and (
+                                int(cfg["decode_gpus_per_node"])
+                                <= int(failed_config["decode_gpus_per_node"])
+                                and int(cfg["batch_size"])
+                                < int(failed_config["batch_size"])
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                                invalidated += 1
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
+                            if isinstance(exc, DecodeLatencyError) and (
+                                int(cfg["decode_gpus_per_node"])
+                                <= int(failed_config["decode_gpus_per_node"])
+                                and int(cfg["batch_size"])
+                                > int(failed_config["batch_size"])
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                                invalidated += 1
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                                )
+                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
+                                continue
+                            if isinstance(exc, PrefillLatencyError) and (
+                                getattr(exc, "prefill_only_ttft_ms", None) is not None
+                                and getattr(exc, "ttft_sla_ms", None) is not None
+                                and exc.prefill_only_ttft_ms < exc.ttft_sla_ms
+                            ):
+                                if int(cfg["decode_gpus_per_node"]) <= int(
+                                    failed_config["decode_gpus_per_node"]
+                                ):
+                                    next_batch[i] = ("invalid", cfg)
+                                    invalidated += 1
+                                    log(
+                                        LOG_CONFIG_EXECUTOR,
+                                        f"Invalidated config {cfg['label']} in the next batch due to prefill error in failed config {failed_config['label']}.",
+                                    )
+                                continue
+                            raise exc
+                        for i, successful_config in successful:
+                            (status, cfg), should_continue = check_successful_config(
+                                next_batch, i, successful_config
+                            )
+                            if should_continue:
+                                continue
+                            if int(cfg["decode_gpus_per_node"]) > int(
+                                successful_config["decode_gpus_per_node"]
+                            ) or (
+                                int(cfg["decode_gpus_per_node"])
+                                == int(successful_config["decode_gpus_per_node"])
+                                and int(cfg["batch_size"])
+                                > int(successful_config["batch_size"])
+                            ):
+                                invalidated += 1
+                                next_batch[i] = ("invalid", cfg)
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                                )
+                        log(
+                            LOG_CONFIG_EXECUTOR,
+                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
+                        )
+                    log(
+                        LOG_CONFIG_EXECUTOR,
+                        f"Invalidated {invalidated} configs in the config batches.",
+                    )
+        except Exception as e:
+            if isinstance(e, PrefillError):
+                mixed_batches = [
+                    prefill_batch
+                    for prefill_batch in mixed_batches
+                    if len(prefill_batch) > 0
+                    and not (
+                        prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                        and int(prefill_batch[0][0][1]["prefill_nodes"])
+                        <= prefill_nodes
+                    )
+                ]
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Prefill error occurred for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
+                )
+            elif isinstance(e, PrefillLatencyError) and (
+                getattr(e, "prefill_only_ttft_ms", None) is not None
+                and getattr(e, "ttft_sla_ms", None) is not None
+                and e.prefill_only_ttft_ms > e.ttft_sla_ms
+            ):
+                mixed_batches = [
+                    prefill_batch
+                    for prefill_batch in mixed_batches
+                    if len(prefill_batch) > 0
+                    and not (
+                        prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
+                        and int(prefill_batch[0][0][1]["prefill_nodes"])
+                        <= prefill_nodes
+                    )
+                ]
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Prefill-side TTFT exceeded SLA for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
+                )
+            else:
+                raise e
+        else:
+            # remove every mixed config with more prefill nodes
+            mixed_batches = [
+                prefill_batch
+                for prefill_batch in mixed_batches
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
@@ -953,201 +1198,6 @@ def run_all_separate_configs(
                         config["label"],
                         result,
                     ))
-    return results
-
-
-def _run_mixed_configs(
-    mixed_batches: list[list[list[tuple[str, dict[str, Any]]]]],
-    common: dict[str, Any],
-    ram_usage_fraction: float,
-    ssd_usage_fraction: float,
-    s3_spec: S3Spec,
-    timeout_s: float = 240.0,
-) -> list[tuple[str, str, SimulationResult]]:
-    """Run mixed-GPU configs with the same smart invalidation as separate configs.
-
-    Mixed configs are colocated nodes with prefill GPUs from one machine and
-    decode (donor) GPUs from another.  Invalidation logic mirrors
-    ``_run_separate_configs`` but uses ``mixed_gpu_count`` instead of
-    ``decode_nodes``.
-    """
-    results: list[tuple[str, str, SimulationResult]] = []
-
-    while mixed_batches:
-        config_batches = mixed_batches.pop(0)
-        prefill_hw = config_batches[0][0][1]["prefill_hardware"]
-        prefill_nodes = int(config_batches[0][0][1]["prefill_nodes"])
-
-        print(
-            f"Running mixed-GPU configs for prefill_hardware: {prefill_hw}, {prefill_nodes}",
-            file=sys.stdout,
-        )
-        try:
-            while config_batches:
-                batch = config_batches.pop(0)
-
-                log(
-                    LOG_CONFIG_EXECUTOR,
-                    f"\nRunning batch of {len(batch)} mixed configs:",
-                )
-                for status, cfg in batch:
-                    if status == "valid":
-                        log(
-                            LOG_CONFIG_EXECUTOR,
-                            f"  {cfg['label']} x{cfg['prefill_nodes']}(prefill: {cfg['prefill_hardware']} {cfg['prefill_gpus_per_node']}, "
-                            f"decode: {cfg['decode_hardware']} x{cfg['decode_gpus_per_node']})",
-                        )
-                successful: list[tuple[int, dict[str, Any]]] = []
-                failed: list[tuple[int, dict[str, Any], Exception]] = []
-                with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
-                    futures = {
-                        executor.submit(
-                            _run_single_config,
-                            common,
-                            cfg,
-                            ram_usage_fraction,
-                            ssd_usage_fraction,
-                            s3_spec,
-                        ): (i, cfg)
-                        for (i, (status, cfg)) in enumerate(batch)
-                        if status == "valid"
-                    }
-
-                    collected, failed_in_batch = _collect_future_results(
-                        futures, timeout_s
-                    )
-                    for i, config, result in collected:
-                        results.append((
-                            config["prefill_hardware"]
-                            + " + "
-                            + config["decode_hardware"],
-                            config["label"],
-                            result,
-                        ))
-                        successful.append((i, config))
-                    failed.extend(failed_in_batch)
-                    invalidated = 0
-                    for next_batch in config_batches:
-                        if len(next_batch) == 0:
-                            config_batches.remove(next_batch)
-                            continue
-                        for i, failed_config, exc in failed:
-                            assert len(next_batch) > i, (
-                                f"Next batch does not have index {i} for successful config {failed_config['label']}, {next_batch}"
-                            )
-                            (status, cfg) = next_batch[i]
-                            if status != "valid":
-                                continue
-                            assert (
-                                cfg["prefill_hardware"]
-                                == failed_config["prefill_hardware"]
-                            ), (
-                                f"Config mismatch for failed config {failed_config['label']}, {cfg['prefill_hardware']} != {failed_config['prefill_hardware']}"
-                            )
-                            assert (
-                                cfg["decode_hardware"]
-                                == failed_config["decode_hardware"]
-                            ), (
-                                f"Config mismatch for failed config {failed_config['label']}, {cfg['decode_hardware']} != {failed_config['decode_hardware']}"
-                            )
-                            if isinstance(exc, DecodeError) and (
-                                int(cfg["decode_gpus_per_node"])
-                                <= int(failed_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                < int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, DecodeLatencyError) and (
-                                int(cfg["decode_gpus_per_node"])
-                                <= int(failed_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                > int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
-                                continue
-                            raise exc
-                        for i, successful_config in successful:
-                            assert len(next_batch) > i, (
-                                f"Next batch does not have index {i} for successful config {successful_config['label']}, {next_batch}"
-                            )
-                            (status, cfg) = next_batch[i]
-                            if status != "valid":
-                                continue
-                            assert (
-                                cfg["prefill_hardware"]
-                                == successful_config["prefill_hardware"]
-                            ), (
-                                f"Config mismatch for successful config {successful_config['label']}, {cfg['prefill_hardware']} != {successful_config['prefill_hardware']}"
-                            )
-                            assert (
-                                cfg["decode_hardware"]
-                                == successful_config["decode_hardware"]
-                            ), (
-                                f"Config mismatch for successful config {successful_config['label']}, {cfg['decode_hardware']} != {successful_config['decode_hardware']}"
-                            )
-                            if int(cfg["decode_gpus_per_node"]) > int(
-                                successful_config["decode_gpus_per_node"]
-                            ) or (
-                                int(cfg["decode_gpus_per_node"])
-                                == int(successful_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                > int(successful_config["batch_size"])
-                            ):
-                                invalidated += 1
-                                next_batch[i] = ("invalid", cfg)
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
-                                )
-                        log(
-                            LOG_CONFIG_EXECUTOR,
-                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
-                        )
-                    log(
-                        LOG_CONFIG_EXECUTOR,
-                        f"Invalidated {invalidated} configs in the config batches.",
-                    )
-        except Exception as e:
-            if isinstance(e, (PrefillError, PrefillLatencyError)):
-                mixed_batches = [
-                    prefill_batch
-                    for prefill_batch in mixed_batches
-                    if len(prefill_batch) > 0
-                    and not (
-                        prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                        and int(prefill_batch[0][0][1]["prefill_nodes"])
-                        <= prefill_nodes
-                    )
-                ]
-                log(
-                    LOG_CONFIG_EXECUTOR,
-                    f"Prefill error occurred for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
-                )
-            else:
-                raise e
-        else:
-            # remove every mixed config with more prefill nodes
-            mixed_batches = [
-                prefill_batch
-                for prefill_batch in mixed_batches
-                if len(prefill_batch) > 0
-                and not (
-                    prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
-                )
-            ]
-
     return results
 
 

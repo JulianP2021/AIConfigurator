@@ -31,6 +31,10 @@ if __name__ == "__main__":
     config["inter_node_network_up_gbps"] = args.inter_node_network_up_gbps
     config["inter_node_network_down_gbps"] = args.inter_node_network_down_gbps
     config["sla"] = args.sla
+    config["user_delay_fraction"] = args.user_delay_fraction
+    config["user_delay_min_ms"] = args.user_delay_min_ms
+    config["user_delay_max_ms"] = args.user_delay_max_ms
+    config["random_seed"] = args.random_seed
     config["batch_size"] = args.batch_size
     config["num_prefill_nodes"] = args.num_prefill_nodes
     config["num_decode_nodes"] = args.num_decode_nodes
