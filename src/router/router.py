@@ -65,19 +65,28 @@ class Router:
             mapping.setdefault(inst.node_id, []).append(inst)
         return mapping
 
-    def _active_prefill_tokens(self, node_id: int) -> float:
-        """Sum of uncached prefill tokens assigned to ``node_id``."""
+    def _active_prefill_tokens(self, node_id: int | None = None) -> float:
+        """Sum of uncached prefill tokens assigned to ``node_id``.
+
+        If ``node_id`` is None, return the sum for every prefill instance.
+        """
         total = 0.0
         for inst in self.prefill_instances:
-            if inst.node_id != node_id:
+            if node_id is not None and inst.node_id != node_id:
                 continue
-            for req, _ in inst.queue:
-                total += max(0.0, req.isl - req.prefilled_tokens)
-            for download_req, _ in inst.download_queue:
-                total += max(
-                    0.0,
-                    download_req.request.isl - download_req.request.prefilled_tokens,
-                )
+            total += self._active_prefill_tokens_for_instance(inst)
+        return total
+
+    def _active_prefill_tokens_for_instance(self, inst: PrefillInstance) -> float:
+        """Sum of uncached prefill tokens assigned to one prefill instance."""
+        total = 0.0
+        for req, _ in inst.queue:
+            total += max(0.0, req.isl - req.prefilled_tokens)
+        for download_req, _ in inst.download_queue:
+            total += max(
+                0.0,
+                download_req.request.isl - download_req.request.prefilled_tokens,
+            )
         return total
 
     def _active_decode_tokens(self, node_id: int) -> float:
@@ -204,7 +213,8 @@ class Router:
                 LOG_ROUTER,
                 f"Prefill cost for request {req.id} on node {node_id}: {cost:.1f} "
                 f"(active_prefill={self._active_prefill_tokens(node_id):.0f}, "
-                f"active_decode={self._active_decode_tokens(node_id):.0f})",
+                f"active_decode={self._active_decode_tokens(node_id):.0f}, "
+                f"totoal cost {self._total_cost(req, node_id, is_prefill=True):.1f})",
             )
             if cost < best_cost:
                 best_cost = cost
@@ -219,13 +229,20 @@ class Router:
                 ),
             )
 
-        # Pick the least-loaded prefill instance on the chosen node.
+        # Pick the least-loaded prefill instance on the chosen node by uncached
+        # prefill tokens, falling back to queue depth for ties.
         node_instances = candidates[best_node_id]
         assert node_instances, f"No prefill instances found for node {best_node_id}"
         assert all(isinstance(inst, PrefillInstance) for inst in node_instances), (
             "All instances must be PrefillInstance"
         )
-        return min(node_instances, key=lambda inst: len(inst.queue))
+        return min(
+            node_instances,
+            key=lambda inst: (
+                self._active_prefill_tokens_for_instance(inst),
+                len(inst.queue),
+            ),
+        )
 
     def _choose_decode_instance(self, req: Request) -> DecodeInstance:
         cfg = self.cost_config

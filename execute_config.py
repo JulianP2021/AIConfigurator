@@ -1229,6 +1229,7 @@ def main() -> None:
 
     config = load_config(args.config)
     set_log_mask(LOG_CONFIG_EXECUTOR)
+    set_log_mask(0)
 
     common = {
         "model": config.get("model", env.model),

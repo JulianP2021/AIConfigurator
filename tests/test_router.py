@@ -15,6 +15,7 @@ def _make_prefill_instance(node_id: int) -> PrefillInstance:
     inst.queue = []
     inst.download_queue = []
     inst.upload_queue = []
+    inst.background_upload_queue = []
     inst.hardware = MagicMock()
     inst.model = MagicMock()
     inst.cache = None
@@ -104,6 +105,29 @@ class TestRouterCostFunction:
         req = Request(isl=1000, osl=100)
         chosen = router._choose_prefill_instance(req)
         assert chosen.node_id == 1
+
+    def test_prefill_picks_least_loaded_instance_by_tokens(self):
+        # Two instances on the same node: same queue depth but very different
+        # token loads. The router should pick the one with fewer tokens.
+        prefill_a = _make_prefill_instance(0)
+        prefill_b = _make_prefill_instance(0)
+        decode_0 = _make_decode_instance(0)
+
+        # Both queues have one request, but instance a has far more tokens.
+        prefill_a.queue.append((Request(isl=5000, osl=10), -1))
+        prefill_b.queue.append((Request(isl=10, osl=10), -1))
+
+        router = Router(
+            queue=[],
+            prefill_instances=[prefill_a, prefill_b],
+            decode_instances=[decode_0],
+            cache=None,
+            cost_config=RouterCostConfig(prefill_load_scale=1.0),
+        )
+
+        req = Request(isl=100, osl=100)
+        chosen = router._choose_prefill_instance(req)
+        assert chosen is prefill_b
 
     def test_decode_prefers_node_with_full_kv(self):
         cache = _make_cache()
