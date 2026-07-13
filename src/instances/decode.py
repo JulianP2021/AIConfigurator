@@ -164,9 +164,19 @@ class DecodeInstance:
                 f"{self._kv_cache_bytes} bytes used by {len(self.queue)} requests with {sum(r.cache_length for r, _ in self.queue) / len(self.queue) if self.queue else 0} avg tokens , {self.hardware.gpu_mem} bytes available",
             )
 
+            head = self.queue[0][0]
+            sample_size = min(5, len(self.queue))
+            sample_info = ", ".join(
+                f"r{req.id}: isl={req.isl}, osl={req.osl}, "
+                f"cache_length={req.cache_length}"
+                for req, _ in self.queue[:sample_size]
+            )
             raise DecodeError(
                 f"KV cache exceeds GPU memory for node {self.node_id}: "
-                f"{self._kv_cache_bytes} bytes used, {self.hardware.gpu_mem} bytes available"
+                f"{self._kv_cache_bytes} bytes used, {self.hardware.gpu_mem} bytes available. "
+                f"Head request r{head.id}: isl={head.isl}, osl={head.osl}, "
+                f"cache_length={head.cache_length}. "
+                f"Sample requests (first {sample_size}): {sample_info}"
             )
 
         finished_requests: list[Request] = []
@@ -320,7 +330,10 @@ class DecodeInstance:
         memory = calculate_memory(self.model, [req for req, _ in batch], "decode")
 
         time_ms: int = int(
-            (float(flops) / self.hardware.flops + float(memory) / self.hardware.gpu_bw)
+            max(
+                float(flops) / self.hardware.flops,
+                float(memory) / self.hardware.gpu_bw,
+            )
             * 1000
         )
         log(

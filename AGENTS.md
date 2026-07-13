@@ -73,6 +73,11 @@ USERS=10
 MAX_SESSION_TURNS=5
 THINK_TIME_MS=0
 
+USER_DELAY_FRACTION=0.0  # fraction of users that get an extra random delay
+USER_DELAY_MIN_MS=0.0    # minimum extra user delay (ms)
+USER_DELAY_MAX_MS=0.0    # maximum extra user delay (ms)
+RANDOM_SEED=             # empty = non-deterministic; otherwise reproducible
+
 SLA_TTFT_MS=inf          # per-request TTFT SLA (inf = disabled)
 SLA_TPOT_MS=inf          # per-request TPOT SLA (inf = disabled)
 

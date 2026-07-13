@@ -190,6 +190,10 @@ def _run_single_config(
     router_ssd_credit: float,
     router_s3_credit: float,
     router_busy_threshold_tokens: float,
+    user_delay_fraction: float = 0.0,
+    user_delay_min_ms: float = 0.0,
+    user_delay_max_ms: float = 0.0,
+    random_seed: int | None = None,
     colocated: bool = False,
 ) -> SimulationResult | None:
     nodes = _build_nodes(
@@ -248,6 +252,10 @@ def _run_single_config(
                 s3_spec=s3_spec,
                 router_cost_config=router_cost_config,
                 sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
+                user_delay_fraction=user_delay_fraction,
+                user_delay_min_ms=user_delay_min_ms,
+                user_delay_max_ms=user_delay_max_ms,
+                random_seed=random_seed,
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")
@@ -812,6 +820,10 @@ async def simulate(
     router_ssd_credit: float = Form(_env.router_ssd_credit),
     router_s3_credit: float = Form(_env.router_s3_credit),
     router_busy_threshold_tokens: float = Form(_env.router_busy_threshold_tokens),
+    user_delay_fraction: float = Form(_env.user_delay_fraction),
+    user_delay_min_ms: float = Form(_env.user_delay_min_ms),
+    user_delay_max_ms: float = Form(_env.user_delay_max_ms),
+    random_seed: int | None = Form(_env.random_seed),
     xhr: str = Form("0"),
 ):
     try:
@@ -860,6 +872,10 @@ async def simulate(
             "router_ssd_credit": router_ssd_credit,
             "router_s3_credit": router_s3_credit,
             "router_busy_threshold_tokens": router_busy_threshold_tokens,
+            "user_delay_fraction": user_delay_fraction,
+            "user_delay_min_ms": user_delay_min_ms,
+            "user_delay_max_ms": user_delay_max_ms,
+            "random_seed": random_seed,
         }
 
         config_kwargs: list[dict[str, object]] = []

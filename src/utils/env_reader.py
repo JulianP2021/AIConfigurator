@@ -24,6 +24,14 @@ class EnvConfig:
     max_session_turns: int = 5
     think_time_ms: float = 0.0
 
+    # Per-user random delay (added on top of think_time_ms)
+    user_delay_fraction: float = 0.0
+    user_delay_min_ms: float = 0.0
+    user_delay_max_ms: float = 0.0
+
+    # Random seed for reproducible request timing (including user delays)
+    random_seed: int | None = None
+
     # Per-request latency SLAs (default inf = disabled)
     sla_ttft_ms: float = float("inf")
     sla_tpot_ms: float = float("inf")
@@ -86,6 +94,10 @@ _DEFAULTS = {
     "USERS": "10",
     "MAX_SESSION_TURNS": "5",
     "THINK_TIME_MS": "0.0",
+    "USER_DELAY_FRACTION": "0.0",
+    "USER_DELAY_MIN_MS": "0.0",
+    "USER_DELAY_MAX_MS": "0.0",
+    "RANDOM_SEED": "",
     "SLA_TTFT_MS": "inf",
     "SLA_TPOT_MS": "inf",
     "BATCH_SIZE": "10",
@@ -145,6 +157,9 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "SLA_TTFT_MS",
         "SLA_TPOT_MS",
         "THINK_TIME_MS",
+        "USER_DELAY_FRACTION",
+        "USER_DELAY_MIN_MS",
+        "USER_DELAY_MAX_MS",
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_DEVICE_CREDIT",
         "ROUTER_REMOTE_RAM_CREDIT",
@@ -153,7 +168,10 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "ROUTER_BUSY_THRESHOLD_TOKENS",
     }:
         return float(value)
-    if key == "LOG_MASK":
+    if key in {
+        "LOG_MASK",
+        "RANDOM_SEED",
+    }:
         return int(value, 0)
     if key in {"DEBUG", "S3_ENABLED", "COLOCATED", "MIXED"}:
         return _parse_bool(value)
@@ -212,6 +230,10 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         users=int(merged["USERS"]),
         max_session_turns=int(merged["MAX_SESSION_TURNS"]),
         think_time_ms=float(merged["THINK_TIME_MS"]),
+        user_delay_fraction=float(merged["USER_DELAY_FRACTION"]),
+        user_delay_min_ms=float(merged["USER_DELAY_MIN_MS"]),
+        user_delay_max_ms=float(merged["USER_DELAY_MAX_MS"]),
+        random_seed=int(merged["RANDOM_SEED"], 0) if merged["RANDOM_SEED"] else None,
         sla_ttft_ms=float(merged["SLA_TTFT_MS"]),
         sla_tpot_ms=float(merged["SLA_TPOT_MS"]),
         batch_size=int(merged["BATCH_SIZE"]),

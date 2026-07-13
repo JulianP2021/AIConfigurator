@@ -211,6 +211,10 @@ def main():
         s3_spec=s3_spec,
         router_cost_config=router_cost_config,
         sla=args.sla,
+        user_delay_fraction=args.user_delay_fraction,
+        user_delay_min_ms=args.user_delay_min_ms,
+        user_delay_max_ms=args.user_delay_max_ms,
+        random_seed=args.random_seed,
     )
 
     # CLI-only detail: break out S3 storage vs transfer costs.

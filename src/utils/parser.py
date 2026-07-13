@@ -75,6 +75,37 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Think time between a user's consecutive requests in ms (default: {env.think_time_ms})",
     )
     parser.add_argument(
+        "--user-delay-fraction",
+        type=float,
+        default=env.user_delay_fraction,
+        help=(
+            "Fraction of requests/users that receive an extra random delay "
+            f"after finishing (default: {env.user_delay_fraction})"
+        ),
+    )
+    parser.add_argument(
+        "--user-delay-min-ms",
+        type=float,
+        default=env.user_delay_min_ms,
+        help=f"Minimum extra user delay in ms (default: {env.user_delay_min_ms})",
+    )
+    parser.add_argument(
+        "--user-delay-max-ms",
+        type=float,
+        default=env.user_delay_max_ms,
+        help=f"Maximum extra user delay in ms (default: {env.user_delay_max_ms})",
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=env.random_seed,
+        help=(
+            "Seed for the request generator's random number generator; "
+            "makes user delays and startup offsets reproducible "
+            f"(default: {env.random_seed})"
+        ),
+    )
+    parser.add_argument(
         "--sla",
         type=_parse_sla,
         default={"ttft_ms": env.sla_ttft_ms, "tpot_ms": env.sla_tpot_ms},

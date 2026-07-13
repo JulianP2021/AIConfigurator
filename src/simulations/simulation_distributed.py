@@ -83,20 +83,40 @@ def _finish_request(
         + request.decode_download_wait_ms
     )
 
+    # Compute the gap from the previous request in the same (user, session).
+    # This helps diagnose whether a user was unusually delayed before sending
+    # the offending request.
+    inter_request_delay_ms = None
+    if request_generator is not None:
+        prev_generated_ms = request_generator.get_last_request_generated_ms(
+            request.user_id, request.session_id
+        )
+        if prev_generated_ms is not None and request.generated_ms is not None:
+            inter_request_delay_ms = request.generated_ms - prev_generated_ms
+
     if sla is not None:
         ttft_sla = sla.get("ttft_ms")
         if ttft_sla is not None and wait_inclusive_ttft_ms > ttft_sla:
+            delay_msg = (
+                f"inter-request delay: {inter_request_delay_ms:.2f} ms"
+                if inter_request_delay_ms is not None
+                else "inter-request delay: n/a"
+            )
             raise PrefillLatencyError(
                 f"Request {request.id} TTFT SLA violated: "
                 f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
-                f"SLA {ttft_sla:.2f} ms, prefill time: {request.prefill_time_ms:.2f} ms, ",
+                f"SLA {ttft_sla:.2f} ms, request isl={request.isl}, osl={request.osl}, "
+                f"initial_prefilled_tokens={request.initial_prefilled_tokens}, "
+                f"prefilled_tokens={request.prefilled_tokens}, decoded_tokens={request.decoded_tokens}, "
+                f"prefill time: {request.prefill_time_ms:.2f} ms, "
                 f"prefill download active: {request.prefill_download_active_ms:.2f} ms, "
                 f"prefill upload active: {request.prefill_upload_active_ms:.2f} ms, "
                 f"decode kv download active: {request.decode_download_active_ms:.2f} ms, "
                 f"prefill download wait: {request.prefill_download_wait_ms:.2f} ms, "
                 f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
                 f"prefill upload wait: {request.prefill_upload_wait_ms:.2f} ms, "
-                f"decode download wait: {request.decode_download_wait_ms:.2f} ms",
+                f"decode download wait: {request.decode_download_wait_ms:.2f} ms, "
+                f"{delay_msg}"
             )
 
         tpot_sla = sla.get("tpot_ms")
@@ -105,7 +125,12 @@ def _finish_request(
             if tpot_ms > tpot_sla:
                 raise DecodeLatencyError(
                     f"Request {request.id} TPOT SLA violated: "
-                    f"TPOT {tpot_ms:.2f} ms > SLA {tpot_sla:.2f} ms"
+                    f"TPOT {tpot_ms:.2f} ms > SLA {tpot_sla:.2f} ms, "
+                    f"request isl={request.isl}, osl={request.osl}, "
+                    f"initial_prefilled_tokens={request.initial_prefilled_tokens}, "
+                    f"decoded_tokens={request.decoded_tokens}, "
+                    f"decode_time: {request.decode_time_ms:.2f} ms, "
+                    f"decode wait: {request.decode_wait_ms:.2f} ms"
                 )
 
     finished_requests.append(request)
@@ -150,6 +175,10 @@ def simulate_run_distributed(
     router_cost_config: RouterCostConfig | None = None,
     should_print: bool = True,
     sla: dict[str, float] | None = None,
+    user_delay_fraction: float = 0.0,
+    user_delay_min_ms: float = 0.0,
+    user_delay_max_ms: float = 0.0,
+    random_seed: int | None = None,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -192,11 +221,18 @@ def simulate_run_distributed(
         cost_config=router_cost_config,
     )
 
+    from src.request.request import set_request_rng
+
+    set_request_rng(random_seed)
+
     request_generator = RequestGenerator(
         users=scenario.requests.users,
         max_session_turns=scenario.requests.max_session_turns,
         think_time_ms=scenario.requests.think_time_ms,
         sessions_per_user=scenario.requests.sessions_per_user,
+        delay_fraction=user_delay_fraction,
+        delay_min_ms=user_delay_min_ms,
+        delay_max_ms=user_delay_max_ms,
     )
     finished_requests: list[Request] = []
     current_requests: list[Request] = []

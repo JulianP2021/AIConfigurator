@@ -21,8 +21,8 @@ from src.logger import (
 
 
 class TestLogMask:
-    def test_default_mask_is_all(self):
-        assert get_log_mask() == LOG_ALL
+    def test_default_mask_is_none(self):
+        assert get_log_mask() == LOG_NONE
 
     def test_set_log_mask_changes_mask(self):
         set_log_mask(LOG_CACHE)
@@ -36,6 +36,10 @@ class TestLogMask:
         def fake_log(level: int, msg: str) -> None:
             recorded.append(msg)
 
+        # Start from a known silent state; set_min_level to DEBUG so log() can
+        # emit, but only the masked component should pass the filter.
+        set_log_mask(LOG_NONE)
+        logger.set_min_level(logging.DEBUG)
         set_log_mask(LOG_CACHE)
         original = logger.logger.log
         logger.logger.log = fake_log  # type: ignore[assignment]
@@ -58,6 +62,8 @@ class TestLogMask:
         def fake_log(level: int, msg: str) -> None:
             recorded.append((level, msg))
 
+        set_log_mask(LOG_NONE)
+        logger.set_min_level(logging.DEBUG)
         set_log_mask(LOG_ALL)
         original = logger.logger.log
         logger.logger.log = fake_log  # type: ignore[assignment]

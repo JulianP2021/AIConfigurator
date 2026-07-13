@@ -88,6 +88,8 @@ class PrefillInstance:
         else:
             request.prefill_download_end_ms = now
             request.prefill_queue_start_ms = now
+            if request.initial_prefilled_tokens is None:
+                request.initial_prefilled_tokens = request.prefilled_tokens
             if not self.queue:
                 request.prefill_start_ms = now
             self.queue.append((request, -1))
@@ -110,9 +112,19 @@ class PrefillInstance:
         # plus a small headroom; small batch sizes keep the original floor of 10.
         queue_limit = max(10, self.max_batch_size * 2)
         if len(self.queue) >= queue_limit:
+            head = self.queue[0][0]
+            sample_size = min(5, len(self.queue))
+            sample_info = ", ".join(
+                f"r{req.id}: isl={req.isl}, osl={req.osl}, "
+                f"prefilled={req.prefilled_tokens}"
+                for req, _ in self.queue[:sample_size]
+            )
             raise PrefillError(
                 f"Too many requests in prefill queue for node {self.node_id}: "
-                f"{len(self.queue)} requests (limit={queue_limit})"
+                f"{len(self.queue)} requests (limit={queue_limit}). "
+                f"Head request r{head.id}: isl={head.isl}, osl={head.osl}, "
+                f"prefilled={head.prefilled_tokens}. "
+                f"Sample requests (first {sample_size}): {sample_info}"
             )
         assert self.cache is not None, "Cache must be set before processing queue"
         assert self.scheduler is not None, (
@@ -139,6 +151,11 @@ class PrefillInstance:
                 download_request.active_transfer_duration_ms
             )
             request.prefill_queue_start_ms = now
+            if request.initial_prefilled_tokens is None:
+                # Capture the cached prefix length after the download has merged
+                # available KV into local RAM. For fresh requests this is zero;
+                # for cache hits it equals the effective downloaded prefix.
+                request.initial_prefilled_tokens = request.prefilled_tokens
             self.queue.append((request, 0))
 
         # Drain completed prefill uploads.  The actual upload is the last track;
@@ -207,8 +224,11 @@ class PrefillInstance:
         memory = calculate_memory(self.model, [request], "prefill")
 
         time_ms: int = int(
-            float(flops) / self.hardware.flops * 1000
-            + float(memory) / self.hardware.gpu_bw * 1000
+            max(
+                float(flops) / self.hardware.flops,
+                float(memory) / self.hardware.gpu_bw,
+            )
+            * 1000
         )
         log(
             LOG_INSTANCE,

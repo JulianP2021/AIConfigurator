@@ -332,6 +332,12 @@ def _run_single_config(
         s3_spec=s3_spec,
         should_print=False,
         sla=sla,
+        user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
+        user_delay_min_ms=float(common.get("user_delay_min_ms", 0.0)),
+        user_delay_max_ms=float(common.get("user_delay_max_ms", 0.0)),
+        random_seed=int(common["random_seed"], 0)
+        if common.get("random_seed") is not None
+        else None,
     )
 
 
@@ -1239,6 +1245,12 @@ def main() -> None:
         "users": config.get("users", env.users),
         "think_time_ms": config.get("think_time_ms", env.think_time_ms),
         "max_session_turns": config.get("max_session_turns", env.max_session_turns),
+        "user_delay_fraction": config.get(
+            "user_delay_fraction", env.user_delay_fraction
+        ),
+        "user_delay_min_ms": config.get("user_delay_min_ms", env.user_delay_min_ms),
+        "user_delay_max_ms": config.get("user_delay_max_ms", env.user_delay_max_ms),
+        "random_seed": config.get("random_seed", env.random_seed),
         "sla": config.get(
             "sla",
             {

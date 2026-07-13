@@ -1,7 +1,20 @@
 import random
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import ClassVar
+
+
+_rng: random.Random = random.Random()
+
+
+def set_request_rng(seed: int | None) -> None:
+    """Seed the global request generator RNG for reproducible user delays.
+
+    Calling this before constructing a ``RequestGenerator`` makes startup
+    offsets and per-user delays deterministic across runs.
+    """
+    global _rng
+    _rng = random.Random(seed)
 
 
 request_id_counter = 0
@@ -183,7 +196,14 @@ class Request:
     decoded_tokens: int = 0
     remaining_prefill_time_ms: float = -1
 
+    # Cache state captured when the request first enters the prefill pipeline.
+    # This is the *initial* prefix length before any prefill compute runs; it
+    # is set by PrefillInstance.add_request so diagnostics can distinguish between
+    # a fully-cached prefix and a from-scratch prefill.
+    initial_prefilled_tokens: int | None = None
+
     # Event timestamps for each phase, all driven by the global simulation clock.
+    generated_ms: float | None = None  # when the request was created
     prefill_queue_start_ms: float | None = None
     prefill_start_ms: float | None = None
     prefill_end_ms: float | None = None
@@ -282,23 +302,46 @@ class RequestScenario:
         return self.users * self.sessions_per_user * self.max_session_turns
 
 
-@dataclass
 class RequestGenerator:
     users: int
     max_session_turns: int
     think_time_ms: float
     sessions_per_user: int
+    delay_fraction: float
+    delay_min_ms: float
+    delay_max_ms: float
 
-    # One active session per user.  A user is "active" while it has any request
-    # in flight; otherwise it is "idle".  Session ids are monotonic per user.
-    _active_users: set[int] = field(default_factory=set)
-    _idle_users: set[int] = field(default_factory=set)
-    _user_session_id: dict[int, int] = field(default_factory=dict)
-    _user_session_turns: dict[int, int] = field(default_factory=dict)
-    _last_total_tokens: dict[tuple[int, int], int] = field(default_factory=dict)
-    _next_available_ms: dict[int, float] = field(default_factory=dict)
+    def __init__(
+        self,
+        users: int,
+        max_session_turns: int,
+        think_time_ms: float,
+        sessions_per_user: int,
+        delay_fraction: float,
+        delay_min_ms: float,
+        delay_max_ms: float,
+    ) -> None:
+        self.users = users
+        self.max_session_turns = max_session_turns
+        self.think_time_ms = think_time_ms
+        self.sessions_per_user = sessions_per_user
+        self.delay_fraction = delay_fraction
+        self.delay_min_ms = delay_min_ms
+        self.delay_max_ms = delay_max_ms
 
-    def __post_init__(self) -> None:
+        # One active session per user.  A user is "active" while it has any request
+        # in flight; otherwise it is "idle".  Session ids are monotonic per user.
+        self._active_users: set[int] = set()
+        self._idle_users: set[int] = set()
+        self._user_session_id: dict[int, int] = {}
+        self._user_session_turns: dict[int, int] = {}
+        self._last_total_tokens: dict[tuple[int, int], int] = {}
+        self._last_request_generated_ms: dict[tuple[int, int], float] = {}
+        self._next_available_ms: dict[int, float] = {}
+
+        self._init_startup_offsets()
+
+    def _init_startup_offsets(self) -> None:
         """Initialize all users as idle with a random startup offset.
 
         Users are spread uniformly across ``[0, max_startup_offset_ms]`` so the
@@ -312,7 +355,7 @@ class RequestGenerator:
         startup_windows = 5
         max_offset_ms = max(0.0, self.think_time_ms * startup_windows)
         for user_id in range(self.users):
-            self._next_available_ms[user_id] = random.random() * max_offset_ms
+            self._next_available_ms[user_id] = _rng.random() * max_offset_ms
 
     @property
     def total_requests(self) -> int:
@@ -322,25 +365,41 @@ class RequestGenerator:
         """Record that ``request`` has been generated and is now in flight."""
         user_id = request.user_id
         session_id = request.session_id
+        key = (user_id, session_id)
         self._active_users.add(user_id)
         self._idle_users.discard(user_id)
         self._user_session_id[user_id] = session_id
         self._user_session_turns[user_id] = self._user_session_turns.get(user_id, 0) + 1
+        # Track the most recent request generation time per (user, session) so
+        # that SLA violation messages can report inter-request delay.
+        self._last_request_generated_ms[key] = request.generated_ms
 
     def finish_request(self, request: Request, now_ms: float) -> None:
         """Record that ``request`` has completed and is no longer in flight.
 
         ``now_ms`` is the current simulation time; the user's next request will
-        not be generated until ``now_ms + think_time_ms`` has elapsed.
+        not be generated until ``now_ms + think_time_ms`` has elapsed.  With
+        probability ``delay_fraction`` an extra uniform delay in
+        [``delay_min_ms``, ``delay_max_ms``] is added on top of the think time.
         """
         user_id = request.user_id
         session_id = request.session_id
         total = request.isl + request.osl
         key = (user_id, session_id)
         self._last_total_tokens[key] = max(self._last_total_tokens.get(key, 0), total)
+        # Keep the generation timestamp around so the SLA message can compute
+        # the gap from the previous request in the same session.
         self._active_users.discard(user_id)
         self._idle_users.add(user_id)
-        self._next_available_ms[user_id] = now_ms + self.think_time_ms
+        next_ready_ms = now_ms + self.think_time_ms
+        if (
+            self.delay_fraction > 0.0
+            and _rng.random() < self.delay_fraction
+            and self.delay_max_ms > 0.0
+        ):
+            extra_ms = _rng.uniform(self.delay_min_ms, self.delay_max_ms)
+            next_ready_ms += extra_ms
+        self._next_available_ms[user_id] = next_ready_ms
 
     def ready_users(self, now_ms: float) -> list[int]:
         """Return idle users whose think time has elapsed, shuffled."""
@@ -349,8 +408,14 @@ class RequestGenerator:
             for user_id in self._idle_users
             if now_ms >= self._next_available_ms.get(user_id, 0.0)
         ]
-        random.shuffle(ready)
+        _rng.shuffle(ready)
         return ready
+
+    def get_last_request_generated_ms(
+        self, user_id: int, session_id: int
+    ) -> float | None:
+        """Return the generation time of the previous request in this session."""
+        return self._last_request_generated_ms.get((user_id, session_id))
 
     def next_ready_time_ms(self, _now_ms: float) -> float:
         """Return the earliest absolute time at which an idle user becomes ready."""
@@ -406,5 +471,6 @@ class RequestGenerator:
             user_id=user_id,
             session_id=session_id,
         )
+        request.generated_ms = now_ms
         self.start_request(request)
         return request

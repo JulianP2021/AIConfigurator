@@ -40,15 +40,10 @@ _COMPONENT_NAMES: dict[int, str] = {
 
 # Module-level logger used by log()
 logger = logging.getLogger(name="configurator")
-logging.basicConfig(
-    filename="example.log",
-    encoding="utf-8",
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 
 # Active mask and minimum severity. These can be changed at runtime.
-_log_mask: int = LOG_ALL
-_min_level: int = logging.DEBUG
+_log_mask: int = LOG_NONE
+_min_level: int = logging.INFO
 
 
 def _mask_from_env() -> int:

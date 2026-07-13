@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from heapq import heappop, heappush
 
 from src.hardware.hardware import Hardware, S3Spec
@@ -35,21 +35,29 @@ class CacheItem:
         return self.token_end - self.token_start
 
 
-@dataclass
 class CacheLayer:
     node_id: int
     name: str
-    # Mapping from session_id (user_id, session_id) to the list of CacheItems
-    # belonging to that session.  Items within a session are kept unsorted; callers
-    # sort when needed.
-    content: dict[tuple[int, int], list[CacheItem]]
 
-    # Lazy LRU index.  The heap stores (last_access_tick, id(item)) tuples.
-    # _lru_tick maps id(item) to its current valid tick; stale heap entries are
-    # skipped during pop_lru().  This gives O(log n) touch and O(log n) amortized
-    # eviction instead of scanning the full content dict.
-    _lru_heap: list[tuple[int, int]] = field(default_factory=list)
-    _lru_tick: dict[int, int] = field(default_factory=dict)
+    def __init__(
+        self,
+        node_id: int,
+        name: str,
+        content: dict[tuple[int, int], list[CacheItem]] | None = None,
+    ) -> None:
+        self.node_id = node_id
+        self.name = name
+        # Mapping from session_id (user_id, session_id) to the list of CacheItems
+        # belonging to that session.  Items within a session are kept unsorted;
+        # callers sort when needed.
+        self.content: dict[tuple[int, int], list[CacheItem]] = content or {}
+
+        # Lazy LRU index.  The heap stores (last_access_tick, id(item)) tuples.
+        # _lru_tick maps id(item) to its current valid tick; stale heap entries
+        # are skipped during pop_lru().  This gives O(log n) touch and O(log n)
+        # amortized eviction instead of scanning the full content dict.
+        self._lru_heap: list[tuple[int, int]] = []
+        self._lru_tick: dict[int, int] = {}
 
     def touch(self, item: CacheItem, tick: int) -> None:
         """Record that ``item`` was accessed at ``tick``."""
