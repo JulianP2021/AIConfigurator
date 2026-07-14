@@ -2,8 +2,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from heapq import heappop, heappush
 
+from sortedcontainers import SortedDict
+
 from src.hardware.hardware import Hardware, S3Spec
-from src.logger import LOG_CACHE, log
+from src.logger import LOG_CACHE, log, should_log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, TransferLeg, UploadRequest
 from src.scheduler.global_clock import GlobalClock
@@ -14,17 +16,25 @@ S3_NODE_ID = -1
 CHUNK_SIZE = 4096
 
 
-@dataclass
 class CacheItem:
+    __slots__ = (
+        "last_access_ms",
+        "last_access_tick",
+        "layer",
+        "session_id",
+        "token_end",
+        "token_start",
+    )
+
     session_id: tuple[int, int]
     token_start: int
-    token_end: int = 0
-    last_access_tick: int = 0
-    last_access_ms: float = 0.0
+    token_end: int
+    last_access_tick: int
+    last_access_ms: float
     # Back-pointer to the layer holding this item, maintained by CacheLayer
     # insertion/removal.  This makes layer lookup O(1) instead of scanning all
     # layers per item.
-    layer: CacheLayer | None = None
+    layer: CacheLayer | None
 
     def __init__(
         self, session_id: tuple[int, int], token_start: int, token_end: int = 0
@@ -49,28 +59,29 @@ class CacheLayer:
         self,
         node_id: int,
         name: str,
-        content: dict[tuple[int, int], dict[tuple[int, int], CacheItem]] | None = None,
+        content: dict[tuple[int, int], SortedDict[tuple[int, int], CacheItem]]
+        | None = None,
     ) -> None:
         self.node_id = node_id
         self.name = name
-        # Mapping from session_id (user_id, session_id) to a dict keyed by
-        # (token_start, token_end).  This gives O(1) item lookup and removal
-        # within a session.  Callers sort when needed.
-        self.content: dict[tuple[int, int], dict[tuple[int, int], CacheItem]] = (
+        # Mapping from session_id (user_id, session_id) to a SortedDict keyed
+        # by (token_start, token_end) and sorted by token_start.  This gives
+        # O(log N) item lookup and removal, plus O(log N + k) range iteration.
+        self.content: dict[tuple[int, int], SortedDict[tuple[int, int], CacheItem]] = (
             content or {}
         )
 
-        # Lazy LRU index.  The heap stores (last_access_tick, id(item), session_id)
-        # tuples.  _lru_tick maps id(item) to its current valid tick; stale heap
-        # entries are skipped during pop_lru().  Carrying session_id lets pop_lru
-        # look up the live item directly in self.content[session_id] instead of
-        # scanning every bucket in the layer.
-        self._lru_heap: list[tuple[int, int, tuple[int, int]]] = []
+        # Lazy LRU index.  The heap stores (last_access_tick, id(item), session_id,
+        # token_start) tuples.  _lru_tick maps id(item) to its current valid tick;
+        # stale heap entries are skipped during pop_lru().  Carrying session_id
+        # and token_start lets pop_lru look up the live item directly via the
+        # sorted-dict key instead of scanning the session bucket.
+        self._lru_heap: list[tuple[int, int, tuple[int, int], tuple[int, int]]] = []
         self._lru_tick: dict[int, int] = {}
 
     def _add_item(self, item: CacheItem) -> None:
         """Add ``item`` to this layer's content and set its back-pointer."""
-        item_dict = self.content.setdefault(item.session_id, {})
+        item_dict = self.content.setdefault(item.session_id, SortedDict())
         item_dict[(item.token_start, item.token_end)] = item
         item.layer = self
 
@@ -86,11 +97,14 @@ class CacheLayer:
         self, session_id: tuple[int, int], token_start: int, token_end: int
     ) -> CacheItem | None:
         """Return the item with the exact range in this layer, or None."""
-        return self.content.get(session_id, {}).get((token_start, token_end))
+        return self.content.get(session_id, SortedDict()).get((token_start, token_end))
 
     def touch(self, item: CacheItem, tick: int) -> None:
         """Record that ``item`` was accessed at ``tick``."""
-        heappush(self._lru_heap, (tick, id(item), item.session_id))
+        heappush(
+            self._lru_heap,
+            (tick, id(item), item.session_id, (item.token_start, item.token_end)),
+        )
         self._lru_tick[id(item)] = tick
         item.last_access_tick = tick
 
@@ -101,14 +115,15 @@ class CacheLayer:
     def pop_lru(self) -> CacheItem | None:
         """Return and remove the least-recently-used live item, or None."""
         while self._lru_heap:
-            tick, item_id, session_id = heappop(self._lru_heap)
+            tick, item_id, session_id, key = heappop(self._lru_heap)
             current_tick = self._lru_tick.get(item_id)
             if current_tick is None or current_tick != tick:
                 # Stale heap entry; the item was removed or re-touched.
                 continue
-            # Look up the item directly in its session bucket by id.
-            for item in self.content.get(session_id, {}).values():
-                if id(item) == item_id:
+            item_dict = self.content.get(session_id)
+            if item_dict is not None:
+                item = item_dict.get(key)
+                if item is not None and id(item) == item_id:
                     self._lru_tick.pop(item_id)
                     return item
             # Item is no longer in content; clean up the tick entry.
@@ -255,12 +270,12 @@ class Cache:
         if not self.s3_spec.enabled:
             return False
         s3_layer = self._s3_layer()
-        return any(
-            existing.session_id == item.session_id
-            and existing.token_start == item.token_start
-            and existing.token_end == item.token_end
-            for existing in s3_layer.content.get(item.session_id, {}).values()
-        )
+        key = (item.token_start, item.token_end)
+        item_dict = s3_layer.content.get(item.session_id)
+        if item_dict is None:
+            return False
+        existing = item_dict.get(key)
+        return existing is not None and existing.session_id == item.session_id
 
     def _evict_s3_stale(self) -> None:
         """Remove S3 items whose last access is older than the eviction window.
@@ -280,13 +295,14 @@ class Cache:
                     self.s3_usage_bytes -= victim_size
                     s3_layer._remove_item(item)
                     s3_layer.remove_from_lru(item)
-                    log(
-                        LOG_CACHE,
-                        f"Evicted stale S3 KV for request {item.session_id} "
-                        f"({item.tokens} tokens, {victim_size} bytes), "
-                        f"last_access_ms={item.last_access_ms:.3f}, cutoff_ms={cutoff_ms:.3f}",
-                    )
-            if not s3_layer.content.get(session_id):
+                    if should_log(LOG_CACHE):
+                        log(
+                            LOG_CACHE,
+                            f"Evicted stale S3 KV for request {item.session_id} "
+                            f"({item.tokens} tokens, {victim_size} bytes), "
+                            f"last_access_ms={item.last_access_ms:.3f}, cutoff_ms={cutoff_ms:.3f}",
+                        )
+            if session_id in s3_layer.content and not s3_layer.content[session_id]:
                 s3_layer.content.pop(session_id, None)
         if self.s3_usage_bytes > self.s3_peak_usage_bytes:
             self.s3_peak_usage_bytes = self.s3_usage_bytes
@@ -324,20 +340,22 @@ class Cache:
                 self.s3_spec.S3_UPLOAD_REQ_COSTS / 1000 * victim.tokens / CHUNK_SIZE
             )
 
-            log(
-                LOG_CACHE,
-                f"Uploaded SSD-evicted KV for request {victim.session_id} "
-                f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
-            )
+            if should_log(LOG_CACHE):
+                log(
+                    LOG_CACHE,
+                    f"Uploaded SSD-evicted KV for request {victim.session_id} "
+                    f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
+                )
             # Run S3 stale-object eviction after every upload so the reported
             # peak S3 memory only counts recently-accessed objects.
             self._evict_s3_stale()
 
-        log(
-            LOG_CACHE,
-            f"Deleted SSD LRU KV for request {victim.session_id} "
-            f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} SSD",
-        )
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Deleted SSD LRU KV for request {victim.session_id} "
+                f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} SSD",
+            )
         return s3_leg
 
     def _evict_ram_to_ssd(self, node_id: int) -> tuple[CacheItem, list[TransferLeg]]:
@@ -368,11 +386,12 @@ class Cache:
         ssd_layer._add_item(victim)
         self.ssd_usage_bytes[node_id] += victim_size
         ssd_layer.touch(victim, self._access_tick)
-        log(
-            LOG_CACHE,
-            f"Evicted RAM LRU KV for request {victim.session_id} "
-            f"({victim.tokens} tokens, {victim_size} bytes) to node {node_id} SSD",
-        )
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Evicted RAM LRU KV for request {victim.session_id} "
+                f"({victim.tokens} tokens, {victim_size} bytes) to node {node_id} SSD",
+            )
         return victim, s3_legs
 
     def _make_room_ram(self, node_id: int, size: int) -> list[TransferLeg]:
@@ -448,25 +467,17 @@ class Cache:
         assert layer is not None, f"Layer {layer_name} not found for node {node_id}"
         return layer
 
-    def _find_all_items(self, session_id: tuple[int, int]) -> list[CacheItem]:
-        """Return every cached item for ``session_id`` across all nodes/tiers."""
-        items: list[CacheItem] = []
-        for node_layers in self.layers.values():
-            for layer in node_layers:
-                for item in layer.content.get(session_id, {}).values():
-                    items.append(item)
-        return items
-
-    def _contiguous_prefix(self, items: list[CacheItem]) -> list[CacheItem]:
+    @staticmethod
+    def _contiguous_prefix_from_sorted(items) -> list[CacheItem]:
         """Return the items that form the longest contiguous prefix [0, N).
 
-        Items are sorted by ``token_start``.  Overlapping and duplicate ranges
-        are handled by extending coverage to the furthest ``token_end`` seen.
+        ``items`` must already be sorted by ``token_start``.  Overlapping and
+        duplicate ranges are handled by extending coverage to the furthest
+        ``token_end`` seen.
         """
-        sorted_items = sorted(items, key=lambda item: item.token_start)
         prefix: list[CacheItem] = []
         coverage_end = 0
-        for item in sorted_items:
+        for item in items:
             if item.token_start > coverage_end:
                 break
             if item.token_end <= coverage_end:
@@ -475,6 +486,31 @@ class Cache:
             coverage_end = item.token_end
         return prefix
 
+    def _find_all_items(self, session_id: tuple[int, int]) -> list[CacheItem]:
+        """Return every cached item for ``session_id`` across all nodes/tiers.
+
+        Items are returned sorted by ``token_start`` so callers can compute the
+        contiguous prefix without re-sorting.
+        """
+        items: list[CacheItem] = []
+        for node_layers in self.layers.values():
+            for layer in node_layers:
+                item_dict = layer.content.get(session_id)
+                if item_dict is not None:
+                    items.extend(item_dict.values())
+        items.sort(key=lambda item: item.token_start)
+        return items
+
+    def _contiguous_prefix(self, items: list[CacheItem]) -> list[CacheItem]:
+        """Return the items that form the longest contiguous prefix [0, N).
+
+        Items are sorted by ``token_start``.  Overlapping and duplicate ranges
+        are handled by extending coverage to the furthest ``token_end`` seen.
+        """
+        return self._contiguous_prefix_from_sorted(
+            sorted(items, key=lambda item: item.token_start)
+        )
+
     def find_cache(
         self, session_id: tuple[int, int], node_id: int | None = None
     ) -> list[CacheItem]:
@@ -482,15 +518,33 @@ class Cache:
 
         If ``node_id`` is given, only items on that node are considered.
         """
-        items = self._find_all_items(session_id)
-        if node_id is not None:
-            items = [
-                item
-                for item in items
-                if (layer := self.find_cache_layer(item)) is not None
-                and layer.node_id == node_id
-            ]
-        return self._contiguous_prefix(items)
+        if node_id is None:
+            return self._contiguous_prefix_from_sorted(self._find_all_items(session_id))
+        layer = self.get_layer(node_id, "RAM")
+        ram_dict = layer.content.get(session_id)
+        ssd_dict = self._ssd_layer(node_id).content.get(session_id)
+        if ram_dict is None and ssd_dict is None:
+            return []
+        if ram_dict is None:
+            return self._contiguous_prefix_from_sorted(ssd_dict.values())
+        if ssd_dict is None:
+            return self._contiguous_prefix_from_sorted(ram_dict.values())
+        merged: list[CacheItem] = []
+        # Merge two sorted views without materialising the full sorted union.
+        ram_iter = iter(ram_dict.values())
+        ssd_iter = iter(ssd_dict.values())
+        ram_next = next(ram_iter, None)
+        ssd_next = next(ssd_iter, None)
+        while ram_next is not None or ssd_next is not None:
+            if ssd_next is None or (
+                ram_next is not None and ram_next.token_start <= ssd_next.token_start
+            ):
+                merged.append(ram_next)
+                ram_next = next(ram_iter, None)
+            else:
+                merged.append(ssd_next)
+                ssd_next = next(ssd_iter, None)
+        return self._contiguous_prefix_from_sorted(merged)
 
     def find_cache_layer(self, item: CacheItem) -> CacheLayer | None:
         if item.layer is not None:
@@ -498,10 +552,10 @@ class Cache:
         # Fallback for items created outside CacheLayer._add_item (e.g. tests).
         for _, layers in self.layers.items():
             for layer in layers:
+                item_dict = layer.content.get(item.session_id)
                 if (
-                    item.session_id in layer.content
-                    and (item.token_start, item.token_end)
-                    in layer.content[item.session_id]
+                    item_dict is not None
+                    and (item.token_start, item.token_end) in item_dict
                 ):
                     return layer
         return None
@@ -512,13 +566,7 @@ class Cache:
         This is a read-only helper used by the router for locality-aware cost
         scoring.  It does not mutate cache state.
         """
-        items = [
-            item
-            for item in self._find_all_items(session_id)
-            if (layer := self.find_cache_layer(item)) is not None
-            and layer.node_id == node_id
-        ]
-        prefix = self._contiguous_prefix(items)
+        prefix = self.find_cache(session_id, node_id=node_id)
         return prefix[-1].token_end if prefix else 0
 
     def delete_item(self, item: CacheItem):
@@ -548,7 +596,10 @@ class Cache:
         Returns any destination-RAM eviction legs produced while making room.
         """
         for layer in (self._ram_layer(node_id), self._ssd_layer(node_id)):
-            for existing in list(layer.content.get(session_id, {}).values()):
+            item_dict = layer.content.get(session_id)
+            if item_dict is None:
+                continue
+            for existing in list(item_dict.values()):
                 if (
                     existing.token_end <= token_start
                     or existing.token_start >= token_end
@@ -574,7 +625,7 @@ class Cache:
         are promoted; remote items and the shared S3 tier are copied.
         """
         all_items = self._find_all_items(session_id)
-        global_prefix = self._contiguous_prefix(all_items)
+        global_prefix = self._contiguous_prefix_from_sorted(all_items)
         if not global_prefix:
             return 0, []
         effective_end = min(required_end, global_prefix[-1].token_end)
@@ -585,7 +636,7 @@ class Cache:
             if (layer := self.find_cache_layer(item)) is not None
             and layer.node_id == dest_node_id
         ]
-        local_prefix = self._contiguous_prefix(local_items)
+        local_prefix = self._contiguous_prefix_from_sorted(local_items)
         local_end = local_prefix[-1].token_end if local_prefix else 0
         local_end = min(local_end, effective_end)
 
@@ -599,24 +650,46 @@ class Cache:
             seg_end = min(item.token_end, effective_end)
             segments.append((item.token_start, seg_end, layer.node_id, layer.name))
 
+        # Build a sorted global index of remote and S3 items to resolve gaps
+        # without scanning the entire item list for each miss.
+        remote_items = [
+            item
+            for item in all_items
+            if (layer := self.find_cache_layer(item)) is not None
+            and layer.node_id not in (dest_node_id, S3_NODE_ID)
+        ]
+        s3_items = [
+            item
+            for item in all_items
+            if (layer := self.find_cache_layer(item)) is not None
+            and layer.node_id == S3_NODE_ID
+        ]
+        remote_index = SortedDict({item.token_start: item for item in remote_items})
+        s3_index = SortedDict({item.token_start: item for item in s3_items})
+
+        def _covering_item(
+            index: SortedDict[int, CacheItem], pos: int
+        ) -> CacheItem | None:
+            """Return the item in ``index`` that covers ``pos``, or None."""
+            if not index:
+                return None
+            idx = index.bisect_right(pos)
+            if idx == 0:
+                return None
+            idx -= 1
+            item = index.peekitem(idx)[1]
+            if pos < item.token_start or pos >= item.token_end:
+                return None
+            return item
+
         # Fetch any remaining ranges from remote node sources first.
         miss_start = local_end
         while miss_start < effective_end:
-            source: tuple[CacheItem, CacheLayer] | None = None
-            for item in all_items:
-                layer = self.find_cache_layer(item)
-                if (
-                    layer is None
-                    or layer.node_id == dest_node_id
-                    or layer.node_id == S3_NODE_ID
-                ):
-                    continue
-                if item.token_start <= miss_start < item.token_end:
-                    source = (item, layer)
-                    break
-            if source is None:
+            item = _covering_item(remote_index, miss_start)
+            if item is None:
                 break
-            item, layer = source
+            layer = item.layer
+            assert layer is not None
             seg_end = min(item.token_end, effective_end)
             segments.append((miss_start, seg_end, layer.node_id, layer.name))
             miss_start = seg_end
@@ -624,32 +697,30 @@ class Cache:
         # S3 fallback for anything still missing.
         if miss_start < effective_end and self.s3_spec.enabled:
             s3_layer = self._s3_layer()
-            for item in all_items:
-                layer = self.find_cache_layer(item)
-                if layer is None or layer.node_id != S3_NODE_ID:
-                    continue
-                if item.token_start <= miss_start < item.token_end:
-                    seg_end = min(item.token_end, effective_end)
-                    segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
-                    # Reading from S3 refreshes the object's access time so it
-                    # is not evicted while still being actively downloaded.
-                    self._touch(item, s3_layer)
-
-                    tokens = seg_end - miss_start
-                    bytes_to_transfer = self.kv_size(self.model, tokens)
-                    self.s3_download_requests += 1
-                    self.cost_usd += (
-                        float(bytes_to_transfer)
-                        / 1024
-                        / 1024
-                        / 1024
-                        * self.s3_spec.S3_DOWNLOAD_COST_GB
-                    )
-                    self.cost_usd += (
-                        self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * tokens / CHUNK_SIZE
-                    )
-                    miss_start = seg_end
+            while miss_start < effective_end:
+                item = _covering_item(s3_index, miss_start)
+                if item is None:
                     break
+                seg_end = min(item.token_end, effective_end)
+                segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
+                # Reading from S3 refreshes the object's access time so it
+                # is not evicted while still being actively downloaded.
+                self._touch(item, s3_layer)
+
+                tokens = seg_end - miss_start
+                bytes_to_transfer = self.kv_size(self.model, tokens)
+                self.s3_download_requests += 1
+                self.cost_usd += (
+                    float(bytes_to_transfer)
+                    / 1024
+                    / 1024
+                    / 1024
+                    * self.s3_spec.S3_DOWNLOAD_COST_GB
+                )
+                self.cost_usd += (
+                    self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * tokens / CHUNK_SIZE
+                )
+                miss_start = seg_end
 
         if miss_start < effective_end:
             # Coverage gap: stop at what we can satisfy.
@@ -670,15 +741,16 @@ class Cache:
         self.ram_usage_bytes[node_id] += item_size
         self._touch(item, layer)
 
-        log(
-            LOG_CACHE,
-            f"Inserted cache item for request {item.session_id} on node {node_id} "
-            f"({item.tokens} tokens, {item_size} bytes), "
-            f"RAM usage: {self.ram_usage_bytes[node_id]} / "
-            f"{self.ram_capacity_bytes[node_id]} bytes, "
-            f"SSD usage: {self.ssd_usage_bytes[node_id]} / "
-            f"{self.ssd_capacity_bytes[node_id]} bytes",
-        )
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Inserted cache item for request {item.session_id} on node {node_id} "
+                f"({item.tokens} tokens, {item_size} bytes), "
+                f"RAM usage: {self.ram_usage_bytes[node_id]} / "
+                f"{self.ram_capacity_bytes[node_id]} bytes, "
+                f"SSD usage: {self.ssd_usage_bytes[node_id]} / "
+                f"{self.ssd_capacity_bytes[node_id]} bytes",
+            )
         return eviction_legs
 
     def _build_data_legs(
@@ -763,12 +835,13 @@ class Cache:
         new_tokens = max(0, current_total_tokens - prior_cached_tokens)
         bytes_to_transfer = self.kv_size(self.model, new_tokens)
 
-        log(
-            LOG_CACHE,
-            f"Uploading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
-            f"bytes: {bytes_to_transfer}, cache size: {current_total_tokens} tokens, "
-            f"new tokens uploaded: {new_tokens}",
-        )
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Uploading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
+                f"bytes: {bytes_to_transfer}, cache size: {current_total_tokens} tokens, "
+                f"new tokens uploaded: {new_tokens}",
+            )
 
         if bytes_to_transfer <= 0:
             raise ValueError(
@@ -801,10 +874,11 @@ class Cache:
             cache_key, node_id, required_end
         )
         if effective_end == 0:
-            log(
-                LOG_CACHE,
-                f"No cache found for request {request.id} (user {request.user_id}, session {request.session_id})",
-            )
+            if should_log(LOG_CACHE):
+                log(
+                    LOG_CACHE,
+                    f"No cache found for request {request.id} (user {request.user_id}, session {request.session_id})",
+                )
             return DownloadRequest(request, [])
 
         # Optimistically update cache state: merge everything into one RAM item.
@@ -825,13 +899,14 @@ class Cache:
                 tracks.append(track)
 
         request.prefilled_tokens = effective_end
-        log(
-            LOG_CACHE,
-            f"Downloading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
-            f"effective tokens: {effective_end}/{required_end}, "
-            f"segments: {segments}, "
-            f"tracks: {[[leg.bottleneck for leg in track] for track in tracks]}",
-        )
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Downloading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
+                f"effective tokens: {effective_end}/{required_end}, "
+                f"segments: {segments}, "
+                f"tracks: {[[leg.bottleneck for leg in track] for track in tracks]}",
+            )
         return DownloadRequest(request, tracks)
 
     def kv_size(self, model: Model, tokens: int) -> int:

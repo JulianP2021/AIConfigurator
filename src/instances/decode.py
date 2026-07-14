@@ -285,11 +285,12 @@ class DecodeInstance:
             # Mark requests that finished decoding in this step.
             for request in self.current_batch:
                 if request.decoded_tokens >= request.osl:
-                    log(
-                        LOG_INSTANCE,
-                        f"[t={now:.3f} ms] Finishing request decode with id: "
-                        f"{request.id}",
-                    )
+                    if should_log(LOG_INSTANCE):
+                        log(
+                            LOG_INSTANCE,
+                            f"[t={now:.3f} ms] Finishing request decode with id: "
+                            f"{request.id}",
+                        )
                     finished_in_batch.append(request)
                     request.decode_end_ms = now
                     ur = self.cache.upload_kv(self.node_id, request)
@@ -339,12 +340,13 @@ class DecodeInstance:
             )
             * 1000
         )
-        log(
-            LOG_INSTANCE,
-            f"Calculated decode time for batch"
-            f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
-            f"of size {len(batch)}: {time_ms} ms",
-        )
+        if should_log(LOG_INSTANCE):
+            log(
+                LOG_INSTANCE,
+                f"Calculated decode time for batch"
+                f"{[req.prefilled_tokens + req.decoded_tokens for req, _ in batch]} "
+                f"of size {len(batch)}: {time_ms} ms",
+            )
         return time_ms
 
     # def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> float:
@@ -381,15 +383,16 @@ class DecodeInstance:
     #     return time_ms
 
     def log(self):
-        log(
-            LOG_INSTANCE,
-            f"Decode instance state: {len(self.queue)} requests in queue, "
-            f"{len(self.download_queue)} requests in download queue",
-        )
-        for request, _ in self.queue:
+        if should_log(LOG_INSTANCE):
             log(
                 LOG_INSTANCE,
-                f"Request id: {request.id}, decoded tokens: {request.decoded_tokens}, "
-                f"remaining tokens decode: {request.osl - request.decoded_tokens}, "
-                f"decode time ms: {request.decode_time_ms}",
+                f"Decode instance state: {len(self.queue)} requests in queue, "
+                f"{len(self.download_queue)} requests in download queue",
             )
+            for request, _ in self.queue:
+                log(
+                    LOG_INSTANCE,
+                    f"Request id: {request.id}, decoded tokens: {request.decoded_tokens}, "
+                    f"remaining tokens decode: {request.osl - request.decoded_tokens}, "
+                    f"decode time ms: {request.decode_time_ms}",
+                )

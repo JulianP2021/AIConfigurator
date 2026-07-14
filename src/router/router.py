@@ -47,7 +47,8 @@ class Router:
         """Route every request in ``self.queue`` to the lowest-cost worker."""
         while self.queue:
             req = self.queue.pop(0)
-            log(LOG_ROUTER, f"Routing request {req.id} with stage {req.stage}")
+            if should_log(LOG_ROUTER):
+                log(LOG_ROUTER, f"Routing request {req.id} with stage {req.stage}")
             if req.stage == "prefill":
                 instance = self._choose_prefill_instance(req)
             else:
@@ -320,10 +321,17 @@ class Router:
         return min(node_instances, key=lambda inst: len(inst.queue))
 
     def log(self):
-        log(LOG_ROUTER, f"Router state: {len(self.queue)} requests in router queue")
-        for i, instance in enumerate(self.prefill_instances):
-            log(LOG_ROUTER, f"Prefill instance {i} queue length: {len(instance.queue)}")
-            instance.log()
-        for i, instance in enumerate(self.decode_instances):
-            log(LOG_ROUTER, f"Decode instance {i} queue length: {len(instance.queue)}")
-            instance.log()
+        if should_log(LOG_ROUTER):
+            log(LOG_ROUTER, f"Router state: {len(self.queue)} requests in router queue")
+            for i, instance in enumerate(self.prefill_instances):
+                log(
+                    LOG_ROUTER,
+                    f"Prefill instance {i} queue length: {len(instance.queue)}",
+                )
+                instance.log()
+            for i, instance in enumerate(self.decode_instances):
+                log(
+                    LOG_ROUTER,
+                    f"Decode instance {i} queue length: {len(instance.queue)}",
+                )
+                instance.log()

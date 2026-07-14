@@ -234,23 +234,30 @@ This list captures the optimizations already applied and the remaining candidate
 - Cached `active_legs` on `_MultiTrackTransfer` and invalidated it when `current_legs` changes.
 - Added `CacheItem.layer` back-pointer for O(1) `find_cache_layer()`.
 - Updated `CacheLayer._lru_heap` entries to carry `session_id` so `pop_lru()` can locate the target bucket directly.
+- Optimized router active-token lookup by computing per-node totals once per routing decision instead of re-scanning queues for every candidate node.
+- Guarded hot `log()` calls in `decode.add_request` and added comments clarifying that the decode frozen batch is only rebuilt at token boundaries.
+- Replaced the inner `dict[(start, end), CacheItem]` per-session bucket with `SortedDict` from `sortedcontainers`, giving O(log N) range lookup and removing repeated full-bucket sorts in `_contiguous_prefix()`.
+- Added `_contiguous_prefix_from_sorted()` and `find_cache(node_id=...)` to exploit the per-session sorted order and avoid re-sorting for node-local prefix queries.
+- Replaced the remote/S3 item scan in `_find_download_segments()` with a `SortedDict` covering-index so each gap is resolved in O(log N) instead of O(all_items).
+- Added `sortedcontainers` to `pyproject.toml` project dependencies.
 
 ### Still possible, ordered by impact / risk
 
 #### High impact, low risk
 
 1. Maintain per-session/per-node prefix index for routing.
-   - `_find_download_segments`, `_overlap_credit`, and `cached_prefix_on_node` currently scan all cache items across all layers.
-   - Maintain an index mapping `(session_id, node_id)` → cached prefix length and segment breakdown, updated incrementally on insert/delete/evict.
+   - `_find_download_segments` and `cached_prefix_on_node` still build a fresh sorted item list for every call.
+   - Maintain an index mapping `(session_id, node_id)` → cached prefix length and segment breakdown, updated incrementally on insert/delete/evict, so routing becomes O(log N) or O(1) rather than O(items per session).
    - This is the single biggest remaining win; routing is a large fraction of runtime in large scenarios.
 
 2. Maintain active-token counters in the router.
-   - `_active_prefill_tokens`, `_active_decode_tokens`, `_active_prefill_tokens_for_instance` currently loop over instance queues on every routing decision.
-   - Update counters on `add_request`, download drain, and finished-request removal.
+   - We already avoid O(nodes × queue_items) scans by computing totals once per routing decision.
+   - A further step is to maintain counters incrementally (on `add_request`, download drain, finished-request removal) so even the once-per-routing scan is removed.
+   - This requires either coupling instances to the router or adding a reconcile hook, so it is slightly more invasive.
 
-3. Cache the decode frozen batch.
-   - `decode._ensure_batch()` rebuilds `current_batch` from `self.queue[:max_batch_size]` every call.
-   - Cache it and invalidate only when the queue changes state (new arrival, batch token done).
+3. Cache the decode frozen batch more explicitly.
+   - `current_batch` is already frozen between tokens, but `_ensure_batch()` still recomputes the list slice when called after the batch is cleared.
+   - Add a flag/validation so the batch is only rebuilt when the queue changes state (new arrival, batch token done).
 
 #### Medium impact, low/medium risk
 
@@ -295,10 +302,10 @@ This list captures the optimizations already applied and the remaining candidate
 If continuing optimization work, prefer this order:
 
 1. Per-session/per-node prefix index for routing (#1 above).
-2. Router active-token counters (#2).
-3. Cache decode frozen batch (#3).
-4. `__slots__` on hot objects (#4).
-5. Guard remaining log calls and micro-optimizations (#5, #6).
+2. `__slots__` on hot objects (#4).
+3. Guard remaining log calls and micro-optimizations (#5, #6).
+4. Fully maintained router active-token counters (#2) if profiling shows routing queue scans are still a bottleneck.
+5. Batch stride verification (#8) and FLOPs memoization (#9) only after the above.
 
 ## Contact / Ownership
 

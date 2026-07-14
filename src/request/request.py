@@ -42,13 +42,23 @@ class TransferLeg:
       * ``S3_DOWNLOAD``: 50 ms
     """
 
+    __slots__ = (
+        "bandwidth_bytes_per_ms",
+        "bottleneck",
+        "dest_node_id",
+        "processed_time_ms",
+        "remaining_bytes",
+        "remaining_latency_ms",
+        "source_node_id",
+    )
+
     remaining_bytes: int
     source_node_id: int
     dest_node_id: int
     bottleneck: str
-    bandwidth_bytes_per_ms: float = 0.0
-    remaining_latency_ms: float = 0.0
-    processed_time_ms: float = 0.0  # scheduler time spent advancing this leg
+    bandwidth_bytes_per_ms: float
+    remaining_latency_ms: float
+    processed_time_ms: float  # scheduler time spent advancing this leg
 
     _DEFAULT_LATENCY_MS: ClassVar[dict[str, float]] = {
         "RAM_LOCAL": 0.0,
@@ -70,15 +80,19 @@ class TransferLeg:
         self.source_node_id = source_node_id
         self.dest_node_id = dest_node_id
         self.bottleneck = bottleneck
+        self.bandwidth_bytes_per_ms = 0.0
         self.remaining_latency_ms = (
             latency_ms
             if latency_ms is not None
             else self._DEFAULT_LATENCY_MS.get(bottleneck, 0.0)
         )
+        self.processed_time_ms = 0.0
 
 
 class _MultiTrackTransfer:
     """Mixin-like base for upload/download requests with parallel leg tracks."""
+
+    __slots__ = ("_cached_active_legs", "current_legs", "request", "tracks")
 
     request: Request
     tracks: list[list[TransferLeg]]
@@ -162,6 +176,8 @@ class UploadRequest(_MultiTrackTransfer):
     in the background.
     """
 
+    __slots__ = ()
+
     def is_upload_done(self) -> bool:
         """Return True when the actual upload leg (last track) is exhausted."""
         if not self.tracks:
@@ -196,78 +212,123 @@ class UploadRequest(_MultiTrackTransfer):
 class DownloadRequest(_MultiTrackTransfer):
     """Tracks for a download.  Eviction and per-source data tracks run in parallel."""
 
+    __slots__ = ()
+
 
 class Request:
-    isl: int
-    osl: int
-    prefilled_tokens: int
-    decoded_tokens: int = 0
-    remaining_prefill_time_ms: float = -1
-
-    # Cache state captured when the request first enters the prefill pipeline.
-    # This is the *initial* prefix length before any prefill compute runs; it
-    # is set by PrefillInstance.add_request so diagnostics can distinguish between
-    # a fully-cached prefix and a from-scratch prefill.
-    initial_prefilled_tokens: int | None = None
-
-    # Event timestamps for each phase, all driven by the global simulation clock.
-    generated_ms: float | None = None  # when the request was created
-    prefill_queue_start_ms: float | None = None
-    prefill_start_ms: float | None = None
-    prefill_end_ms: float | None = None
-
-    prefill_download_start_ms: float | None = None
-    prefill_download_end_ms: float | None = None
-
-    prefill_upload_start_ms: float | None = None
-    prefill_upload_end_ms: float | None = None
-
-    decode_queue_start_ms: float | None = None
-    decode_start_ms: float | None = None
-    decode_end_ms: float | None = None
-
-    decode_download_start_ms: float | None = None
-    decode_download_end_ms: float | None = None
-
-    decode_upload_start_ms: float | None = None
-    decode_upload_end_ms: float | None = None
-
-    # Scheduler-reported active transfer durations for each phase.
-    prefill_download_active_ms: float = 0.0
-    prefill_upload_active_ms: float = 0.0
-    prefill_upload_background_active_ms: float = 0.0
-    decode_download_active_ms: float = 0.0
-    decode_upload_active_ms: float = 0.0
-    decode_upload_background_active_ms: float = 0.0
-
-    # Derived user-facing metrics (computed once at simulation end).
-    prefill_time_ms: float = 0.0
-    prefill_wait_ms: float = 0.0
-    decode_time_ms: float = 0.0
-    decode_wait_ms: float = 0.0
-    kv_download_time_ms: float = 0.0
-    kv_upload_time_ms: float = 0.0
-    clean_ttft_ms: float = 0.0
-    wait_inclusive_ttft_ms: float = 0.0
-    clean_latency_ms: float = 0.0
-    wait_inclusive_latency_ms: float = 0.0
-
-    id: int
-    user_id: int
-    session_id: int
+    # Core request state and event timestamps.  All fields are initialized to
+    # None / 0 / -1 and are populated by instances as the request progresses.
+    __slots__ = (
+        "clean_latency_ms",
+        "clean_ttft_ms",
+        "decode_download_active_ms",
+        "decode_download_end_ms",
+        "decode_download_start_ms",
+        "decode_download_wait_ms",
+        "decode_end_ms",
+        "decode_queue_start_ms",
+        "decode_start_ms",
+        "decode_time_ms",
+        "decode_upload_active_ms",
+        "decode_upload_background_active_ms",
+        "decode_upload_end_ms",
+        "decode_upload_start_ms",
+        "decode_upload_wait_ms",
+        "decode_wait_ms",
+        "decoded_tokens",
+        "generated_ms",
+        "id",
+        "initial_prefilled_tokens",
+        "isl",
+        "kv_download_time_ms",
+        "kv_upload_time_ms",
+        "osl",
+        "prefill_download_active_ms",
+        "prefill_download_end_ms",
+        "prefill_download_start_ms",
+        "prefill_download_wait_ms",
+        "prefill_end_ms",
+        "prefill_queue_start_ms",
+        "prefill_start_ms",
+        "prefill_time_ms",
+        "prefill_upload_active_ms",
+        "prefill_upload_background_active_ms",
+        "prefill_upload_end_ms",
+        "prefill_upload_start_ms",
+        "prefill_upload_wait_ms",
+        "prefill_wait_ms",
+        "prefilled_tokens",
+        "remaining_prefill_time_ms",
+        "session_id",
+        "user_id",
+        "wait_inclusive_latency_ms",
+        "wait_inclusive_ttft_ms",
+    )
 
     def __init__(self, isl: int, osl: int, user_id: int = -1, session_id: int = -1):
         global request_id_counter
-        self.isl = isl
-        self.osl = osl
-        self.prefilled_tokens = 0
+
         self.id = request_id_counter
         self.user_id = user_id
         self.session_id = session_id
+        self.isl = isl
+        self.osl = osl
         request_id_counter += 1
 
         assert self.isl >= 0, "ISL must be non-negative"
         assert self.osl >= 0, "OSL must be non-negative"
+
+        # Scalar state.
+        self.prefilled_tokens = 0
+        self.decoded_tokens = 0
+        self.remaining_prefill_time_ms = -1.0
+        self.initial_prefilled_tokens = None
+
+        # Timestamps and durations.  Grouped into None-initialized floats and
+        # zero-initialized floats for compact assignment.
+        for name in (
+            "generated_ms",
+            "prefill_queue_start_ms",
+            "prefill_start_ms",
+            "prefill_end_ms",
+            "prefill_download_start_ms",
+            "prefill_download_end_ms",
+            "prefill_upload_start_ms",
+            "prefill_upload_end_ms",
+            "decode_queue_start_ms",
+            "decode_start_ms",
+            "decode_end_ms",
+            "decode_download_start_ms",
+            "decode_download_end_ms",
+            "decode_upload_start_ms",
+            "decode_upload_end_ms",
+        ):
+            setattr(self, name, None)
+
+        for name in (
+            "prefill_download_active_ms",
+            "prefill_upload_active_ms",
+            "prefill_upload_background_active_ms",
+            "decode_download_active_ms",
+            "decode_upload_active_ms",
+            "decode_upload_background_active_ms",
+            "prefill_time_ms",
+            "prefill_wait_ms",
+            "prefill_download_wait_ms",
+            "prefill_upload_wait_ms",
+            "decode_time_ms",
+            "decode_wait_ms",
+            "decode_download_wait_ms",
+            "decode_upload_wait_ms",
+            "kv_download_time_ms",
+            "kv_upload_time_ms",
+            "clean_ttft_ms",
+            "wait_inclusive_ttft_ms",
+            "clean_latency_ms",
+            "wait_inclusive_latency_ms",
+        ):
+            setattr(self, name, 0.0)
+
         assert self.prefilled_tokens <= self.isl, (
             "Prefilled tokens must be less than or equal to ISL"
         )

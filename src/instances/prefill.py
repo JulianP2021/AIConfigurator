@@ -232,10 +232,11 @@ class PrefillInstance:
             )
             * 1000
         )
-        log(
-            LOG_INSTANCE,
-            f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
-        )
+        if should_log(LOG_INSTANCE):
+            log(
+                LOG_INSTANCE,
+                f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
+            )
         return time_ms
 
     # def calculate_prefill_time(self, request: Request) -> float:
@@ -258,17 +259,18 @@ class PrefillInstance:
     #     return time_ms
 
     def log(self):
-        log(
-            LOG_INSTANCE,
-            f"Prefill instance state: {len(self.queue)} requests in queue, "
-            f"{len(self.upload_queue)} requests in upload queue, "
-            f"{len(self.background_upload_queue)} background uploads",
-        )
-        for request, _ in self.queue:
+        if should_log(LOG_INSTANCE):
             log(
                 LOG_INSTANCE,
-                f"Request id: {request.id}, prefilled tokens: {request.prefilled_tokens}, "
-                f"remaining tokens prefill: {request.remaining_tokens_prefill}, "
-                f"prefill time ms: {request.prefill_time_ms}, "
-                f"remaining prefill time ms: {request.remaining_prefill_time_ms}",
+                f"Prefill instance state: {len(self.queue)} requests in queue, "
+                f"{len(self.upload_queue)} requests in upload queue, "
+                f"{len(self.background_upload_queue)} background uploads",
             )
+            for request, _ in self.queue:
+                log(
+                    LOG_INSTANCE,
+                    f"Request id: {request.id}, prefilled tokens: {request.prefilled_tokens}, "
+                    f"remaining tokens prefill: {request.remaining_tokens_prefill}, "
+                    f"prefill time ms: {request.prefill_time_ms}, "
+                    f"remaining prefill time ms: {request.remaining_prefill_time_ms}",
+                )

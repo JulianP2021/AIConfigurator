@@ -14,7 +14,7 @@ class Model:
         self.config = fetch_architecture(self.name)
         # print(f"Model {self.name} config: {self.config}")
 
-    @property
+    @cached_property
     def dtype_size(self) -> float:
         dtype = self.config.get("dtype", "float32")
         if dtype == "float16" or dtype == "bfloat16":

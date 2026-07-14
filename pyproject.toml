@@ -12,6 +12,7 @@ dependencies = [
     "matplotlib>=3.11.0",
     "python-multipart>=0.0.32",
     "requests>=2.34.2",
+    "sortedcontainers>=2.4.0",
     "transformers>=5.12.1",
     "uvicorn>=0.49.0",
 ]

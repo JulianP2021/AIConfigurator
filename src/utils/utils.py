@@ -41,6 +41,7 @@ def _mem_model(model: Model) -> int:
     )
 
 
+@lru_cache(maxsize=1280)
 def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
     embedding = 2 * tokens_to_process * c["hidden_size"] * c["vocab_size"]
