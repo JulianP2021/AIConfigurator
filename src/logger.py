@@ -41,6 +41,16 @@ _COMPONENT_NAMES: dict[int, str] = {
 # Module-level logger used by log()
 logger = logging.getLogger(name="configurator")
 
+# Configure the root logger to emit to a file so long-running simulations can
+# be inspected offline. Child processes re-import this module and get the same
+# file output.
+logging.basicConfig(
+    filename="example.log",
+    filemode="w",
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+
 # Active mask and minimum severity. These can be changed at runtime.
 _log_mask: int = LOG_NONE
 _min_level: int = logging.INFO

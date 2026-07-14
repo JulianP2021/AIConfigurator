@@ -626,6 +626,7 @@ class Cache:
         """
         all_items = self._find_all_items(session_id)
         global_prefix = self._contiguous_prefix_from_sorted(all_items)
+
         if not global_prefix:
             return 0, []
         effective_end = min(required_end, global_prefix[-1].token_end)
@@ -651,7 +652,9 @@ class Cache:
             segments.append((item.token_start, seg_end, layer.node_id, layer.name))
 
         # Build a sorted global index of remote and S3 items to resolve gaps
-        # without scanning the entire item list for each miss.
+        # without scanning the entire item list for each miss.  Keys are the
+        # unique (token_start, token_end) tuple so overlapping starts from
+        # different nodes do not collide.
         remote_items = [
             item
             for item in all_items
@@ -664,16 +667,23 @@ class Cache:
             if (layer := self.find_cache_layer(item)) is not None
             and layer.node_id == S3_NODE_ID
         ]
-        remote_index = SortedDict({item.token_start: item for item in remote_items})
-        s3_index = SortedDict({item.token_start: item for item in s3_items})
+        remote_index = SortedDict({
+            (item.token_start, item.token_end): item for item in remote_items
+        })
+        s3_index = SortedDict({
+            (item.token_start, item.token_end): item for item in s3_items
+        })
 
         def _covering_item(
-            index: SortedDict[int, CacheItem], pos: int
+            index: SortedDict[tuple[int, int], CacheItem], pos: int
         ) -> CacheItem | None:
             """Return the item in ``index`` that covers ``pos``, or None."""
             if not index:
                 return None
-            idx = index.bisect_right(pos)
+            # Find the last item whose token_start is <= pos.  Using a tuple
+            # key with an infinite upper bound makes bisect_right work on the
+            # start coordinate while keeping all unique (start, end) pairs.
+            idx = index.bisect_right((pos, float("inf")))
             if idx == 0:
                 return None
             idx -= 1

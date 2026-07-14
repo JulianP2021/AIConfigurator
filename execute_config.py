@@ -323,6 +323,11 @@ def _run_single_config(
     s3_spec: S3Spec,
 ) -> SimulationResult:
     """Top-level worker function suitable for process-pool pickling."""
+    # import logging
+    # from src.logger import set_log_mask, set_min_level, LOG_ALL
+
+    # set_log_mask(LOG_ALL)
+    # set_min_level(logging.DEBUG)
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
     return simulate_run_distributed(
