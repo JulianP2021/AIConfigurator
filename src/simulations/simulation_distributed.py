@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
+import numpy as np
+
 from src.cache.cache import Cache
 from src.eroors.errors import DecodeLatencyError, PrefillLatencyError
 from src.hardware.hardware import S3Spec
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
-from src.logger import LOG_SIMULATION, log
+from src.logger import LOG_SIMULATION, log, should_log
 from src.node.node import Node
 from src.request.request import Request, RequestGenerator, RequestScenario
 from src.result import SimulationResult
@@ -268,13 +270,14 @@ def simulate_run_distributed(
         router.queue.append(new_request)
         num_reqs += 1
 
-        log(
-            LOG_SIMULATION,
-            f"Generated new request with id: {new_request.id} at "
-            f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
-            f"isl: {new_request.isl}, osl: {new_request.osl}, "
-            f"cached: {new_request.prefilled_tokens}",
-        )
+        if should_log(LOG_SIMULATION):
+            log(
+                LOG_SIMULATION,
+                f"Generated new request with id: {new_request.id} at "
+                f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
+                f"isl: {new_request.isl}, osl: {new_request.osl}, "
+                f"cached: {new_request.prefilled_tokens}",
+            )
 
     max_iterations = max(1000, scenario.requests.total_requests * 100)
     iterations = 0
@@ -289,13 +292,14 @@ def simulate_run_distributed(
                 f"the event loop is not making progress."
             )
         if iterations % heartbeat_every == 0:
-            log(
-                LOG_SIMULATION,
-                f"Heartbeat: iteration={iterations}, finished={len(finished_requests)}"
-                f"/ total={scenario.requests.total_requests}, global_time="
-                f"{scheduler.time_ms:.3f} ms, active={len(current_requests)},"
-                f" queue={len(router.queue)}.",
-            )
+            if should_log(LOG_SIMULATION):
+                log(
+                    LOG_SIMULATION,
+                    f"Heartbeat: iteration={iterations}, finished={len(finished_requests)}"
+                    f"/ total={scenario.requests.total_requests}, global_time="
+                    f"{scheduler.time_ms:.3f} ms, active={len(current_requests)},"
+                    f" queue={len(router.queue)}.",
+                )
             if should_print:
                 print(
                     f"[simulate] iteration={iterations}, "
@@ -331,6 +335,10 @@ def simulate_run_distributed(
             # next_ready_ms <= scheduler.time_ms: users are already ready now.
             time_to_next_completion = 0
 
+        # Track which requests finished in this iteration so we can remove them
+        # from current_requests in O(finished) instead of O(active * finished).
+        finished_ids: set[int] = set()
+
         # Zero-length events can occur when a transfer/compute finishes
         # exactly at the current wall-clock time.  Process them immediately
         # without advancing the clock or logging a bogus 0 ms step.
@@ -347,8 +355,9 @@ def simulate_run_distributed(
                         request_generator,
                         scheduler.time_ms,
                     )
+                    finished_ids.add(decoded_request.id)
                 current_requests = [
-                    r for r in current_requests if r not in decoded_requests
+                    r for r in current_requests if r.id not in finished_ids
                 ]
             router.queue.extend(prefilled_requests)
             prefilled_requests = []
@@ -363,12 +372,13 @@ def simulate_run_distributed(
             )
             continue
 
-        log(
-            LOG_SIMULATION,
-            f"Time to next completion: {time_to_next_completion} ms, "
-            f"global_time={scheduler.time_ms:.3f} ms, "
-            f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
-        )
+        if should_log(LOG_SIMULATION):
+            log(
+                LOG_SIMULATION,
+                f"Time to next completion: {time_to_next_completion} ms, "
+                f"global_time={scheduler.time_ms:.3f} ms, "
+                f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
+            )
 
         # Advance all transfers globally using the scheduler.  It returns
         # fully completed transfers; instances drain their own queues by
@@ -376,20 +386,22 @@ def simulate_run_distributed(
         scheduler.advance_time(time_to_next_completion)
 
         for instance in prefill_instances:
-            log(
-                LOG_SIMULATION,
-                f"Processing prefill instance with download queue length "
-                f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
-                f"upload queue length {len(instance.upload_queue)}",
-            )
+            if should_log(LOG_SIMULATION):
+                log(
+                    LOG_SIMULATION,
+                    f"Processing prefill instance with download queue length "
+                    f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
+                    f"upload queue length {len(instance.upload_queue)}",
+                )
             prefilled_requests.extend(instance.process_queue(time_to_next_completion))
         for instance in decode_instances:
-            log(
-                LOG_SIMULATION,
-                f"Processing decode instance with download queue length "
-                f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
-                f"upload queue length {len(instance.upload_queue)}",
-            )
+            if should_log(LOG_SIMULATION):
+                log(
+                    LOG_SIMULATION,
+                    f"Processing decode instance with download queue length "
+                    f"{len(instance.download_queue)}, queue length {len(instance.queue)}, "
+                    f"upload queue length {len(instance.upload_queue)}",
+                )
             decoded_requests = instance.process_queue(time_to_next_completion)
             for decoded_request in decoded_requests:
                 _finish_request(
@@ -399,9 +411,8 @@ def simulate_run_distributed(
                     request_generator,
                     scheduler.time_ms,
                 )
-            current_requests = [
-                r for r in current_requests if r not in decoded_requests
-            ]
+                finished_ids.add(decoded_request.id)
+            current_requests = [r for r in current_requests if r.id not in finished_ids]
         router.queue.extend(prefilled_requests)
         prefilled_requests = []
         router.route_requests()
@@ -416,7 +427,8 @@ def simulate_run_distributed(
             num_reqs,
         )
 
-    log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
+    if should_log(LOG_SIMULATION):
+        log(LOG_SIMULATION, f"Finished requests: {finished_requests}")
 
     # Drain any remaining instance upload queues.  When a decode request finishes
     # during the final event step it appends its KV upload to the instance's
@@ -436,14 +448,16 @@ def simulate_run_distributed(
         if time_to_next_completion <= 0:
             time_to_next_completion = 10
 
-        log(
-            LOG_SIMULATION,
-            f"Drain step: time to next completion {time_to_next_completion} ms, "
-            f"global_time={scheduler.time_ms:.3f} ms, "
-            f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
-        )
+        if should_log(LOG_SIMULATION):
+            log(
+                LOG_SIMULATION,
+                f"Drain step: time to next completion {time_to_next_completion} ms, "
+                f"global_time={scheduler.time_ms:.3f} ms, "
+                f"compute_event={compute_event_ms}, transfer_event={transfer_event_ms}",
+            )
 
         scheduler.advance_time(time_to_next_completion)
+        finished_ids = set()
         for instance in prefill_instances:
             instance.process_queue(time_to_next_completion)
         for instance in decode_instances:
@@ -456,9 +470,8 @@ def simulate_run_distributed(
                     request_generator,
                     scheduler.time_ms,
                 )
-            current_requests = [
-                r for r in current_requests if r not in decoded_requests
-            ]
+                finished_ids.add(decoded_request.id)
+            current_requests = [r for r in current_requests if r.id not in finished_ids]
 
     assert len(finished_requests) == scenario.requests.total_requests
 
@@ -468,34 +481,64 @@ def simulate_run_distributed(
 
     # Per-request stats
     per_request_stats: list[dict[str, float]] = []
-    ttft_list: list[float] = []
-    kv_upload_list: list[float] = []
-    kv_download_list: list[float] = []
-    tpot_list: list[float] = []
-    latency_list: list[float] = []
 
-    # Phase-level timing lists
-    prefill_time_list: list[float] = []
-    prefill_wait_list: list[float] = []
-    prefill_download_active_list: list[float] = []
-    prefill_download_wait_list: list[float] = []
-    prefill_upload_active_list: list[float] = []
-    prefill_upload_background_active_list: list[float] = []
-    prefill_upload_wait_list: list[float] = []
-    decode_download_active_list: list[float] = []
-    decode_download_wait_list: list[float] = []
-    decode_time_list: list[float] = []
-    decode_wait_list: list[float] = []
-    decode_upload_active_list: list[float] = []
-    decode_upload_background_active_list: list[float] = []
-    decode_upload_wait_list: list[float] = []
-    clean_ttft_list: list[float] = []
-    clean_latency_list: list[float] = []
+    n = len(finished_requests)
+    if n == 0:
+        return SimulationResult(
+            scenario_name=scenario.name,
+            total_gpus=0,
+            num_prefill_workers=0,
+            num_decode_workers=0,
+            prefill_gpus_per_worker=0,
+            decode_gpus_per_worker=0,
+            batch_size=0,
+            ttft=0.0,
+            tpot=0.0,
+            kv_upload_time=0.0,
+            kv_download_time=0.0,
+            request_latency=0.0,
+            max_request_latency=0.0,
+            max_ttft=0.0,
+            max_tpot=0.0,
+            tokens_per_second=0.0,
+            tokens_per_second_per_gpu=0.0,
+            tokens_per_second_per_user=0.0,
+            seq_per_second=0.0,
+            concurrency=0.0,
+            memory_gb=0,
+            ram_cache_usage_bytes=0,
+            ssd_cache_usage_bytes=0,
+            s3_cache_usage_bytes=0,
+            s3_peak_cache_usage_bytes=0,
+            ram_cache_capacity_bytes=0,
+            ssd_cache_capacity_bytes=0,
+            compute_price_usd_per_hour=0.0,
+            s3_cost_usd_per_hour=0.0,
+            s3_storage_cost_usd_per_hour=0.0,
+            total_cost_usd_per_hour=0.0,
+            s3_upload_requests=0,
+            s3_download_requests=0,
+            per_request_stats=per_request_stats,
+        )
 
-    total_decode_time_ms = 0.0
-    total_prefill_time_ms = 0.0
+    # Extract per-request metrics into numpy arrays for fast aggregation.
+    prefill_time_arr = np.empty(n, dtype=np.float64)
+    prefill_wait_arr = np.empty(n, dtype=np.float64)
+    prefill_download_active_arr = np.empty(n, dtype=np.float64)
+    prefill_download_wait_arr = np.empty(n, dtype=np.float64)
+    prefill_upload_active_arr = np.empty(n, dtype=np.float64)
+    prefill_upload_wait_arr = np.empty(n, dtype=np.float64)
+    prefill_upload_background_active_arr = np.empty(n, dtype=np.float64)
+    decode_download_active_arr = np.empty(n, dtype=np.float64)
+    decode_download_wait_arr = np.empty(n, dtype=np.float64)
+    decode_time_arr = np.empty(n, dtype=np.float64)
+    decode_wait_arr = np.empty(n, dtype=np.float64)
+    decode_upload_active_arr = np.empty(n, dtype=np.float64)
+    decode_upload_background_active_arr = np.empty(n, dtype=np.float64)
+    decode_upload_wait_arr = np.empty(n, dtype=np.float64)
+    osl_arr = np.empty(n, dtype=np.int64)
 
-    for req in finished_requests:
+    for i, req in enumerate(finished_requests):
         # Phase timings were already computed when the request was added to
         # finished_requests by _finish_request. Re-use them here so the final
         # metrics and per-request stats are consistent.
@@ -521,55 +564,35 @@ def simulate_run_distributed(
             + req.decode_download_wait_ms
         )
         req.clean_latency_ms = req.clean_ttft_ms + req.decode_time_ms
-        # Wait-inclusive latency must include all wait-inclusive TTFT waits plus
-        # decode execution and decode wait time.
         req.wait_inclusive_latency_ms = (
             req.wait_inclusive_ttft_ms + req.decode_time_ms + req.decode_wait_ms
         )
 
-        # Reported TTFT/latency include waiting time.
-        ttft_val = req.wait_inclusive_ttft_ms
-        latency_val = req.wait_inclusive_latency_ms
+        prefill_time_arr[i] = req.prefill_time_ms
+        prefill_wait_arr[i] = req.prefill_wait_ms
+        prefill_download_active_arr[i] = req.prefill_download_active_ms
+        prefill_download_wait_arr[i] = req.prefill_download_wait_ms
+        prefill_upload_active_arr[i] = req.prefill_upload_active_ms
+        prefill_upload_wait_arr[i] = req.prefill_upload_wait_ms
+        prefill_upload_background_active_arr[i] = (
+            req.prefill_upload_background_active_ms
+        )
+        decode_download_active_arr[i] = req.decode_download_active_ms
+        decode_download_wait_arr[i] = req.decode_download_wait_ms
+        decode_time_arr[i] = req.decode_time_ms
+        decode_wait_arr[i] = req.decode_wait_ms
+        decode_upload_active_arr[i] = req.decode_upload_active_ms
+        decode_upload_background_active_arr[i] = req.decode_upload_background_active_ms
+        decode_upload_wait_arr[i] = req.decode_upload_wait_ms
+        osl_arr[i] = req.osl
 
         log(
             LOG_SIMULATION,
-            f"Request {req.id} TTFT: {ttft_val:.3f} ms (clean {req.clean_ttft_ms:.3f}), "
-            f"latency: {latency_val:.3f} ms (clean {req.clean_latency_ms:.3f}), "
+            f"Request {req.id} TTFT: {req.wait_inclusive_ttft_ms:.3f} ms (clean {req.clean_ttft_ms:.3f}), "
+            f"latency: {req.wait_inclusive_latency_ms:.3f} ms (clean {req.clean_latency_ms:.3f}), "
             f"prefill: {req.prefill_time_ms:.3f} ms, wait: {req.prefill_wait_ms:.3f}, "
             f"kv_down: active={req.decode_download_active_ms:.3f} wait={req.decode_download_wait_ms:.3f}",
         )
-
-        # TPOT = decode_time_ms / output tokens (guard against div0)
-        tpot_val = float(req.decode_time_ms) / (req.osl - 1) if req.osl > 1 else 0.0
-
-        ttft_list.append(ttft_val)
-        tpot_list.append(tpot_val)
-        kv_upload_list.append(req.kv_upload_time_ms)
-        kv_download_list.append(req.kv_download_time_ms)
-        latency_list.append(latency_val)
-        total_decode_time_ms += float(req.decode_time_ms)
-        total_prefill_time_ms += float(req.prefill_time_ms)
-
-        prefill_time_list.append(req.prefill_time_ms)
-        prefill_wait_list.append(req.prefill_wait_ms)
-        prefill_download_active_list.append(req.prefill_download_active_ms)
-        prefill_download_wait_list.append(req.prefill_download_wait_ms)
-        prefill_upload_active_list.append(req.prefill_upload_active_ms)
-        prefill_upload_background_active_list.append(
-            req.prefill_upload_background_active_ms
-        )
-        prefill_upload_wait_list.append(req.prefill_upload_wait_ms)
-        decode_download_active_list.append(req.decode_download_active_ms)
-        decode_download_wait_list.append(req.decode_download_wait_ms)
-        decode_time_list.append(req.decode_time_ms)
-        decode_wait_list.append(req.decode_wait_ms)
-        decode_upload_active_list.append(req.decode_upload_active_ms)
-        decode_upload_background_active_list.append(
-            req.decode_upload_background_active_ms
-        )
-        decode_upload_wait_list.append(req.decode_upload_wait_ms)
-        clean_ttft_list.append(req.clean_ttft_ms)
-        clean_latency_list.append(req.clean_latency_ms)
 
         per_request_stats.append({
             "id": req.id,
@@ -593,47 +616,68 @@ def simulate_run_distributed(
             "kv_upload_time_ms": req.kv_upload_time_ms,
             "kv_download_time_ms": req.kv_download_time_ms,
             "clean_ttft_ms": req.clean_ttft_ms,
-            "ttft_ms": ttft_val,
+            "ttft_ms": req.wait_inclusive_ttft_ms,
             "clean_latency_ms": req.clean_latency_ms,
-            "latency_ms": latency_val,
-            "tpot_ms": tpot_val,
+            "latency_ms": req.wait_inclusive_latency_ms,
+            "tpot_ms": float(req.decode_time_ms) / (req.osl - 1)
+            if req.osl > 1
+            else 0.0,
         })
 
-    def _avg(lst: list[float]) -> float:
-        return sum(lst) / len(lst) if lst else 0.0
+    kv_upload_arr = prefill_upload_active_arr + decode_upload_active_arr
+    kv_download_arr = prefill_download_active_arr + decode_download_active_arr
+    clean_ttft_arr = (
+        prefill_time_arr
+        + prefill_download_active_arr
+        + prefill_upload_active_arr
+        + decode_download_active_arr
+    )
+    ttft_arr = (
+        clean_ttft_arr
+        + prefill_wait_arr
+        + prefill_download_wait_arr
+        + prefill_upload_wait_arr
+        + decode_download_wait_arr
+    )
+    clean_latency_arr = clean_ttft_arr + decode_time_arr
+    latency_arr = ttft_arr + decode_time_arr + decode_wait_arr
+    tpot_arr = np.where(osl_arr > 1, decode_time_arr / (osl_arr - 1), 0.0)
 
-    def _max(lst: list[float]) -> float:
-        return max(lst) if lst else 0.0
+    avg_ttft = float(ttft_arr.mean())
+    avg_tpot = float(tpot_arr.mean())
+    avg_kv_upload = float(kv_upload_arr.mean())
+    avg_kv_download = float(kv_download_arr.mean())
+    max_ttft_val = float(ttft_arr.max())
+    max_tpot_val = float(tpot_arr.max())
+    avg_latency = float(latency_arr.mean())
+    max_latency_val = float(latency_arr.max())
 
-    avg_ttft = _avg(ttft_list)
-    avg_tpot = _avg(tpot_list)
-    avg_kv_upload = _avg(kv_upload_list)
-    avg_kv_download = _avg(kv_download_list)
-    max_ttft_val = _max(ttft_list)
-    max_tpot_val = _max(tpot_list)
-    avg_latency = _avg(latency_list)
-    max_latency_val = _max(latency_list)
+    avg_prefill_time = float(prefill_time_arr.mean())
+    avg_prefill_wait = float(prefill_wait_arr.mean())
+    max_prefill_wait = float(prefill_wait_arr.max())
+    avg_prefill_download_active = float(prefill_download_active_arr.mean())
+    avg_prefill_download_wait = float(prefill_download_wait_arr.mean())
+    avg_prefill_upload_active = float(prefill_upload_active_arr.mean())
+    avg_prefill_upload_background_active = float(
+        prefill_upload_background_active_arr.mean()
+    )
+    avg_prefill_upload_wait = float(prefill_upload_wait_arr.mean())
+    avg_decode_download_active = float(decode_download_active_arr.mean())
+    avg_decode_download_wait = float(decode_download_wait_arr.mean())
+    avg_decode_time = float(decode_time_arr.mean())
+    avg_decode_wait = float(decode_wait_arr.mean())
+    max_decode_wait = float(decode_wait_arr.max())
+    avg_decode_upload_active = float(decode_upload_active_arr.mean())
+    avg_decode_upload_background_active = float(
+        decode_upload_background_active_arr.mean()
+    )
+    avg_decode_upload_wait = float(decode_upload_wait_arr.mean())
+    avg_clean_ttft = float(clean_ttft_arr.mean())
+    max_clean_ttft = float(clean_ttft_arr.max())
+    avg_clean_latency = float(clean_latency_arr.mean())
+    max_clean_latency = float(clean_latency_arr.max())
 
-    avg_prefill_time = _avg(prefill_time_list)
-    avg_prefill_wait = _avg(prefill_wait_list)
-    max_prefill_wait = _max(prefill_wait_list)
-    avg_prefill_download_active = _avg(prefill_download_active_list)
-    avg_prefill_download_wait = _avg(prefill_download_wait_list)
-    avg_prefill_upload_active = _avg(prefill_upload_active_list)
-    avg_prefill_upload_background_active = _avg(prefill_upload_background_active_list)
-    avg_prefill_upload_wait = _avg(prefill_upload_wait_list)
-    avg_decode_download_active = _avg(decode_download_active_list)
-    avg_decode_download_wait = _avg(decode_download_wait_list)
-    avg_decode_time = _avg(decode_time_list)
-    avg_decode_wait = _avg(decode_wait_list)
-    max_decode_wait = _max(decode_wait_list)
-    avg_decode_upload_active = _avg(decode_upload_active_list)
-    avg_decode_upload_background_active = _avg(decode_upload_background_active_list)
-    avg_decode_upload_wait = _avg(decode_upload_wait_list)
-    avg_clean_ttft = _avg(clean_ttft_list)
-    max_clean_ttft = _max(clean_ttft_list)
-    avg_clean_latency = _avg(clean_latency_list)
-    max_clean_latency = _max(clean_latency_list)
+    total_decode_time_ms = float(decode_time_arr.sum())
 
     sequence_per_second = (
         len(finished_requests) / total_time_s if total_time_s > 0 else 0.0

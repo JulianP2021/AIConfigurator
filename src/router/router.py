@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from src.cache.cache import Cache
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
-from src.logger import LOG_ROUTER, log
+from src.logger import LOG_ROUTER, log, should_log
 from src.request.request import Request
 
 
@@ -65,19 +65,7 @@ class Router:
             mapping.setdefault(inst.node_id, []).append(inst)
         return mapping
 
-    def _active_prefill_tokens(self, node_id: int | None = None) -> float:
-        """Sum of uncached prefill tokens assigned to ``node_id``.
-
-        If ``node_id`` is None, return the sum for every prefill instance.
-        """
-        total = 0.0
-        for inst in self.prefill_instances:
-            if node_id is not None and inst.node_id != node_id:
-                continue
-            total += self._active_prefill_tokens_for_instance(inst)
-        return total
-
-    def _active_prefill_tokens_for_instance(self, inst: PrefillInstance) -> float:
+    def _prefill_tokens_for_instance(self, inst: PrefillInstance) -> float:
         """Sum of uncached prefill tokens assigned to one prefill instance."""
         total = 0.0
         for req, _ in inst.queue:
@@ -89,12 +77,22 @@ class Router:
             )
         return total
 
-    def _active_decode_tokens(self, node_id: int) -> float:
-        """Sum of output tokens assigned to ``node_id``."""
-        total = 0.0
+    def _compute_active_prefill_tokens(self) -> dict[int, float]:
+        """Return per-node uncached prefill token totals by scanning once."""
+        totals: dict[int, float] = {}
+        for inst in self.prefill_instances:
+            node_id = inst.node_id
+            totals[node_id] = totals.get(
+                node_id, 0.0
+            ) + self._prefill_tokens_for_instance(inst)
+        return totals
+
+    def _compute_active_decode_tokens(self) -> dict[int, float]:
+        """Return per-node remaining decode token totals by scanning once."""
+        totals: dict[int, float] = {}
         for inst in self.decode_instances:
-            if inst.node_id != node_id:
-                continue
+            node_id = inst.node_id
+            total = 0.0
             for req, _ in inst.queue:
                 total += req.osl - req.decoded_tokens
             for download_req, _ in inst.download_queue:
@@ -102,7 +100,8 @@ class Router:
             if inst.current_batch:
                 for req in inst.current_batch:
                     total += req.osl - req.decoded_tokens
-        return total
+            totals[node_id] = totals.get(node_id, 0.0) + total
+        return totals
 
     def _cached_prefix(self, req: Request, node_id: int) -> int:
         if self.cache is None:
@@ -166,21 +165,32 @@ class Router:
 
         return credit + local_output_credit
 
-    def _prefill_cost(self, req: Request, node_id: int) -> float:
+    def _prefill_cost(
+        self, req: Request, node_id: int, active_prefill: dict[int, float]
+    ) -> float:
         cfg = self.cost_config
         assert cfg is not None, "Router cost config must be set"
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
-        active_prefill = self._active_prefill_tokens(node_id)
-        return cfg.prefill_load_scale * (active_prefill + adjusted_prefill)
+        return cfg.prefill_load_scale * (
+            active_prefill.get(node_id, 0.0) + adjusted_prefill
+        )
 
-    def _decode_cost(self, req: Request, node_id: int) -> float:
-        active_decode = self._active_decode_tokens(node_id)
-        return active_decode + req.osl
+    def _decode_cost(
+        self, req: Request, node_id: int, active_decode: dict[int, float]
+    ) -> float:
+        return active_decode.get(node_id, 0.0) + req.osl
 
-    def _total_cost(self, req: Request, node_id: int, is_prefill: bool) -> float:
-        prefill_cost = self._prefill_cost(req, node_id)
-        decode_cost = self._decode_cost(req, node_id)
+    def _total_cost(
+        self,
+        req: Request,
+        node_id: int,
+        is_prefill: bool,
+        active_prefill: dict[int, float],
+        active_decode: dict[int, float],
+    ) -> float:
+        prefill_cost = self._prefill_cost(req, node_id, active_prefill)
+        decode_cost = self._decode_cost(req, node_id, active_decode)
         if is_prefill:
             # When prefill routing, only charge the decode stage lightly so
             # colocated workers that will later decode the same request are
@@ -195,27 +205,37 @@ class Router:
         candidates = self._instances_by_node(self.prefill_instances)
         assert candidates, "No prefill instances available"
 
+        active_prefill = self._compute_active_prefill_tokens()
+        active_decode = self._compute_active_decode_tokens()
+
         best_node_id: int | None = None
         best_cost = float("inf")
         for node_id in candidates:
             if (
-                self._active_prefill_tokens(node_id)
-                + self._active_decode_tokens(node_id)
+                active_prefill.get(node_id, 0.0) + active_decode.get(node_id, 0.0)
                 > cfg.busy_threshold_tokens
             ):
+                if should_log(LOG_ROUTER):
+                    log(
+                        LOG_ROUTER,
+                        f"Skipping node {node_id}: above busy threshold",
+                    )
+                continue
+            cost = self._total_cost(
+                req,
+                node_id,
+                is_prefill=True,
+                active_prefill=active_prefill,
+                active_decode=active_decode,
+            )
+            if should_log(LOG_ROUTER):
                 log(
                     LOG_ROUTER,
-                    f"Skipping node {node_id}: above busy threshold",
+                    f"Prefill cost for request {req.id} on node {node_id}: {cost:.1f} "
+                    f"(active_prefill={active_prefill.get(node_id, 0.0):.0f}, "
+                    f"active_decode={active_decode.get(node_id, 0.0):.0f}, "
+                    f"totoal cost {cost:.1f})",
                 )
-                continue
-            cost = self._total_cost(req, node_id, is_prefill=True)
-            log(
-                LOG_ROUTER,
-                f"Prefill cost for request {req.id} on node {node_id}: {cost:.1f} "
-                f"(active_prefill={self._active_prefill_tokens(node_id):.0f}, "
-                f"active_decode={self._active_decode_tokens(node_id):.0f}, "
-                f"totoal cost {self._total_cost(req, node_id, is_prefill=True):.1f})",
-            )
             if cost < best_cost:
                 best_cost = cost
                 best_node_id = node_id
@@ -225,7 +245,7 @@ class Router:
             best_node_id = min(
                 candidates,
                 key=lambda nid: (
-                    self._active_prefill_tokens(nid) + self._active_decode_tokens(nid)
+                    active_prefill.get(nid, 0.0) + active_decode.get(nid, 0.0)
                 ),
             )
 
@@ -239,7 +259,7 @@ class Router:
         return min(
             node_instances,
             key=lambda inst: (
-                self._active_prefill_tokens_for_instance(inst),
+                self._prefill_tokens_for_instance(inst),
                 len(inst.queue),
             ),
         )
@@ -249,27 +269,37 @@ class Router:
         candidates = self._instances_by_node(self.decode_instances)
         assert candidates, "No decode instances available"
 
+        active_prefill = self._compute_active_prefill_tokens()
+        active_decode = self._compute_active_decode_tokens()
+
         best_node_id: int | None = None
         best_cost = float("inf")
         for node_id in candidates:
             if (
-                self._active_prefill_tokens(node_id)
-                + self._active_decode_tokens(node_id)
+                active_prefill.get(node_id, 0.0) + active_decode.get(node_id, 0.0)
                 > cfg.busy_threshold_tokens
             ):
+                if should_log(LOG_ROUTER):
+                    log(
+                        LOG_ROUTER,
+                        f"Skipping node {node_id}: above busy threshold",
+                    )
+                continue
+            cost = self._total_cost(
+                req,
+                node_id,
+                is_prefill=False,
+                active_prefill=active_prefill,
+                active_decode=active_decode,
+            )
+            if should_log(LOG_ROUTER):
                 log(
                     LOG_ROUTER,
-                    f"Skipping node {node_id}: above busy threshold",
+                    f"Decode cost for request {req.id} on node {node_id}: {cost:.1f} "
+                    f"(active_prefill={active_prefill.get(node_id, 0.0):.0f}, "
+                    f"active_decode={active_decode.get(node_id, 0.0):.0f}, "
+                    f"cached_prefix={self._cached_prefix(req, node_id)})",
                 )
-                continue
-            cost = self._total_cost(req, node_id, is_prefill=False)
-            log(
-                LOG_ROUTER,
-                f"Decode cost for request {req.id} on node {node_id}: {cost:.1f} "
-                f"(active_prefill={self._active_prefill_tokens(node_id):.0f}, "
-                f"active_decode={self._active_decode_tokens(node_id):.0f}, "
-                f"cached_prefix={self._cached_prefix(req, node_id)})",
-            )
             if cost < best_cost:
                 best_cost = cost
                 best_node_id = node_id
@@ -278,7 +308,7 @@ class Router:
             best_node_id = min(
                 candidates,
                 key=lambda nid: (
-                    self._active_prefill_tokens(nid) + self._active_decode_tokens(nid)
+                    active_prefill.get(nid, 0.0) + active_decode.get(nid, 0.0)
                 ),
             )
 

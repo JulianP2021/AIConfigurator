@@ -91,7 +91,7 @@ class TestCacheInsertion:
         item = CacheItem((1, 0), 0, 100)
         cache_with_fake_model.insert_cache_item(item, 0)
 
-        assert item in cache_with_fake_model._ram_layer(0).content[(1, 0)]
+        assert item in cache_with_fake_model._ram_layer(0).content[(1, 0)].values()
         assert cache_with_fake_model.ram_usage_bytes[0] == 10_000
         assert cache_with_fake_model.ssd_usage_bytes[0] == 0
 
@@ -107,8 +107,8 @@ class TestCacheInsertion:
         small_cache.insert_cache_item(item3, 0)
         eviction_legs = small_cache.insert_cache_item(item4, 0)
 
-        assert item4 in small_cache._ram_layer(0).content[(4, 0)]
-        assert item1 in small_cache._ssd_layer(0).content[(1, 0)]
+        assert item4 in small_cache._ram_layer(0).content[(4, 0)].values()
+        assert item1 in small_cache._ssd_layer(0).content[(1, 0)].values()
         assert len(eviction_legs) == 1
         assert eviction_legs[0].bottleneck == "SSD_LOCAL"
 
@@ -127,8 +127,8 @@ class TestCacheInsertion:
         # item1 was evicted to SSD and then deleted to make room for item2.
         assert (1, 0) not in small_cache._ssd_layer(0).content
         # item3 should be in RAM; item2 should be the SSD LRU.
-        assert item3 in small_cache._ram_layer(0).content[(3, 0)]
-        assert item2 in small_cache._ssd_layer(0).content[(2, 0)]
+        assert item3 in small_cache._ram_layer(0).content[(3, 0)].values()
+        assert item2 in small_cache._ssd_layer(0).content[(2, 0)].values()
 
 
 class TestCacheDownload:
@@ -175,7 +175,10 @@ class TestCacheDownload:
         ram_items = cache_with_fake_model.find_cache((1, 10))
         assert len(ram_items) == 1
         assert ram_items[0].last_access_tick > original_tick
-        assert old_item not in cache_with_fake_model._ram_layer(0).content[(1, 10)]
+        assert (
+            old_item
+            not in cache_with_fake_model._ram_layer(0).content[(1, 10)].values()
+        )
 
     def test_download_from_ram_remote(self, cache_with_fake_model: Cache):
         req = Request(128, 8, user_id=1, session_id=11)
@@ -209,7 +212,7 @@ class TestCacheDownload:
         # Node 0 SSD has 0-100.
         ssd_item = CacheItem((1, 30), 0, 100)
         ssd_layer = cache_with_fake_model._ssd_layer(0)
-        ssd_layer.content.setdefault((1, 30), []).append(ssd_item)
+        ssd_layer.content.setdefault((1, 30), {})[(0, 100)] = ssd_item
         cache_with_fake_model.ssd_usage_bytes[0] += cache_with_fake_model._item_size(
             ssd_item
         )
@@ -233,7 +236,9 @@ class TestCacheDownload:
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 200
         # Remote source copy is retained.
-        remote_items = cache_with_fake_model._ram_layer(1).content.get((1, 30), [])
+        remote_items = (
+            cache_with_fake_model._ram_layer(1).content.get((1, 30), {}).values()
+        )
         assert any(
             item.session_id == (1, 30)
             and item.token_start == 100
@@ -271,7 +276,7 @@ class TestCacheDownload:
         item99 = next(
             item
             for items in small_cache._ram_layer(0).content.values()
-            for item in items
+            for item in items.values()
             if item.session_id == (99, 0)
         )
         small_cache.delete_item(item99)
@@ -310,7 +315,7 @@ class TestCacheS3:
         s3_items = [
             item
             for items in cache._s3_layer().content.values()
-            for item in items
+            for item in items.values()
             if item.session_id == (1, 40)
         ]
         assert len(s3_items) == 1
@@ -332,7 +337,7 @@ class TestCacheS3:
         req = Request(512, 8, user_id=1, session_id=42)
         # Place a copy only in S3.
         s3_layer = cache._s3_layer()
-        s3_layer.content.setdefault((1, 42), []).append(CacheItem((1, 42), 0, 512))
+        s3_layer.content.setdefault((1, 42), {})[(0, 512)] = CacheItem((1, 42), 0, 512)
 
         dr = cache.download_kv(0, req)
         assert [bottleneck_names([track]) for track in dr.tracks] == [["S3_DOWNLOAD"]]
@@ -419,7 +424,7 @@ class TestCacheS3:
         cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
         cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
 
-        s3_item = cache._s3_layer().content[(1, 40)][0]
+        s3_item = next(iter(cache._s3_layer().content[(1, 40)].values()))
         # The upload happened at t=0, so the item should be fresh then.
         assert s3_item.last_access_ms == clock.time_ms
 
@@ -457,7 +462,7 @@ class TestCacheS3:
         req = Request(512, 8, user_id=1, session_id=40)
         cache.download_kv(0, req)
 
-        s3_item = cache._s3_layer().content[(1, 40)][0]
+        s3_item = next(iter(cache._s3_layer().content[(1, 40)].values()))
         assert s3_item.last_access_ms == clock.time_ms
 
         # Advance further; the refreshed item should still be alive.
@@ -531,7 +536,7 @@ class TestCacheS3:
         # Advance well into the eviction window, then re-touch the S3 copy
         # directly. This resets its age.
         clock.advance(eviction_window_ms * 1.5)
-        s3_item = cache._s3_layer().content[(1, 40)][0]
+        s3_item = next(iter(cache._s3_layer().content[(1, 40)].values()))
         cache._touch(s3_item, cache._s3_layer())
 
         # Advance past the original upload time, but less than the eviction
@@ -571,8 +576,8 @@ class TestCacheLRU:
 
         # item2 should have been evicted because it was LRU; item1 stays in RAM
         # because it was touched after item2 and item3 were inserted.
-        assert item2 in medium_cache._ssd_layer(0).content[(2, 0)]
-        assert item1 in medium_cache._ram_layer(0).content[(1, 0)]
+        assert item2 in medium_cache._ssd_layer(0).content[(2, 0)].values()
+        assert item1 in medium_cache._ram_layer(0).content[(1, 0)].values()
 
 
 class TestCacheByteCounters:

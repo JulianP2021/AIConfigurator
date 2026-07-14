@@ -9,7 +9,7 @@ from src.cache.cache import Cache
 # )
 from src.eroors.errors import DecodeError
 from src.hardware.hardware import GPUHardwareSpec
-from src.logger import LOG_INSTANCE, log
+from src.logger import LOG_INSTANCE, log, should_log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, UploadRequest
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
@@ -87,11 +87,12 @@ class DecodeInstance:
         now = self._global_time_ms()
         request.decode_download_start_ms = now
         dt = self.cache.download_kv(self.node_id, request)
-        log(
-            LOG_INSTANCE,
-            f"Adding request {request.id} to decode instance {self.node_id}, "
-            f"with {dt.remaining_bytes} bytes to download across {len(dt.tracks)} tracks",
-        )
+        if should_log(LOG_INSTANCE):
+            log(
+                LOG_INSTANCE,
+                f"Adding request {request.id} to decode instance {self.node_id}, "
+                f"with {dt.remaining_bytes} bytes to download across {len(dt.tracks)} tracks",
+            )
         if dt.active_legs:
             self.scheduler.register(dt)
             self.download_queue.append((dt, -1))
@@ -102,6 +103,8 @@ class DecodeInstance:
                 request.decode_start_ms = now
             self.queue.append((request, -1))
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
+            # New arrivals cannot join a frozen batch mid-token; the current
+            # batch remains valid until the next token boundary.
 
     def _ensure_batch(self) -> None:
         """Freeze a new batch from the head of the queue when none is active."""

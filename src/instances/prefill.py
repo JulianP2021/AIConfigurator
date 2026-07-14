@@ -9,7 +9,7 @@ from src.cache.cache import Cache
 # )
 from src.eroors.errors import PrefillError
 from src.hardware.hardware import GPUHardwareSpec
-from src.logger import LOG_INSTANCE, log
+from src.logger import LOG_INSTANCE, log, should_log
 from src.model.model import Model
 from src.request.request import DownloadRequest, Request, UploadRequest
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
@@ -133,11 +133,12 @@ class PrefillInstance:
         assert time_ms >= 0, "Time to process queue should be non-negative"
 
         now = self._global_time_ms()
-        log(
-            LOG_INSTANCE,
-            f"[t={now:.3f} ms] Processing prefill queue for node {self.node_id} "
-            f"with time_ms: {time_ms}",
-        )
+        if should_log(LOG_INSTANCE):
+            log(
+                LOG_INSTANCE,
+                f"[t={now:.3f} ms] Processing prefill queue for node {self.node_id} "
+                f"with time_ms: {time_ms}",
+            )
 
         finished_requests: list[Request] = []
 
@@ -198,11 +199,12 @@ class PrefillInstance:
                 request.prefilled_tokens += request.remaining_tokens_prefill
                 request.decoded_tokens = 1
                 request.prefill_end_ms = now
-                log(
-                    LOG_INSTANCE,
-                    f"[t={now:.3f} ms] Finished prefill for request with id: "
-                    f"{request.id}",
-                )
+                if should_log(LOG_INSTANCE):
+                    log(
+                        LOG_INSTANCE,
+                        f"[t={now:.3f} ms] Finished prefill for request with id: "
+                        f"{request.id}",
+                    )
                 self.queue.pop(0)
                 ur = self.cache.upload_kv(self.node_id, request)
                 assert ur.active_legs, (

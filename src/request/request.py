@@ -88,6 +88,7 @@ class _MultiTrackTransfer:
         self.request = request
         self.tracks = tracks
         self.current_legs = [0] * len(tracks)
+        self._cached_active_legs: list[TransferLeg] | None = None
         self._skip_zero_legs()
 
     def _skip_zero_legs(self) -> None:
@@ -99,15 +100,21 @@ class _MultiTrackTransfer:
                 <= 0
             ):
                 self.current_legs[track_idx] += 1
+        self._invalidate_active_legs_cache()
 
     @property
     def active_legs(self) -> list[TransferLeg]:
         """All currently active legs, one per non-exhausted track."""
-        return [
-            self.tracks[track_idx][self.current_legs[track_idx]]
-            for track_idx in range(len(self.tracks))
-            if self.current_legs[track_idx] < len(self.tracks[track_idx])
-        ]
+        if self._cached_active_legs is None:
+            self._cached_active_legs = [
+                self.tracks[track_idx][self.current_legs[track_idx]]
+                for track_idx in range(len(self.tracks))
+                if self.current_legs[track_idx] < len(self.tracks[track_idx])
+            ]
+        return self._cached_active_legs
+
+    def _invalidate_active_legs_cache(self) -> None:
+        self._cached_active_legs = None
 
     @property
     def remaining_bytes(self) -> int:
@@ -126,6 +133,7 @@ class _MultiTrackTransfer:
             <= 0
         ):
             self.current_legs[track_idx] += 1
+        self._invalidate_active_legs_cache()
         return self.current_legs[track_idx] < len(self.tracks[track_idx])
 
     def is_complete(self) -> bool:

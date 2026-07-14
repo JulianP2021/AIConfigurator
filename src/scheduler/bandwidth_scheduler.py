@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Any
 
 from src.hardware.hardware import HardwareSpec, S3Spec
-from src.logger import LOG_BANDWIDTH, log
+from src.logger import LOG_BANDWIDTH, log, should_log
 from src.request.request import DownloadRequest, UploadRequest
 from src.scheduler.global_clock import GlobalClock
 
@@ -187,7 +187,6 @@ class BandwidthScheduler:
         completed only once every track has been exhausted.
         """
         self.clock.advance(time_ms)
-        self.update_shares()
         completed: list[DownloadRequest | UploadRequest] = []
 
         # Snapshot the list because register/unregister mutate ``self.transfers``.
@@ -206,21 +205,23 @@ class BandwidthScheduler:
                     leg.remaining_latency_ms -= time_ms
                     if leg.remaining_latency_ms < 0:
                         leg.remaining_latency_ms = 0.0
-                    log(
-                        LOG_BANDWIDTH,
-                        f"Transfer for request {transfer.request.id} on leg {leg.bottleneck} "
-                        f"(track {track_idx}) latency advanced by {time_ms:.3f} ms, "
-                        f"remaining_latency={leg.remaining_latency_ms:.3f} ms",
-                    )
+                    if should_log(LOG_BANDWIDTH):
+                        log(
+                            LOG_BANDWIDTH,
+                            f"Transfer for request {transfer.request.id} on leg {leg.bottleneck} "
+                            f"(track {track_idx}) latency advanced by {time_ms:.3f} ms, "
+                            f"remaining_latency={leg.remaining_latency_ms:.3f} ms",
+                        )
                 else:
-                    log(
-                        LOG_BANDWIDTH,
-                        f"Transfer for request {transfer.request.id} on leg {leg.bottleneck} "
-                        f"(track {track_idx}) advanced by {time_ms:.3f} ms, "
-                        f"Bandwidth={leg.bandwidth_bytes_per_ms:.3f} B/ms, "
-                        f"remaining_bytes={leg.remaining_bytes:.3f}, "
-                        f"transfering {leg.bandwidth_bytes_per_ms * time_ms:.3f} bytes",
-                    )
+                    if should_log(LOG_BANDWIDTH):
+                        log(
+                            LOG_BANDWIDTH,
+                            f"Transfer for request {transfer.request.id} on leg {leg.bottleneck} "
+                            f"(track {track_idx}) advanced by {time_ms:.3f} ms, "
+                            f"Bandwidth={leg.bandwidth_bytes_per_ms:.3f} B/ms, "
+                            f"remaining_bytes={leg.remaining_bytes:.3f}, "
+                            f"transfering {leg.bandwidth_bytes_per_ms * time_ms:.3f} bytes",
+                        )
                     leg.remaining_bytes -= leg.bandwidth_bytes_per_ms * time_ms
                 # Credit the leg with scheduler-processed time regardless of
                 # whether this step consumed latency or bytes.  This is the

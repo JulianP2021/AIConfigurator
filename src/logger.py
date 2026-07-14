@@ -88,6 +88,14 @@ def get_log_mask() -> int:
     return _log_mask
 
 
+def should_log(component: int, level: int = logging.DEBUG) -> bool:
+    """Return True if messages for ``component`` at ``level`` would be emitted.
+
+    Use this to guard expensive log message construction in hot paths.
+    """
+    return bool(component & _log_mask and level >= _min_level)
+
+
 def is_debug() -> bool:
     """Return whether debug logging is enabled for all components."""
     return _min_level <= logging.DEBUG and _log_mask == LOG_ALL

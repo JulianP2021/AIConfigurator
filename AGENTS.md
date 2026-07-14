@@ -223,6 +223,83 @@ Covered areas:
   configs can be invalidated.
 - The config file may also set `"timeout_s": 300.0`; the CLI flag overrides it.
 
+## Performance Optimization Backlog
+
+This list captures the optimizations already applied and the remaining candidates, ordered by expected impact and risk.
+
+### Applied
+
+- Converted `CacheLayer.content` from `dict[session_id, list[CacheItem]]` to `dict[session_id, dict[(start, end), CacheItem]]` for O(1) item lookup/removal.
+- Removed the redundant `update_shares()` call in `BandwidthScheduler.advance_time()` because `next_event_ms()` always computes shares before advancing.
+- Cached `active_legs` on `_MultiTrackTransfer` and invalidated it when `current_legs` changes.
+- Added `CacheItem.layer` back-pointer for O(1) `find_cache_layer()`.
+- Updated `CacheLayer._lru_heap` entries to carry `session_id` so `pop_lru()` can locate the target bucket directly.
+
+### Still possible, ordered by impact / risk
+
+#### High impact, low risk
+
+1. Maintain per-session/per-node prefix index for routing.
+   - `_find_download_segments`, `_overlap_credit`, and `cached_prefix_on_node` currently scan all cache items across all layers.
+   - Maintain an index mapping `(session_id, node_id)` → cached prefix length and segment breakdown, updated incrementally on insert/delete/evict.
+   - This is the single biggest remaining win; routing is a large fraction of runtime in large scenarios.
+
+2. Maintain active-token counters in the router.
+   - `_active_prefill_tokens`, `_active_decode_tokens`, `_active_prefill_tokens_for_instance` currently loop over instance queues on every routing decision.
+   - Update counters on `add_request`, download drain, and finished-request removal.
+
+3. Cache the decode frozen batch.
+   - `decode._ensure_batch()` rebuilds `current_batch` from `self.queue[:max_batch_size]` every call.
+   - Cache it and invalidate only when the queue changes state (new arrival, batch token done).
+
+#### Medium impact, low/medium risk
+
+4. Use `__slots__` on hot objects.
+   - `Request`, `CacheItem`, `TransferLeg`, and friends are created by the thousands.
+   - `__slots__` reduces memory pressure and attribute access overhead.
+
+5. Avoid repeated `min([...] + [float('inf')])` in the event loop.
+   - `compute_event_ms = min([...] + [float('inf')])` allocates a new list every iteration.
+   - Use `min(..., default=float('inf'))` or iterate manually.
+
+6. Guard more `log()` calls.
+   - The hottest paths are already guarded with `should_log()`; there are still many `log(LOG_*, ...)` calls in `cache.py`, `router.py`, and `decode.py` that could be guarded.
+
+#### High impact, higher risk / more work
+
+7. Per-session prefix index across the whole cache.
+   - Extends idea #1 globally: keep a per-session prefix map instead of scanning items for every routing/download decision.
+   - Requires careful updates on every cache mutation.
+
+8. Batch stride improvements.
+   - The decode loop already strides when per-token time is stable. Verify it triggers as often as possible; if not, increase max stride or detect stable time more aggressively.
+
+9. Replace analytical FLOPs/memory model with a cheaper approximation.
+   - `calculate_flops` / `calculate_memory` are called for every prefill/decode time computation.
+   - Already relatively cheap, but can dominate very large runs.
+   - Could memoize by `(model, tokens_to_process, cache_len)`.
+
+#### Not recommended
+
+10. Worker pool inside `simulate_run_distributed`.
+    - The simulator has a single global clock and shared mutable state. Parallelizing per-instance work would require locks and likely be slower.
+
+11. Numpy for core event-loop data structures.
+    - `Request`, `TransferLeg`, `CacheItem` are heterogeneous objects. Numpy would force boxing/unboxing and hurt performance.
+
+12. Cython / Numba.
+    - Could help for the analytical FLOPs model or final metrics, but adds build complexity. Only worth it if profiling shows those are the final bottlenecks after the algorithmic fixes above.
+
+### Recommended next steps
+
+If continuing optimization work, prefer this order:
+
+1. Per-session/per-node prefix index for routing (#1 above).
+2. Router active-token counters (#2).
+3. Cache decode frozen batch (#3).
+4. `__slots__` on hot objects (#4).
+5. Guard remaining log calls and micro-optimizations (#5, #6).
+
 ## Contact / Ownership
 
 This is a research simulator. When in doubt, keep the model simple, add focused logging, and avoid silent failures.
