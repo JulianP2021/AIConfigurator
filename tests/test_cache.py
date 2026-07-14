@@ -263,6 +263,36 @@ class TestCacheDownload:
         assert local_items[0].token_start == 0
         assert local_items[0].token_end == 200
 
+    def test_download_uses_remote_item_with_shared_start(
+        self, cache_with_fake_model: Cache
+    ):
+        """Remote items with the same token_start must not collide in the covering index.
+
+        Regression: the remote/S3 covering index used token_start as the
+        SortedDict key, so two remote items starting at 0 (e.g. [0, 30001] and
+        [0, 62000]) overwrote each other.  The download resolver then stopped
+        at the shorter range and failed to fetch the rest of the prefix.
+        """
+        req = Request(94000, 8, user_id=1, session_id=32)
+        # Node 0 has a short prefix [0, 100].
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 0, 100), 0)
+        # Node 1 has [0, 200] and [200, 400] -- both start at the same key as
+        # other remote items but extend further.
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 0, 200), 1)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 200, 400), 1)
+
+        dr = cache_with_fake_model.download_kv(0, req)
+        # Should fetch [100, 200] and [200, 400] from node 1 in two segments.
+        assert [bottleneck_names([track]) for track in dr.tracks] == [
+            ["NETWORK", "RAM_LOCAL"],
+            ["NETWORK", "RAM_LOCAL"],
+        ]
+
+        local_items = cache_with_fake_model.find_cache((1, 32), node_id=0)
+        assert len(local_items) == 1
+        assert local_items[0].token_start == 0
+        assert local_items[0].token_end == 400
+
     def test_download_merges_local_ssd_and_remote_ssd(self, small_cache: Cache):
         req = Request(512, 8, user_id=1, session_id=33)
         # Node 0 SSD has 0-256 (insert then evict to SSD).
