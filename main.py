@@ -24,7 +24,7 @@ from src.hardware.hardware import GPUHardwareSpec, Hardware, S3Spec
 from src.hardware.mixed_gpu import fetch_mixed_gpu_hardware
 from src.hardware.scraper import (
     fetch_machine_hardware,
-    load_machine_db,
+    load_combined_machine_db,
     resolve_machine_name,
 )
 from src.logger import set_debug, set_log_mask
@@ -115,7 +115,7 @@ def main():
                 donor_hw_name,
                 mixed_gpu_count,
             )
-            donor_gpu_name = load_machine_db()[donor_hw_name]["gpu_name"]
+            donor_gpu_name = load_combined_machine_db()[donor_hw_name]["gpu_name"]
             from src.hardware.scraper import lookup as lookup_gpu
 
             donor_gpu_config = lookup_gpu(donor_gpu_name)

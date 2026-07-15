@@ -321,6 +321,149 @@ def lookup(gpu_name: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _MACHINE_DB_PATH = pathlib.Path(__file__).parent / "_machine_db.json"
+_CUSTOM_HARDWARE_PATH = pathlib.Path(__file__).parent / "_custom_hardware.json"
+
+
+def load_custom_hardware_db(
+    path: pathlib.Path | str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load user-supplied custom hardware definitions.
+
+    The file is a JSON object with two top-level keys:
+
+    * ``_pricing`` (optional): global unit prices used to derive hourly cost
+      for custom machines.
+
+      * ``cpu_ram_usd_per_gb_hour`` USD per GB of CPU RAM per hour.
+      * ``ssd_usd_per_gb_hour`` USD per GB of SSD storage per hour.
+      * ``inet_up_usd_per_gb_hour`` USD per GB/hour of internet upload
+        bandwidth.
+      * ``inet_down_usd_per_gb_hour`` USD per GB/hour of internet download
+        bandwidth.
+      * ``inter_node_up_usd_per_gb_hour`` USD per GB/hour of datacenter NIC
+        upload bandwidth.
+      * ``inter_node_down_usd_per_gb_hour`` USD per GB/hour of datacenter NIC
+        download bandwidth.
+      * ``pcie_usd_per_gb_hour`` USD per GB/hour of PCIe bandwidth.
+
+    * ``machines``: mapping of hardware names to config dicts.  Each config
+      must provide ``gpu_name`` so the GPU spec can be resolved from the cached
+      GPU database, plus a ``gpu_price_usd_per_hour`` for that specific machine.
+      Any remaining field is filled with safe defaults.
+
+    Any field absent in a machine config is filled with sensible defaults
+    before being passed to :func:`fetch_machine_hardware`.
+
+    Parameters
+    ----------
+    path:
+        Path to the custom hardware JSON file.  If ``None``, the default
+        ``src/hardware/_custom_hardware.json`` is used.
+
+    Returns:
+    -------
+    Tuple ``(pricing, machines)`` where ``pricing`` is the pricing dict (or
+    empty) and ``machines`` is a name -> config dict.  When the file does not
+    exist, ``({}, {})`` is returned.
+    """
+    target = pathlib.Path(path) if path is not None else _CUSTOM_HARDWARE_PATH
+    if not target.exists():
+        return {}, {}
+    data = json.loads(target.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"Custom hardware file {target} must contain a JSON object")
+
+    pricing = data.get("_pricing", {})
+    if not isinstance(pricing, dict):
+        raise ValueError(
+            f"Custom hardware file {target}: '_pricing' must be a JSON object"
+        )
+
+    raw_machines = data.get("machines", {})
+    if not isinstance(raw_machines, dict):
+        raise ValueError(
+            f"Custom hardware file {target}: 'machines' must be a JSON object mapping names to configs"
+        )
+
+    # Normalise each entry: ensure a name key exists.
+    normalized: dict[str, dict[str, Any]] = {}
+    for name, config in raw_machines.items():
+        if not isinstance(config, dict):
+            raise ValueError(
+                f"Custom hardware entry {name!r} in {target} must be a JSON object"
+            )
+        if "name" not in config:
+            config = {**config, "name": name}
+        normalized[name] = config
+    return pricing, normalized
+
+
+def _default_custom_hardware_path() -> pathlib.Path:
+    """Return the default location for the custom hardware file."""
+    return _CUSTOM_HARDWARE_PATH
+
+
+# Per-byte / per-second constants used for unit-price cost derivation.
+_GB = 1024**3
+_HOUR_S = 3600.0
+
+
+def _derive_custom_price(
+    config: dict[str, Any],
+    pricing: dict[str, float],
+) -> float:
+    """Derive an hourly price for a custom machine from unit prices.
+
+    The price is the sum of:
+
+    * ``gpu_price_usd_per_hour`` (machine-specific, required in the config)
+    * CPU RAM: ``cpu_ram`` bytes * ``cpu_ram_usd_per_gb_hour`` / GB
+    * SSD: ``nvme_mem`` bytes * ``ssd_usd_per_gb_hour`` / GB
+    * Internet upload/download: respective bandwidths (bytes/s) converted to
+      GB/hour and multiplied by the corresponding unit prices.
+    * Inter-node upload/download: same conversion.
+    * PCIe: ``pcie_bw`` (bytes/s) converted to GB/hour.
+
+    Parameters
+    ----------
+    config:
+        A machine config dict (already normalised/merged with defaults).
+    pricing:
+        The ``_pricing`` dict from the custom hardware file.
+
+    Returns:
+    -------
+    Hourly price in USD.
+    """
+    gpu_price = float(config.get("gpu_price_usd_per_hour", 0.0))
+
+    def unit(key: str) -> float:
+        return float(pricing.get(key, 0.0))
+
+    def bytes_to_gb_h(val: float) -> float:
+        return float(val) / _GB * _HOUR_S
+
+    cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
+    ssd_gb = float(config.get("nvme_mem", 0)) / _GB
+
+    price = gpu_price
+    price += cpu_ram_gb * unit("cpu_ram_usd_per_gb_hour")
+    price += ssd_gb * unit("ssd_usd_per_gb_hour")
+    price += bytes_to_gb_h(config.get("network_inet_up", 0)) * unit(
+        "inet_up_usd_per_gb_hour"
+    )
+    price += bytes_to_gb_h(config.get("network_inet_down", 0)) * unit(
+        "inet_down_usd_per_gb_hour"
+    )
+    price += bytes_to_gb_h(config.get("network_inter_node_up", 0)) * unit(
+        "inter_node_up_usd_per_gb_hour"
+    )
+    price += bytes_to_gb_h(config.get("network_inter_node_down", 0)) * unit(
+        "inter_node_down_usd_per_gb_hour"
+    )
+    price += bytes_to_gb_h(config.get("pcie_bw", 0)) * unit("pcie_usd_per_gb_hour")
+
+    return price
 
 
 def _make_machine_name(offer: dict[str, Any]) -> str:
@@ -354,8 +497,7 @@ def _extract_machine(offer: dict[str, Any]) -> dict[str, Any]:
         "disk_name": offer.get("disk_name", ""),
         "dlperf": offer.get("dlperf", 0.0),
         "dlperf_per_dphtotal": offer.get("dlperf_per_dphtotal", 0.0),
-        "dph_base": offer.get("dph_base", 0.0),
-        "dph_total": offer.get("dph_total", 0.0),
+        "dph_base": offer.get("dph_total", 0.0),
         "geolocation": offer.get("geolocation", ""),
         "gpu_display_active": offer.get("gpu_display_active", False),
         "gpu_frac": offer.get("gpu_frac", 1.0),
@@ -421,15 +563,36 @@ def parse_gpu_count(machine_name: str) -> int:
     return 1
 
 
-def resolve_machine_name(machine_name: str) -> str:
+def load_combined_machine_db(
+    custom_path: pathlib.Path | str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return machine database with custom hardware entries merged in.
+
+    Custom hardware (from :func:`load_custom_hardware_db`) takes precedence
+    over entries in ``_machine_db.json``.  This lets users define local
+    hardware presets without modifying the scraped database.
+    """
+    db = load_machine_db()
+    _, custom = load_custom_hardware_db(custom_path)
+    if custom:
+        db = {**db, **custom}
+    return db
+
+
+def resolve_machine_name(
+    machine_name: str, custom_path: pathlib.Path | str | None = None
+) -> str:
     """Resolve ``machine_name`` to an exact machine key from the local cache.
 
     * If ``machine_name`` is already an exact key, return it unchanged.
     * Otherwise search entries whose ``gpu_name`` contains ``machine_name`` as a
       case-insensitive substring.  A single match is returned; zero or multiple
       matches raise ``ValueError`` with helpful context.
+
+    Custom hardware entries are consulted first so user-defined presets take
+    precedence over the scraped database.
     """
-    db = load_machine_db()
+    db = load_combined_machine_db(custom_path)
     if machine_name in db:
         return machine_name
 
@@ -451,9 +614,11 @@ def resolve_machine_name(machine_name: str) -> str:
     return matches[0]
 
 
-def lookup_machine(machine_name: str) -> dict[str, Any]:
-    """Return cached machine config from ``_machine_db.json``."""
-    db = load_machine_db()
+def lookup_machine(
+    machine_name: str, custom_path: pathlib.Path | str | None = None
+) -> dict[str, Any]:
+    """Return cached machine config, checking custom hardware first."""
+    db = load_combined_machine_db(custom_path)
     try:
         return db[machine_name]
     except KeyError:
@@ -461,29 +626,104 @@ def lookup_machine(machine_name: str) -> dict[str, Any]:
         raise KeyError(msg) from None
 
 
+def _machine_config_with_defaults(
+    config: dict[str, Any],
+    pricing: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Fill missing machine-config fields with safe defaults.
+
+    Custom hardware entries only need to specify the values that matter for
+    simulation; everything else is zeroed or defaulted so ``HardwareSpec``
+    construction still succeeds.
+
+    For custom entries (those without a scraped ``dph_base``), if a pricing
+    dict is supplied the hourly price is derived from unit prices and the
+    machine's resources and written into ``dph_base``.
+    """
+    defaults: dict[str, Any] = {
+        "cpu_cores": 0,
+        "cpu_cores_effective": 0.0,
+        "cpu_ghz": 0.0,
+        "cpu_name": "",
+        "disk_name": "",
+        "dlperf": 0.0,
+        "dlperf_per_dphtotal": 0.0,
+        "dph_base": 0.0,
+        "geolocation": "",
+        "gpu_display_active": False,
+        "gpu_frac": 1.0,
+        "gpu_lanes": 0,
+        "gpu_max_power": 0.0,
+        "gpu_max_temp": 0.0,
+        "has_avx": 0,
+        "host_id": 0,
+        "inet_down_cost": 0.0,
+        "inet_up_cost": 0.0,
+        "mobo_name": "",
+        "os_version": "",
+        "pci_gen": 0.0,
+        "network_bw": 0.0,
+        "reliability": 0.0,
+        "reliability_mult": 0.0,
+        "score": 0.0,
+        "storage_cost": 0.0,
+        "storage_total_cost": 0.0,
+        "verification": "",
+    }
+    merged = {**defaults, **config}
+    # Fields that must exist and cannot be defaulted.
+    for required in (
+        "name",
+        "gpu_name",
+        "num_gpus",
+        "nvme_mem",
+        "nvme_bw",
+        "network_inet_up",
+        "network_inet_down",
+        "pcie_bw",
+        "cpu_ram",
+    ):
+        if required not in merged or merged[required] is None:
+            raise ValueError(
+                f"Custom hardware {merged.get('name', config)!r} is missing required field {required!r}"
+            )
+
+    # Derive price for custom entries when pricing metadata is provided.
+    if pricing and not merged.get("dph_base"):
+        merged["dph_base"] = _derive_custom_price(merged, pricing)
+
+    return merged
+
+
 def fetch_machine_hardware(
     machine_name: str,
     machine_config_override: dict[str, Any] | None = None,
+    custom_path: pathlib.Path | str | None = None,
 ) -> Hardware:
     """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache.
 
     Parameters
     ----------
     machine_name:
-        Exact key in ``_machine_db.json``.
+        Exact key in ``_machine_db.json`` or a key in the custom hardware file.
     machine_config_override:
         Optional machine config dict to use instead of looking up
         ``machine_name`` in the database.  This allows callers such as
         ``mixed_gpu`` to inject a modified config while still using the
         normal GPU lookup and bandwidth-resolution logic.
+    custom_path:
+        Optional path to a custom hardware JSON file.  When provided, custom
+        entries are looked up before the scraped machine database.
     """
     from .hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
-    scraped = (
-        machine_config_override
-        if machine_config_override is not None
-        else lookup_machine(machine_name)
-    )
+    pricing, _ = load_custom_hardware_db(custom_path)
+    if machine_config_override is not None:
+        scraped = _machine_config_with_defaults(machine_config_override, pricing)
+    else:
+        scraped = _machine_config_with_defaults(
+            lookup_machine(machine_name, custom_path), pricing
+        )
     gpu = lookup(scraped["gpu_name"])
     if not gpu:
         gpu = _fetch_specs(scraped["gpu_name"])
@@ -527,7 +767,6 @@ def fetch_machine_hardware(
         dlperf=scraped.get("dlperf", 0.0),
         dlperf_per_dphtotal=scraped.get("dlperf_per_dphtotal", 0.0),
         dph_base=scraped.get("dph_base", 0.0),
-        dph_total=scraped.get("dph_total", 0.0),
         geolocation=scraped.get("geolocation", ""),
         gpu_display_active=scraped.get("gpu_display_active", False),
         gpu_frac=scraped.get("gpu_frac", 1.0),

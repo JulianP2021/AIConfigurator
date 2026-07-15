@@ -330,8 +330,8 @@ class DecodeInstance:
         return finished_requests
 
     def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> int:
-        flops = calculate_flops(self.model, [req for req, _ in batch], "decode")
-        memory = calculate_memory(self.model, [req for req, _ in batch], "decode")
+        flops = calculate_flops(self.model, batch, "decode")
+        memory = calculate_memory(self.model, batch, "decode")
 
         time_ms: int = int(
             max(

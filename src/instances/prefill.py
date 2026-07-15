@@ -222,8 +222,8 @@ class PrefillInstance:
         return finished_requests
 
     def calculate_prefill_time(self, request: Request) -> int:
-        flops = calculate_flops(self.model, [request], "prefill")
-        memory = calculate_memory(self.model, [request], "prefill")
+        flops = calculate_flops(self.model, [(request, 0)], "prefill")
+        memory = calculate_memory(self.model, [(request, 0)], "prefill")
 
         time_ms: int = int(
             max(

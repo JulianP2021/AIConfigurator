@@ -12,17 +12,20 @@ import copy
 from typing import Any
 
 from src.hardware.hardware import Hardware
-from src.hardware.scraper import fetch_machine_hardware, load_machine_db
+from src.hardware.scraper import (
+    fetch_machine_hardware,
+    load_combined_machine_db,
+)
 
 
 def _per_gpu_compute_price(
     machine_name: str, compute_price_fraction: float = 0.6
 ) -> float:
     """Return the compute-only hourly price per GPU for a machine."""
-    db = load_machine_db()
+    db = load_combined_machine_db()
     config = db[machine_name]
     total_gpus = int(config.get("num_gpus", 1))
-    compute_only_price = float(config.get("dph_total", 0.0)) * compute_price_fraction
+    compute_only_price = float(config.get("dph_base", 0.0)) * compute_price_fraction
     return compute_only_price / total_gpus if total_gpus > 0 else 0.0
 
 
@@ -52,14 +55,14 @@ def adjust_price_for_gpu_mix(
     donor_gpus_to_add:
         Number of donor GPUs to add.
     compute_price_fraction:
-        Fraction of ``dph_total`` attributed to compute when deriving the
+        Fraction of ``dph_base`` attributed to compute when deriving the
         per-GPU compute price.
 
     Returns:
     -------
     ``(new_price_per_hour, breakdown_dict)``.
     """
-    db = load_machine_db()
+    db = load_combined_machine_db()
     base_config = db[base_machine_name]
 
     base_total_gpus = int(base_config.get("num_gpus", 1))
@@ -73,7 +76,7 @@ def adjust_price_for_gpu_mix(
     base_gpu_price = _per_gpu_compute_price(base_machine_name, compute_price_fraction)
     donor_gpu_price = _per_gpu_compute_price(donor_machine_name, compute_price_fraction)
 
-    base_full_price = float(base_config.get("dph_total", 0.0))
+    base_full_price = float(base_config.get("dph_base", 0.0))
     new_price = (
         base_full_price
         - base_gpu_price * base_gpus_removed
@@ -116,12 +119,11 @@ def fetch_mixed_gpu_hardware(
         compute_price_fraction=compute_price_fraction,
     )
 
-    db = load_machine_db()
+    db = load_combined_machine_db()
     base_config = copy.deepcopy(db[base_machine_name])
     total_gpus = base_gpus_to_keep + donor_gpus_to_add
 
     base_config["num_gpus"] = total_gpus
-    base_config["dph_total"] = new_price
     base_config["dph_base"] = new_price
     base_config["name"] = (
         f"{base_machine_name} + {donor_gpus_to_add}x {donor_machine_name}"

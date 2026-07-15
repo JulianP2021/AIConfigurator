@@ -220,7 +220,6 @@ class TestSchedulerCreditsProcessedTime:
             dlperf=1.0,
             dlperf_per_dphtotal=1.0,
             dph_base=1.0,
-            dph_total=1.0,
             geolocation="",
             gpu_display_active=False,
             gpu_frac=1.0,

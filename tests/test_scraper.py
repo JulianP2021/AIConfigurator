@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 import pytest
 
-from src.hardware.scraper import resolve_machine_name
+from src.hardware.scraper import (
+    fetch_machine_hardware,
+    resolve_machine_name,
+)
 
 
 @pytest.fixture
@@ -88,3 +91,57 @@ def test_resolve_exact_key_takes_precedence_over_substring(fake_machine_db):
             resolve_machine_name("ExactMatchGPU x1 #deadbeef")
             == "ExactMatchGPU x1 #deadbeef"
         )
+
+
+def test_custom_hardware_takes_precedence_over_machine_db(fake_machine_db):
+    """Custom hardware entries are resolved before scraped machine entries."""
+    custom = {
+        "Custom A100 x2": {
+            "name": "Custom A100 x2",
+            "gpu_name": "A100_SXM4",
+            "num_gpus": 2,
+            "nvme_mem": 1_000_000_000_000,
+            "nvme_bw": 10_000_000_000,
+            "network_inet_up": 1_000_000_000,
+            "network_inet_down": 1_000_000_000,
+            "pcie_bw": 32_000_000_000,
+            "cpu_ram": 256_000_000_000,
+        }
+    }
+    with (
+        patch("src.hardware.scraper.load_machine_db", return_value=fake_machine_db),
+        patch(
+            "src.hardware.scraper.load_gpu_db",
+            return_value={
+                "A100_SXM4": {"flops": 312e12, "gpu_mem": 80e9, "gpu_bw": 2e12},
+            },
+        ),
+        patch(
+            "src.hardware.scraper.load_custom_hardware_db", return_value=({}, custom)
+        ),
+    ):
+        resolved = resolve_machine_name("Custom A100 x2")
+        assert resolved == "Custom A100 x2"
+        hw = fetch_machine_hardware("Custom A100 x2")
+        assert hw.spec.num_gpus == 2
+        assert hw.spec.nvme_mem == 1_000_000_000_000
+        assert hw.spec.cpu_ram == 256_000_000_000
+
+
+def test_custom_hardware_missing_required_field_raises(tmp_path, fake_machine_db):
+    """Custom entries must supply the fields needed for simulation."""
+    custom = {"BadGPU": {"gpu_name": "A100_SXM4", "num_gpus": 1}}
+    with (
+        patch("src.hardware.scraper.load_machine_db", return_value=fake_machine_db),
+        patch(
+            "src.hardware.scraper.load_gpu_db",
+            return_value={
+                "A100_SXM4": {"flops": 312e12, "gpu_mem": 80e9, "gpu_bw": 2e12},
+            },
+        ),
+        patch(
+            "src.hardware.scraper.load_custom_hardware_db", return_value=({}, custom)
+        ),
+        pytest.raises(ValueError, match="missing required field"),
+    ):
+        fetch_machine_hardware("BadGPU")

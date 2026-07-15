@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.hardware.hardware import S3Spec
 from src.hardware.scraper import (
     fetch_machine_hardware,
-    load_machine_db,
+    load_combined_machine_db,
     parse_gpu_count,
     resolve_machine_name,
 )
@@ -455,6 +455,14 @@ def _results_inner_html(
         # ---- Users-based ordered legend (only when results have users) ----
         if any("users" in row for row in results):
             html += '<div class="card"><h2>Configurations by Users</h2>'
+            html += '<div class="user-list"><h3>Mode colors</h3><ul>'
+            for mode, color in MODE_COLORS.items():
+                html += (
+                    f'<li><span class="legend-color" style="background:{color}"></span>'
+                    f"{mode.capitalize()}"
+                    f"</li>"
+                )
+            html += "</ul></div>"
             by_users: dict[int, list[dict[str, Any]]] = {}
             for row in results:
                 users = int(row.get("users", 0))
@@ -462,17 +470,25 @@ def _results_inner_html(
                     by_users.setdefault(users, []).append(row)
             for users in sorted(by_users):
                 html += f'<div class="user-list"><h3>Users = {users}</h3><ul>'
-                for row in sorted(
-                    by_users[users],
-                    key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
-                ):
-                    color = row.get("color", "#58a6ff")
-                    html += (
-                        f'<li><span class="legend-color" style="background:{color}"></span>'
-                        f"{row['label']} — ${row['total_cost_usd_per_hour']:.2f}/h"
-                        f"</li>"
+                # Show the top-5 cheapest configs *per mode* for this user count.
+                grouped_by_mode: dict[str, list[dict[str, Any]]] = {}
+                for row in by_users[users]:
+                    grouped_by_mode.setdefault(_mode_for_row(row), []).append(row)
+                displayed = 0
+                for mode in MODE_COLORS:
+                    mode_rows = sorted(
+                        grouped_by_mode.get(mode, []),
+                        key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
                     )
-                html += "</ul></div>"
+                    for row in mode_rows[:5]:
+                        color = row.get("color", MODE_COLORS.get(mode, "#58a6ff"))
+                        html += (
+                            f'<li><span class="legend-color" style="background:{color}"></span>'
+                            f"[{mode.capitalize()}] {row['label']} — ${row['total_cost_usd_per_hour']:.2f}/h"
+                            f"</li>"
+                        )
+                        displayed += 1
+                html += f"</ul><p style='color:var(--text-secondary);font-size:0.8rem;margin:0.25rem 0 0;'>Showing top 5 per mode ({displayed} total)</p></div>"
             html += "</div>\n"
 
         # ---- Debug toggle ----
@@ -677,35 +693,85 @@ def _build_users_cost_plot(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Generate a users-vs-cost line/scatter plot.
 
-    Returns the plot URL and the selected top-N rows that appear in the plot,
-    with stable colors assigned per config label.
+    The plot now shows *all* valid rows, colored by mode (separate, colocated,
+    mixed).  Labels are only shown for the 10 cheapest configurations per user
+    count, but every point is rendered.  A separate line connects the cheapest
+    configuration of each mode across user counts.
+
+    Returns the plot URL and the full set of valid rows, with each row's color
+    set to the mode color.
     """
-    selected = _top_n_per_user_count(rows, n=10)
+    valid_rows = [row for row in rows if not row.get("has_error")]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    # Group by label so each config traces a line across user counts.
-    by_label: dict[str, list[dict[str, Any]]] = {}
-    for row in selected:
-        by_label.setdefault(row["label"], []).append(row)
+    # Group all valid rows by user count for plotting and top-10 selection.
+    by_users: dict[int, list[dict[str, Any]]] = {}
+    for row in valid_rows:
+        users = int(row.get("users", 0))
+        if users > 0:
+            by_users.setdefault(users, []).append(row)
 
-    # Assign a stable color to each surviving config label.
-    labels = sorted(by_label.keys())
-    label_color = {label: COLORS[i % len(COLORS)] for i, label in enumerate(labels)}
+    fig, ax = plt.subplots(figsize=(12, 7))
 
-    for label, series in sorted(by_label.items()):
-        series = sorted(series, key=lambda r: r["users"])
-        xs = [r["users"] for r in series]
-        ys = [r["total_cost_usd_per_hour"] for r in series]
-        color = label_color[label]
-        for row in series:
+    # Draw all points per user count, colored by mode.
+    for users in sorted(by_users):
+        for row in by_users[users]:
+            color = _color_for_row(row)
             row["color"] = color
-        ax.plot(xs, ys, marker="o", color=color, linewidth=1.5)
+            ax.scatter(
+                row["users"],
+                row["total_cost_usd_per_hour"],
+                s=90,
+                color=color,
+                edgecolors="white",
+                linewidths=0.4,
+                zorder=3,
+            )
+
+    # Draw best-per-mode lines: for each mode and each user count, pick the
+    # cheapest valid row and connect them in ascending user-count order.
+    best_per_mode: dict[str, dict[int, dict[str, Any]]] = {
+        mode: {} for mode in MODE_COLORS
+    }
+    for row in valid_rows:
+        users = int(row.get("users", 0))
+        if users <= 0:
+            continue
+        mode = _mode_for_row(row)
+        cost = row.get("total_cost_usd_per_hour", float("inf"))
+        current_best = best_per_mode[mode].get(users)
+        if current_best is None or cost < current_best.get(
+            "total_cost_usd_per_hour", float("inf")
+        ):
+            best_per_mode[mode][users] = row
+
+    for mode, best_by_users in best_per_mode.items():
+        if not best_by_users:
+            continue
+        series = sorted(best_by_users.items(), key=lambda item: item[0])
+        xs = [u for u, _ in series]
+        ys = [r["total_cost_usd_per_hour"] for _, r in series]
+        color = MODE_COLORS[mode]
+        ax.plot(
+            xs,
+            ys,
+            color=color,
+            linewidth=2.5,
+            linestyle="--",
+            marker="s",
+            markersize=6,
+            markeredgecolor="white",
+            markeredgewidth=0.5,
+            alpha=0.85,
+            zorder=2,
+            label=f"Best {mode}",
+        )
 
     ax.set_xlabel("Users")
     ax.set_ylabel("Total cost ($/hour)")
-    ax.set_title("Top 10 cheapest configs per user count")
+    ax.set_title("Cost vs Users (all configs, top-10 labeled, best-per-mode line)")
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3, which="both", linestyle="--")
+    ax.legend(loc="upper left")
     plt.tight_layout()
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=150)
@@ -713,7 +779,7 @@ def _build_users_cost_plot(
     buf.seek(0)
     pid = str(uuid.uuid4())
     _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-    return f"/plot/{pid}", selected
+    return f"/plot/{pid}", valid_rows
 
 
 async def _run_configs_parallel(
@@ -778,6 +844,61 @@ COLORS = [
     "#db61a2",
     "#39c5cf",
 ]
+
+
+# Per-mode colors used for imported directory results.
+MODE_COLORS = {
+    "separate": "#58a6ff",  # blue
+    "colocated": "#3fb950",  # green
+    "mixed": "#f0883e",  # orange
+}
+
+
+def _mode_for_row(row: dict[str, Any]) -> str:
+    """Return the deployment mode key for a result row.
+
+    The mode is determined primarily from the row's label, because exported
+    result JSON often has stringly-typed booleans or omits the ``mixed`` field
+    entirely.  Labels generated by ``create_config.py`` start with
+    ``Colocated:``, ``Mixed:`` or ``separate:``.
+
+    As a secondary fallback we still check the explicit ``mixed`` and
+    ``colocated`` fields (coercing strings to booleans) and the mixed-GPU
+    hardware-name marker `` + ``.
+    """
+    label = str(row.get("label", "")).strip().lower()
+    if label.startswith("colocated"):
+        return "colocated"
+    if label.startswith("mixed"):
+        return "mixed"
+    if label.startswith("separate"):
+        return "separate"
+
+    def _truthy(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in {"true", "1", "yes", "on", "t", "y"}
+
+    if _truthy(row.get("mixed")):
+        return "mixed"
+
+    prefill_hw = str(row.get("prefill_hardware", ""))
+    if " + " in prefill_hw:
+        return "mixed"
+
+    if _truthy(row.get("colocated")):
+        return "colocated"
+
+    return "separate"
+
+
+def _color_for_row(row: dict[str, Any]) -> str:
+    """Return the color for a result row based on its mode."""
+    return MODE_COLORS.get(_mode_for_row(row), "#58a6ff")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1061,6 +1182,10 @@ async def import_results(
             plot_urls = [plot_url]
             results = selected
         else:
+            # For single JSON imports, color the points by mode as well so the
+            # per-mode color legend stays consistent with directory imports.
+            for row in results:
+                row["color"] = _color_for_row(row)
             plot_urls = _build_comparison_plots(results)
         return HTMLResponse(content=_build_results_page(results, plot_urls, None))
     except Exception as exc:
@@ -1073,7 +1198,7 @@ async def import_results(
 @app.get("/api/hardware")
 async def hardware_options():
     """Return the list of available hardware preset names."""
-    return {"hardware": list(load_machine_db().keys())}
+    return {"hardware": list(load_combined_machine_db().keys())}
 
 
 @app.get("/plot/{plot_id}")

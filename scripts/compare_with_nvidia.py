@@ -24,7 +24,7 @@ from aiconfigurator.sdk.perf_database import set_systems_paths
 # Ensure project root is on sys.path when running the script directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.hardware.hardware import Hardware
+from src.hardware.scraper import fetch_machine_hardware
 from src.logger import set_debug
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
@@ -46,7 +46,7 @@ for noisy in ("aiconfigurator", "transformers", "urllib3"):
 SYSTEM = "h200_sxm"
 BACKEND = "vllm"
 # Default hardware from our dynamically-loaded presets (single GPU)
-DEFAULT_HARDWARE = "H200 NVL x1 #0b4c87a9"
+DEFAULT_HARDWARE = "H200 x1 #b731cab8"
 
 
 def run_your_simulator(
@@ -60,7 +60,6 @@ def run_your_simulator(
     batch_size: int,
     prefill_workers: int,
     decode_workers: int,
-    cache_pct: float,
     hardware: str,
 ) -> SimulationResult:
     """Run the discrete-event simulator with the matched topology."""
@@ -71,14 +70,14 @@ def run_your_simulator(
             name="compare",
             nodes=[
                 Node(
-                    hardware=Hardware.from_name(hardware),
+                    hardware=fetch_machine_hardware(hardware),
                     model_name=model,
                     batch_size=batch_size,
                     prefill_instances=prefill_workers,
                     decode_instances=0,
                 ),
                 Node(
-                    hardware=Hardware.from_name(hardware),
+                    hardware=fetch_machine_hardware(hardware),
                     model_name=model,
                     batch_size=batch_size,
                     prefill_instances=0,
@@ -95,7 +94,6 @@ def run_your_simulator(
                     max_input_tokens=isl,
                     min_output_tokens=osl,
                     max_output_tokens=osl,
-                    cache_percentage=cache_pct,
                 ),
             ),
         ),
@@ -145,11 +143,11 @@ def run_nvidia_disagg(
 DATABASE_MODES = ["SOL"]
 
 
-def nvidia_estimate_to_dict(est: EstimateResult) -> dict[str, Any]:
+def nvidia_estimate_to_dict(est: EstimateResult, database_mode: str) -> dict[str, Any]:
     """Normalize an EstimateResult into a plain dict."""
     return {
         "mode": est.mode,
-        "database_mode": getattr(est, "database_mode", "SILICON"),
+        "database_mode": database_mode,
         "model_path": est.model_path,
         "system_name": est.system_name,
         "backend_name": est.backend_name,
@@ -159,13 +157,13 @@ def nvidia_estimate_to_dict(est: EstimateResult) -> dict[str, Any]:
         "batch_size": est.batch_size,
         "tp_size": est.tp_size,
         "pp_size": est.pp_size,
-        "ttft_ms": round(est.ttft, 3),
-        "tpot_ms": round(est.tpot, 3),
-        "request_latency_ms": round(est.request_latency, 3),
+        "ttft": round(est.ttft, 3),
+        "tpot": round(est.tpot, 3),
+        "request_latency": round(est.request_latency, 3),
         "tokens_per_second": round(est.tokens_per_second, 2),
         "tokens_per_second_per_gpu": round(est.tokens_per_second_per_gpu, 2),
         "tokens_per_second_per_user": round(est.tokens_per_second_per_user, 2),
-        "seq/s": round(est.seq_per_second, 3),
+        "seq_per_second": round(est.seq_per_second, 3),
         "concurrency": round(est.concurrency, 2),
         "power_w": round(est.power_w, 2),
         "memory_gb": round(est.memory, 2),
@@ -173,29 +171,32 @@ def nvidia_estimate_to_dict(est: EstimateResult) -> dict[str, Any]:
     }
 
 
+def _label(est: EstimateResult, db_mode: str) -> str:
+    return f"NVIDIA AIC ({est.mode}, {db_mode})"
+
+
 def print_comparison_table(
-    sim_result: SimulationResult, nvidia_results: list[EstimateResult]
+    sim_result: SimulationResult, nvidia_results: list[tuple[str, EstimateResult]]
 ) -> None:
     """Pretty-print a side-by-side comparison table."""
     # Collect rows
     rows = [
         ("Your Simulator", sim_result.to_dict()),
     ]
-    for est in nvidia_results:
-        label = f"NVIDIA AIC ({est.mode}, {getattr(est, 'database_mode', 'SILICON')})"
-        rows.append((label, nvidia_estimate_to_dict(est)))
+    for db_mode, est in nvidia_results:
+        rows.append((_label(est, db_mode), nvidia_estimate_to_dict(est, db_mode)))
 
     # Keys to compare
     keys = [
-        ("ttft_ms", "TTFT (ms)"),
-        ("tpot_ms", "TPOT (ms)"),
-        ("max_ttft_ms", "MAX TTFT (ms)"),
-        ("request_latency_ms", "Request Latency (ms)"),
-        ("max_request_latency_ms", "max Latency (ms)"),
+        ("ttft", "TTFT (ms)"),
+        ("tpot", "TPOT (ms)"),
+        ("max_ttft", "MAX TTFT (ms)"),
+        ("request_latency", "Request Latency (ms)"),
+        ("max_request_latency", "max Latency (ms)"),
         ("tokens_per_second", "tokens/s"),
         ("tokens_per_second_per_gpu", "tokens/s/gpu"),
         ("tokens_per_second_per_user", "tokens/s/user"),
-        ("seq/s", "seq/s"),
+        ("seq_per_second", "seq/s"),
         ("concurrency", "Concurrency"),
     ]
 
@@ -228,18 +229,18 @@ def print_comparison_table(
         f"  Your Simulator:   {sim_result.num_prefill_workers} prefill worker(s) x {sim_result.prefill_gpus_per_worker} GPU + "
         f"{sim_result.num_decode_workers} decode worker(s) x {sim_result.decode_gpus_per_worker} GPU, batch={sim_result.batch_size}"
     )
-    for est in nvidia_results:
+    for db_mode, est in nvidia_results:
         if est.mode == "disagg":
             raw: dict[str, Any] = est.raw
             print(
-                f"  NVIDIA ({est.mode}):   "
+                f"  NVIDIA ({est.mode}, {db_mode}):   "
                 f"(p){raw.get('(p)workers', '?')} worker(s) x {raw.get('(p)tp', '?')} GPU + "
                 f"(d){raw.get('(d)workers', '?')} worker(s) x {raw.get('(d)tp', '?')} GPU, "
                 f"(d)bs={raw.get('(d)bs', '?')}"
             )
         else:
             print(
-                f"  NVIDIA ({est.mode}):     {est.tp_size} GPU(s) TP, batch={est.batch_size}"
+                f"  NVIDIA ({est.mode}, {db_mode}):     {est.tp_size} GPU(s) TP, batch={est.batch_size}"
             )
 
 
@@ -342,10 +343,11 @@ def main():
     )
 
     # Run NVIDIA estimates across all requested database modes
-    nvidia_results: list[EstimateResult] = []
+    nvidia_results: list[tuple[str, EstimateResult]] = []
     for db_mode in args.database_modes:
         try:
-            nvidia_results.append(
+            nvidia_results.append((
+                db_mode,
                 run_nvidia_disagg(
                     model=args.model,
                     isl=args.isl,
@@ -354,8 +356,8 @@ def main():
                     prefill_workers=args.prefill_workers,
                     decode_workers=args.decode_workers,
                     database_mode=db_mode,
-                )
-            )
+                ),
+            ))
         except Exception as exc:
             print(f"WARNING: NVIDIA disagg estimate failed ({db_mode}): {exc}")
 
@@ -366,10 +368,8 @@ def main():
     # Print comparison
     print_comparison_table(sim_result, nvidia_results)
 
-    for est in nvidia_results:
-        print(
-            f"NVIDIA ({est.mode}, {getattr(est, 'database_mode', 'SILICON')}) raw output:"
-        )
+    for db_mode, est in nvidia_results:
+        print(f"NVIDIA ({est.mode}, {db_mode}) raw output:")
         print(json.dumps(est.raw, indent=2))
         print()
 
@@ -377,7 +377,9 @@ def main():
     if args.save:
         payload = {
             "your_simulator": sim_result.to_dict(),
-            "nvidia": [nvidia_estimate_to_dict(est) for est in nvidia_results],
+            "nvidia": [
+                nvidia_estimate_to_dict(est, db_mode) for db_mode, est in nvidia_results
+            ],
             "settings": {
                 "model": args.model,
                 "system": SYSTEM,

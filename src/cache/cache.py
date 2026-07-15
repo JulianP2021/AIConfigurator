@@ -271,17 +271,25 @@ class Cache:
             "ssd_capacity_bytes": sum(self.ssd_capacity_bytes.values()),
         }
 
-    def _has_s3_equivalent(self, item: CacheItem) -> bool:
-        """Return True if an equivalent item already exists in the shared S3 layer."""
+    def _s3_covers(self, item: CacheItem) -> bool:
+        """Return True if the shared S3 layer already covers ``item``'s range.
+
+        The range is covered when an existing S3 item for the same session fully
+        contains ``[item.token_start, item.token_end)``.
+        """
         if not self.s3_spec.enabled:
             return False
         s3_layer = self._s3_layer()
-        key = (item.token_start, item.token_end)
         item_dict = s3_layer.content.get(item.session_id)
         if item_dict is None:
             return False
-        existing = item_dict.get(key)
-        return existing is not None and existing.session_id == item.session_id
+        for existing in item_dict.values():
+            if (
+                existing.token_start <= item.token_start
+                and existing.token_end >= item.token_end
+            ):
+                return True
+        return False
 
     def _evict_s3_stale(self) -> None:
         """Remove S3 items whose last access is older than the eviction window.
@@ -329,14 +337,18 @@ class Cache:
         self.ssd_usage_bytes[node_id] -= victim_size
 
         s3_leg: TransferLeg | None = None
-        if self.s3_spec.enabled and not self._has_s3_equivalent(victim):
+        if self.s3_spec.enabled and not self._s3_covers(victim):
             s3_layer = self._s3_layer()
+            # Merge with any connected existing S3 item for the same session so
+            # we keep a single contiguous S3 entry per (user_id, session_id).
             copied = CacheItem(victim.session_id, victim.token_start, victim.token_end)
+            self._merge_with_layer_items(s3_layer, copied)
             s3_layer._add_item(copied)
-            self._touch(copied, s3_layer)
-            self.s3_usage_bytes += victim_size
+            copied_size = self._item_size(copied)
+            self.s3_usage_bytes += copied_size
             if self.s3_usage_bytes > self.s3_peak_usage_bytes:
                 self.s3_peak_usage_bytes = self.s3_usage_bytes
+            self._touch(copied, s3_layer)
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
             self.s3_upload_requests += 1
             self.cost_usd += (
@@ -349,8 +361,8 @@ class Cache:
             if should_log(LOG_CACHE):
                 log(
                     LOG_CACHE,
-                    f"Uploaded SSD-evicted KV for request {victim.session_id} "
-                    f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} to S3",
+                    f"Uploaded SSD-evicted KV for request {copied.session_id} "
+                    f"({copied.tokens} tokens, {copied_size} bytes) from node {node_id} to S3",
                 )
             # Run S3 stale-object eviction after every upload so the reported
             # peak S3 memory only counts recently-accessed objects.
@@ -379,24 +391,32 @@ class Cache:
         ram_layer._remove_item(victim)
         self.ram_usage_bytes[node_id] -= victim_size
 
-        # Make room on SSD, evicting SSD LRU to S3 synchronously if needed.
+        ssd_layer = self._ssd_layer(node_id)
+        # Merge with any connected existing SSD item for the same session so we
+        # keep a single contiguous SSD entry per (user_id, session_id).  This may
+        # delete old SSD items and free bytes, so it must happen before we
+        # compute the size for the capacity check.
+        self._merge_with_layer_items(ssd_layer, victim)
+        merged_size = self._item_size(victim)
+
+        # Make room on SSD for the merged victim, evicting SSD LRU to S3
+        # synchronously if needed.
         s3_legs: list[TransferLeg] = []
-        while self.ssd_usage_bytes[node_id] + victim_size > self.ssd_capacity_bytes[
+        while self.ssd_usage_bytes[node_id] + merged_size > self.ssd_capacity_bytes[
             node_id
-        ] and any(item_dict for item_dict in self._ssd_layer(node_id).content.values()):
+        ] and any(item_dict for item_dict in ssd_layer.content.values()):
             s3_leg = self._evict_ssd_lru(node_id)
             if s3_leg is not None:
                 s3_legs.append(s3_leg)
 
-        ssd_layer = self._ssd_layer(node_id)
         ssd_layer._add_item(victim)
-        self.ssd_usage_bytes[node_id] += victim_size
+        self.ssd_usage_bytes[node_id] += merged_size
         ssd_layer.touch(victim, self._access_tick)
         if should_log(LOG_CACHE):
             log(
                 LOG_CACHE,
                 f"Evicted RAM LRU KV for request {victim.session_id} "
-                f"({victim.tokens} tokens, {victim_size} bytes) to node {node_id} SSD",
+                f"({victim.tokens} tokens, {merged_size} bytes) to node {node_id} SSD",
             )
         return victim, s3_legs
 
@@ -588,6 +608,72 @@ class Cache:
         layer._remove_item(item)
         layer.remove_from_lru(item)
 
+    def _merge_with_layer_items(
+        self,
+        layer: CacheLayer,
+        item: CacheItem,
+    ) -> CacheItem:
+        """Merge ``item`` with connected existing items for its session in ``layer``.
+
+        The connected component is computed from ``item``'s range: any existing
+        item that overlaps or touches the growing cluster is absorbed.  Items
+        that are disjoint are left untouched.  Absorbed items are deleted, their
+        usage counters are decremented, and they are removed from the layer's
+        LRU index.
+
+        ``item`` itself is mutated in place (its token range is expanded to the
+        merged cluster) and returned, so callers can preserve the original object
+        identity when no merge is needed.
+
+        Under normal session growth successive KV ranges are nested or adjacent
+        prefixes, so this maintains a single contiguous entry per
+        ``(user_id, session_id)`` in RAM, SSD, and S3.
+        """
+        item_dict = layer.content.get(item.session_id)
+        if item_dict is None or not item_dict:
+            return item
+
+        items = list(item_dict.values())
+        cluster_start = item.token_start
+        cluster_end = item.token_end
+        to_delete: set[CacheItem] = set()
+
+        # Fixed-point expansion: keep absorbing items connected to the cluster.
+        while True:
+            new_connected = [
+                existing
+                for existing in items
+                if existing not in to_delete
+                and not (
+                    existing.token_end < cluster_start - 1
+                    or existing.token_start > cluster_end
+                )
+            ]
+            if not new_connected:
+                break
+            for existing in new_connected:
+                to_delete.add(existing)
+                cluster_start = min(cluster_start, existing.token_start)
+                cluster_end = max(cluster_end, existing.token_end)
+
+        if not to_delete:
+            return item
+
+        for existing in to_delete:
+            item_size = self._item_size(existing)
+            if layer.name == "RAM":
+                self.ram_usage_bytes[layer.node_id] -= item_size
+            elif layer.name == "SSD":
+                self.ssd_usage_bytes[layer.node_id] -= item_size
+            elif layer.name == "S3":
+                self.s3_usage_bytes -= item_size
+            layer._remove_item(existing)
+            layer.remove_from_lru(existing)
+
+        item.token_start = cluster_start
+        item.token_end = cluster_end
+        return item
+
     def _merge_into_ram(
         self,
         session_id: tuple[int, int],
@@ -747,9 +833,15 @@ class Cache:
     def insert_cache_item(self, item: CacheItem, node_id: int) -> list[TransferLeg]:
         """Insert an item into a node's RAM layer, evicting to SSD if needed.
 
-        Returns the synchronous SSD write legs generated by evictions.
+        Items for the same ``(user_id, session_id)`` are merged into a single
+        contiguous RAM entry.  Returns the synchronous SSD write legs generated
+        by evictions.
         """
         layer = self._ram_layer(node_id)
+
+        # Merge with any connected existing RAM item for this session so we keep
+        # a single contiguous entry per (user_id, session_id).
+        self._merge_with_layer_items(layer, item)
         item_size = self._item_size(item)
         eviction_legs = self._make_room_ram(node_id, item_size)
 

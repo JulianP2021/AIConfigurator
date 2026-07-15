@@ -63,8 +63,7 @@ class HardwareSpec:
     disk_name: str
     dlperf: float
     dlperf_per_dphtotal: float
-    dph_base: float
-    dph_total: float
+    dph_base: float  # hourly compute price in USD
     geolocation: str
     gpu_display_active: bool
     gpu_frac: float

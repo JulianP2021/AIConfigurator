@@ -421,7 +421,7 @@ class RequestGenerator:
         # burst is not bunched within a single interval.  With ``think_time_ms``
         # this keeps the long-term average rate intact while giving a much
         # smoother initial arrival pattern.
-        startup_windows = 5
+        startup_windows = 100
         max_offset_ms = max(0.0, self.think_time_ms * startup_windows)
         for user_id in range(self.users):
             self._next_available_ms[user_id] = _rng.random() * max_offset_ms

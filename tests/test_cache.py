@@ -264,7 +264,7 @@ class TestCacheDownload:
         assert local_items[0].token_end == 200
 
     def test_download_uses_remote_item_with_shared_start(
-        self, cache_with_fake_model: Cache
+        self, fake_model: Model, tiny_hardware: Hardware
     ):
         """Remote items with the same token_start must not collide in the covering index.
 
@@ -272,26 +272,42 @@ class TestCacheDownload:
         SortedDict key, so two remote items starting at 0 (e.g. [0, 30001] and
         [0, 62000]) overwrote each other.  The download resolver then stopped
         at the shorter range and failed to fetch the rest of the prefix.
+
+        Items on the same node for the same session are now merged, so we place
+        the colliding-start items on different remote nodes to keep the
+        regression meaningful.
         """
+        cache = Cache(
+            layers={},
+            node_hardware={
+                0: tiny_hardware,
+                1: tiny_hardware,
+                2: tiny_hardware,
+            },
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+        )
         req = Request(94000, 8, user_id=1, session_id=32)
         # Node 0 has a short prefix [0, 100].
-        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 0, 100), 0)
-        # Node 1 has [0, 200] and [200, 400] -- both start at the same key as
-        # other remote items but extend further.
-        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 0, 200), 1)
-        cache_with_fake_model.insert_cache_item(CacheItem((1, 32), 200, 400), 1)
+        cache.insert_cache_item(CacheItem((1, 32), 0, 100), 0)
+        # Nodes 1 and 2 both start at 0 but extend to different ends.  They
+        # cannot merge because they are on different nodes, so the resolver's
+        # covering index must key on (start, end) to retain both.
+        cache.insert_cache_item(CacheItem((1, 32), 0, 200), 1)
+        cache.insert_cache_item(CacheItem((1, 32), 0, 300), 2)
 
-        dr = cache_with_fake_model.download_kv(0, req)
-        # Should fetch [100, 200] and [200, 400] from node 1 in two segments.
+        dr = cache.download_kv(0, req)
+        # The longest covering item is fetched in a single track because it
+        # spans the remaining [100, 300) range.
         assert [bottleneck_names([track]) for track in dr.tracks] == [
-            ["NETWORK", "RAM_LOCAL"],
             ["NETWORK", "RAM_LOCAL"],
         ]
 
-        local_items = cache_with_fake_model.find_cache((1, 32), node_id=0)
+        local_items = cache.find_cache((1, 32), node_id=0)
         assert len(local_items) == 1
         assert local_items[0].token_start == 0
-        assert local_items[0].token_end == 400
+        assert local_items[0].token_end == 300
 
     def test_download_merges_local_ssd_and_remote_ssd(self, small_cache: Cache):
         req = Request(512, 8, user_id=1, session_id=33)
@@ -576,6 +592,120 @@ class TestCacheS3:
 
         assert (1, 40) in cache._s3_layer().content
         assert cache.s3_usage_bytes > 0
+
+
+class TestCacheMerge:
+    def test_ram_inserts_merge_adjacent_session_items(
+        self, cache_with_fake_model: Cache
+    ):
+        """Two adjacent RAM items for the same session are merged into one."""
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 50), 0, 100), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 50), 100, 200), 0)
+
+        items = list(cache_with_fake_model._ram_layer(0).content[(1, 50)].values())
+        assert len(items) == 1
+        assert items[0].token_start == 0
+        assert items[0].token_end == 200
+
+    def test_ram_inserts_merge_overlapping_session_items(
+        self, cache_with_fake_model: Cache
+    ):
+        """Two overlapping RAM items for the same session are merged into one."""
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 51), 0, 150), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 51), 100, 200), 0)
+
+        items = list(cache_with_fake_model._ram_layer(0).content[(1, 51)].values())
+        assert len(items) == 1
+        assert items[0].token_start == 0
+        assert items[0].token_end == 200
+
+    def test_ram_insert_does_not_merge_disjoint_session_items(
+        self, cache_with_fake_model: Cache
+    ):
+        """Disjoint RAM items for the same session remain separate."""
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 52), 0, 100), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 52), 200, 300), 0)
+
+        items = list(cache_with_fake_model._ram_layer(0).content[(1, 52)].values())
+        assert len(items) == 2
+
+    def test_ram_insert_merges_different_sessions_separately(
+        self, cache_with_fake_model: Cache
+    ):
+        """Items for different sessions are merged independently."""
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 60), 0, 100), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((1, 60), 100, 200), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((2, 60), 0, 100), 0)
+        cache_with_fake_model.insert_cache_item(CacheItem((2, 60), 100, 200), 0)
+
+        assert len(cache_with_fake_model._ram_layer(0).content[(1, 60)]) == 1
+        assert len(cache_with_fake_model._ram_layer(0).content[(2, 60)]) == 1
+
+    def test_s3_eviction_merges_with_existing_s3_item(
+        self, fake_model: Model, s3_tiny_hardware: Hardware, s3_enabled: S3Spec
+    ):
+        """SSD victims uploaded to S3 merge with existing S3 items for the session."""
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_enabled,
+        )
+        # Fill RAM/SSD and push [0, 512) to S3.
+        cache.insert_cache_item(CacheItem((1, 70), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
+
+        s3_items = list(cache._s3_layer().content[(1, 70)].values())
+        assert len(s3_items) == 1
+        assert s3_items[0].token_start == 0
+        assert s3_items[0].token_end == 512
+
+        # Now put an overlapping [256, 768) in RAM and evict it to S3.
+        cache.insert_cache_item(CacheItem((1, 70), 256, 768), 0)
+        cache.insert_cache_item(CacheItem((4, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((5, 0), 0, 512), 0)
+
+        s3_items = list(cache._s3_layer().content[(1, 70)].values())
+        assert len(s3_items) == 1
+        assert s3_items[0].token_start == 0
+        assert s3_items[0].token_end == 768
+
+    def test_s3_eviction_skips_upload_when_existing_s3_item_covers_victim(
+        self, fake_model: Model, s3_tiny_hardware: Hardware, s3_enabled: S3Spec
+    ):
+        """No upload is counted when the victim range is already covered by S3."""
+        cache = Cache(
+            layers={},
+            node_hardware={0: s3_tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+            s3_spec=s3_enabled,
+        )
+        # Seed S3 with [0, 512) for session (1, 71).
+        s3_item = CacheItem((1, 71), 0, 512)
+        s3_layer = cache._s3_layer()
+        s3_layer._add_item(s3_item)
+        cache.s3_usage_bytes = cache._item_size(s3_item)
+        cache.s3_peak_usage_bytes = cache.s3_usage_bytes
+
+        # Put an SSD victim [0, 256) for the same session; S3 already covers it.
+        ssd_item = CacheItem((1, 71), 0, 256)
+        ssd_layer = cache._ssd_layer(0)
+        ssd_layer._add_item(ssd_item)
+        ssd_layer.touch(ssd_item, 1)
+        cache.ssd_usage_bytes[0] = cache._item_size(ssd_item)
+
+        uploads_before = cache.s3_upload_requests
+        s3_leg = cache._evict_ssd_lru(0)
+
+        assert s3_leg is None
+        assert cache.s3_upload_requests == uploads_before
+        assert (1, 71) in s3_layer.content
+        assert (1, 71) not in ssd_layer.content
 
 
 class TestCacheLRU:
