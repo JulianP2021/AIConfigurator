@@ -17,6 +17,33 @@
     "gpu_max_temp": 0.0,
     "price_usd_per_hour": 1.9333333333333336
   },
+  "TESLA_V100": {
+    "name": "TESLA_V100",
+    "flops": 125000000000000,
+    "gpu_mem": 17179869184,
+    "gpu_bw": 900000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "A100_40GB": {
+    "name": "A100_40GB",
+    "flops": 312000000000000,
+    "gpu_mem": 42949672960,
+    "gpu_bw": 1555000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "A100_80GB": {
+    "name": "A100_80GB",
+    "flops": 312000000000000,
+    "gpu_mem": 85899345920,
+    "gpu_bw": 2039000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
   "H200 NVL": {
     "name": "H200_NVL",
     "flops": 241300000000000,

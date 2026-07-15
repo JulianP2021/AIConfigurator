@@ -1,18 +1,27 @@
 from pathlib import Path
 from typing import Any
 
-from src.hardware.scraper import load_gpu_db, load_machine_db, parse_gpu_count
+from src.hardware.scraper import (
+    load_aws_hardware_db,
+    load_gpu_db,
+    load_machine_db,
+    parse_gpu_count,
+)
 from src.utils.env_reader import load_env
 from src.utils.parser import get_create_config_parser
 
-
-machine_db = load_machine_db()
-gpu_db = load_gpu_db()
 
 if __name__ == "__main__":
     env = load_env()
     parser = get_create_config_parser(env)
     args = parser.parse_args()
+
+    if args.legacy:
+        machine_db = load_machine_db()
+    else:
+        _, machine_db = load_aws_hardware_db()
+
+    gpu_db = load_gpu_db()
 
     config = {}
     config["model"] = args.model

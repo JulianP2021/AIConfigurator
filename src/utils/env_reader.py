@@ -83,7 +83,7 @@ class EnvConfig:
     debug: bool = False
 
     # Hardware preset
-    machine_hardware: str = "B200 x8 #15825275"
+    machine_hardware: str = "AWS p5en.48xlarge (H200 x8)"
 
 
 _DEFAULTS = {
@@ -124,7 +124,7 @@ _DEFAULTS = {
     "ROUTER_BUSY_THRESHOLD_TOKENS": "1000000.0",
     "LOG_MASK": "15",
     "DEBUG": "false",
-    "MACHINE_HARDWARE": "B200 x8 #15825275",
+    "MACHINE_HARDWARE": "AWS p5en.48xlarge (H200 x8)",
 }
 
 

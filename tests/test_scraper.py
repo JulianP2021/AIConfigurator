@@ -1,7 +1,7 @@
 """Tests for src.hardware.scraper helpers.
 
 These tests use a synthetic machine database so they remain stable when the
-live Vast.ai cache (``_machine_db.json``) is refreshed.
+legacy Vast.ai cache (``src/hardware/legacy/_machine_db.json``) is refreshed.
 """
 
 from unittest.mock import patch
@@ -116,9 +116,7 @@ def test_custom_hardware_takes_precedence_over_machine_db(fake_machine_db):
                 "A100_SXM4": {"flops": 312e12, "gpu_mem": 80e9, "gpu_bw": 2e12},
             },
         ),
-        patch(
-            "src.hardware.scraper.load_custom_hardware_db", return_value=({}, custom)
-        ),
+        patch("src.hardware.scraper.load_aws_hardware_db", return_value=({}, custom)),
     ):
         resolved = resolve_machine_name("Custom A100 x2")
         assert resolved == "Custom A100 x2"
@@ -139,9 +137,7 @@ def test_custom_hardware_missing_required_field_raises(tmp_path, fake_machine_db
                 "A100_SXM4": {"flops": 312e12, "gpu_mem": 80e9, "gpu_bw": 2e12},
             },
         ),
-        patch(
-            "src.hardware.scraper.load_custom_hardware_db", return_value=({}, custom)
-        ),
+        patch("src.hardware.scraper.load_aws_hardware_db", return_value=({}, custom)),
         pytest.raises(ValueError, match="missing required field"),
     ):
         fetch_machine_hardware("BadGPU")

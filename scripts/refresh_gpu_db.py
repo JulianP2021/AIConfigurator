@@ -17,7 +17,8 @@ from pathlib import Path
 # Allow importing ``src`` when the script is executed from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.hardware.scraper import load_gpu_db, refresh_file
+from src.hardware.legacy.vast_scraper import refresh_file
+from src.hardware.scraper import load_gpu_db
 
 
 def _cli() -> int:
@@ -70,7 +71,7 @@ def _cli() -> int:
 
     print(f"Refreshing {len(args.gpus)} GPU(s): {', '.join(args.gpus)}")
     refresh_file(args.gpus)
-    print("Done.  Data written to src/hardware/_gpu_db.json")
+    print("Done.  Data written to src/hardware/legacy/_gpu_db.json")
     return 0
 
 

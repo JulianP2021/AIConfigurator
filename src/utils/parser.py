@@ -326,4 +326,13 @@ def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default="config.json",
         help="Name of the output configuration file (default: config.json)",
     )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        default=False,
+        help=(
+            "Use the legacy Vast.ai scraped machine database instead of the "
+            "AWS hardware presets when generating configs."
+        ),
+    )
     return parser

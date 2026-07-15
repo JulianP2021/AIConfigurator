@@ -27,7 +27,7 @@ src/simulations/simulation_distributed.py
 
 Other key modules:
 - `src/request/request.py` — `Request`, `RequestScenario`, `RequestGenerator`, `TransferLeg`, `DownloadRequest`, `UploadRequest`.
-- `src/hardware/hardware.py` — `Hardware`, `HardwareSpec`, `GPUHardwareSpec` loaded from `_machine_db.json`.
+- `src/hardware/hardware.py` — `Hardware`, `HardwareSpec`, `GPUHardwareSpec` loaded from `src/hardware/legacy/_machine_db.json`.
 - `src/hardware/mixed_gpu.py` — mixed-GPU node pricing and `fetch_mixed_gpu_hardware`.
 - `src/model/model.py` — thin wrapper around a HF model name; provides `kv_size_per_token`.
 - `src/logger.py` — bitmask-based logging.

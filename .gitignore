@@ -223,3 +223,4 @@ results.json
 config.json
 results/
 saved_results/
+src/hardware/_*

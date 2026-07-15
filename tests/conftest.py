@@ -42,7 +42,7 @@ def _make_spec(
     network_inter_node_up: int = 12_500_000_000,
     network_inter_node_down: int = 12_500_000_000,
 ) -> HardwareSpec:
-    """Build a HardwareSpec with all required fields from the Vast.ai schema."""
+    """Build a HardwareSpec with all required fields from the legacy Vast.ai schema."""
     gpu_spec = GPUHardwareSpec(flops=1, gpu_mem=1_000_000_000, gpu_bw=1_000_000_000)
     return HardwareSpec(
         gpu_hardware=gpu_spec,
