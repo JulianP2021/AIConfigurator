@@ -21,6 +21,7 @@ class CacheItem:
         "last_access_ms",
         "last_access_tick",
         "layer",
+        "node_id",
         "session_id",
         "token_end",
         "token_start",
@@ -37,7 +38,10 @@ class CacheItem:
     layer: CacheLayer | None
 
     def __init__(
-        self, session_id: tuple[int, int], token_start: int, token_end: int = 0
+        self,
+        session_id: tuple[int, int],
+        token_start: int,
+        token_end: int,
     ):
         self.session_id = session_id
         self.token_start = token_start
@@ -84,6 +88,7 @@ class CacheLayer:
         item_dict = self.content.setdefault(item.session_id, SortedDict())
         item_dict[(item.token_start, item.token_end)] = item
         item.layer = self
+        item.node_id = self.node_id
 
     def _remove_item(self, item: CacheItem) -> None:
         """Remove ``item`` from this layer's content and clear its back-pointer."""
@@ -92,6 +97,7 @@ class CacheLayer:
         if not item_dict:
             del self.content[item.session_id]
         item.layer = None
+        item.node_id = -1
 
     def _get_item(
         self, session_id: tuple[int, int], token_start: int, token_end: int
@@ -514,7 +520,7 @@ class Cache:
     def find_cache(
         self, session_id: tuple[int, int], node_id: int | None = None
     ) -> list[CacheItem]:
-        """Return the cached items forming the longest contiguous prefix [0, N).
+        """Return the cached items forming the longest contiguous prefix [0, N) sorted.
 
         If ``node_id`` is given, only items on that node are considered.
         """

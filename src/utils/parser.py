@@ -198,10 +198,10 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Credit for remote RAM KV hits (default: {env.router_remote_ram_credit})",
     )
     parser.add_argument(
-        "--router-ssd-credit",
+        "--router-remote-ssd-credit",
         type=float,
-        default=env.router_ssd_credit,
-        help=f"Credit for SSD KV hits (default: {env.router_ssd_credit})",
+        default=env.router_remote_ssd_credit,
+        help=f"Credit for SSD KV hits (default: {env.router_remote_ssd_credit})",
     )
     parser.add_argument(
         "--router-s3-credit",

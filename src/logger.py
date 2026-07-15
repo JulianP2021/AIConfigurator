@@ -53,7 +53,7 @@ logging.basicConfig(
 
 # Active mask and minimum severity. These can be changed at runtime.
 _log_mask: int = LOG_NONE
-_min_level: int = logging.INFO
+_min_level: int = logging.DEBUG
 
 
 def _mask_from_env() -> int:

@@ -207,7 +207,7 @@ def _fetch_live_price(gpu_name: str) -> float:
     return sum(prices) / len(prices) if prices else 0.0
 
 
-def refresh_file(gpu_names: list[str]) -> None:
+def refresh_file(gpu_names: list[str] | None = None) -> None:
     """Re-scrape Vast.ai and overwrite ``_gpu_db.json``.
 
     This makes one GET to ``/pricing/gpu/<name>`` per GPU and one GET to
@@ -223,9 +223,77 @@ def refresh_file(gpu_names: list[str]) -> None:
     if prior_content:
         db = json.loads(prior_content)
 
+    if not gpu_names:
+        gpu_names = [
+            "B200",
+            "B300",
+            "H200",
+            "H200_NVL",
+            "H100_NVL",
+            "H100_SXM",
+            "H100_PCIE",
+            "RTX_PRO_6000_S",
+            "RTX_PRO_6000_WS",
+            "RTX_5090",
+            "RTX_4090",
+            "RTX_PRO_4000",
+            "RTX_5080",
+            "RTX_5070_TI",
+            "RTX_5070",
+            "RTX_5060_TI",
+            "RTX_5060",
+            "L40S",
+            "L4",
+            "RTX_4080",
+            "RTX_4080S",
+            "RTX_4070S_TI",
+            "RTX_4060_TI",
+            "RTX_4070",
+            "RTX_4070_TI",
+            "RTX_4070S",
+            "RTX_4060",
+            "A100_SXM4",
+            "A100_PCIE",
+            "RTX_A6000",
+            "A40",
+            "A10",
+            "RTX_A5000",
+            "RTX_3090_TI",
+            "RTX_3090",
+            "RTX_3080_TI",
+            "RTX_3080",
+            "RTX_A4000",
+            "RTX_3070",
+            "RTX_3060_LAPTOP",
+            "RTX_3060_TI",
+            "RTX_3060",
+            "RTX_A2000",
+            "Q_RTX_8000",
+            "Q_RTX_6000",
+            "RTX_2060S",
+            "RTX_2080_TI",
+            "TESLA_V100",
+            "GTX_1080_TI",
+            "QUADRO_P4000",
+            "TITAN_XP",
+            "GTX_1070_TI",
+            "GTX_1080",
+            "RTX_PRO_5000",
+            "RTX_6000_Ada",
+            "RTX_5880_Ada",
+            "GTX_1660_S",
+        ]
+
     for name in gpu_names:
-        specs = _fetch_specs(name)
+        try:
+            specs = _fetch_specs(name)
+        except Exception:
+            print("GPU not found/ no fp16 flops", name)
+            continue
+        else:
+            print("Fetched ", name)
         specs["price_usd_per_hour"] = _fetch_live_price(name)
+        name = name.replace("_", " ")
         db[name] = specs
 
     _DB_PATH.write_text(json.dumps(db, indent=2), encoding="utf-8")

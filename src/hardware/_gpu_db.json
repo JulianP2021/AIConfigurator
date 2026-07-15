@@ -15,6 +15,123 @@
     "gpu_bw": 3360000000000,
     "gpu_max_power": 0.0,
     "gpu_max_temp": 0.0,
-    "price_usd_per_hour": 2.649736842105263
+    "price_usd_per_hour": 1.9333333333333336
+  },
+  "H200 NVL": {
+    "name": "H200_NVL",
+    "flops": 241300000000000,
+    "gpu_mem": 141000000000,
+    "gpu_bw": 3360000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX PRO 6000 S": {
+    "name": "RTX_PRO_6000_S",
+    "flops": 126000000000000,
+    "gpu_mem": 96000000000,
+    "gpu_bw": 1790000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "B300": {
+    "name": "B300",
+    "flops": 2250000000000000,
+    "gpu_mem": 288000000000,
+    "gpu_bw": 8000000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "H100 NVL": {
+    "name": "H100_NVL",
+    "flops": 204900000000000,
+    "gpu_mem": 80000000000,
+    "gpu_bw": 2040000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX PRO 6000 WS": {
+    "name": "RTX_PRO_6000_WS",
+    "flops": 126000000000000,
+    "gpu_mem": 96000000000,
+    "gpu_bw": 1790000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5090": {
+    "name": "RTX_5090",
+    "flops": 104800000000000,
+    "gpu_mem": 32000000000,
+    "gpu_bw": 1790000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX PRO 4000": {
+    "name": "RTX_PRO_4000",
+    "flops": 50530000000000,
+    "gpu_mem": 32000000000,
+    "gpu_bw": 896000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5080": {
+    "name": "RTX_5080",
+    "flops": 56280000000000,
+    "gpu_mem": 16000000000,
+    "gpu_bw": 960000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5070 TI": {
+    "name": "RTX_5070_TI",
+    "flops": 43940000000000,
+    "gpu_mem": 16000000000,
+    "gpu_bw": 896000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5070": {
+    "name": "RTX_5070",
+    "flops": 30870000000000,
+    "gpu_mem": 12000000000,
+    "gpu_bw": 672000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5060 TI": {
+    "name": "RTX_5060_TI",
+    "flops": 23700000000000,
+    "gpu_mem": 8000000000,
+    "gpu_bw": 448000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 5060": {
+    "name": "RTX_5060",
+    "flops": 19180000000000,
+    "gpu_mem": 8000000000,
+    "gpu_bw": 448000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
+  },
+  "RTX 3060 LAPTOP": {
+    "name": "RTX_3060_LAPTOP",
+    "flops": 10940000000000,
+    "gpu_mem": 6000000000,
+    "gpu_bw": 336000000000,
+    "gpu_max_power": 0.0,
+    "gpu_max_temp": 0.0,
+    "price_usd_per_hour": 0.0
   }
 }

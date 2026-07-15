@@ -24,6 +24,12 @@ if __name__ == "__main__":
     config["max_session_turns"] = args.max_session_turns
     config["ram_usage_fraction"] = args.ram_usage_fraction
     config["ssd_usage_fraction"] = args.ssd_usage_fraction
+    config["router_prefill_load_scale"] = args.router_prefill_load_scale
+    config["router_device_credit"] = args.router_device_credit
+    config["router_remote_ram_credit"] = args.router_remote_ram_credit
+    config["router_remote_ssd_credit"] = args.router_remote_ssd_credit
+    config["router_s3_credit"] = args.router_s3_credit
+    config["router_busy_threshold_tokens"] = args.router_busy_threshold_tokens
     config["s3_enabled"] = args.s3_enabled
     config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
     config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
@@ -44,6 +50,7 @@ if __name__ == "__main__":
     possible_machines: list[tuple[str, dict[str, Any]]] = []
 
     for machine_name, machine in machine_db.items():
+        print(machine_name, " | ", machine["gpu_name"])
         if machine["gpu_name"] in gpu_db:
             for already_considered_machine, _ in possible_machines:
                 this_key = machine_name.split("x")
@@ -76,7 +83,6 @@ if __name__ == "__main__":
     })
 
     for machine_name, prefill_machine in sorted_possible_machines:
-        print(f"Machine: {machine_name}")
         for nodes in colocated_nodes_values:
             for batch_size in batch_size_values:
                 if prefill_machine["num_gpus"] < 2:
@@ -95,10 +101,6 @@ if __name__ == "__main__":
                     decode_gpus_per_node = (
                         int(prefill_machine["num_gpus"]) - prefill_gpus_per_node
                     )
-                    print(
-                        f"label: Colocated: {machine_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}"
-                    )
-
                     colocation_configs.append(
                         {
                             "colocated": "true",
@@ -139,9 +141,6 @@ if __name__ == "__main__":
                         donor_total_gpus = parse_gpu_count(donor_name)
                         if donor_total_gpus < decode_gpus_per_node:
                             continue
-                        print(
-                            f"label: Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}"
-                        )
                         mixed_configs.append(
                             {
                                 "mixed": "true",
@@ -178,7 +177,7 @@ if __name__ == "__main__":
                         )
 
     print(
-        f"Generated {len(colocation_configs)} colocation configs, {len(mixed_configs)} mixed configs, and {len(separate_configs)} separate configs."
+        f"Generated {len(colocation_configs)} colocation configs, {len(mixed_configs)} mixed configs, and {len(separate_configs)} separate configs for {len(possible_machines)} possible machines."
     )
 
     config["configs"] = colocation_configs + mixed_configs + separate_configs

@@ -199,7 +199,7 @@ def main():
         prefill_load_scale=args.router_prefill_load_scale,
         device_credit=args.router_device_credit,
         remote_ram_credit=args.router_remote_ram_credit,
-        ssd_credit=args.router_ssd_credit,
+        remote_ssd_credit=args.router_remote_ssd_credit,
         s3_credit=args.router_s3_credit,
         busy_threshold_tokens=args.router_busy_threshold_tokens,
     )
@@ -216,6 +216,19 @@ def main():
         user_delay_max_ms=args.user_delay_max_ms,
         random_seed=args.random_seed,
     )
+
+    # CLI-only: average prompt size accounting for cumulative ISL growth
+    # across session turns.  The first turn has ISL tokens; each subsequent
+    # turn starts from the previous turn's (ISL + OSL) and adds another ISL.
+    turns = args.max_session_turns
+    avg_input_tokens = args.isl * (turns + 1) / 2.0 + args.osl * (turns - 1) / 2.0
+    avg_total_tokens = avg_input_tokens + args.osl
+    print("\n--- Request shape ---")
+    print(f"  Sessions per user:    {args.sessions_per_user}")
+    print(f"  Max session turns:    {turns}")
+    print(f"  Avg input tokens:     {avg_input_tokens:,.0f}")
+    print(f"  Avg output tokens:    {args.osl}")
+    print(f"  Avg tokens / prompt:  {avg_total_tokens:,.0f}")
 
     # CLI-only detail: break out S3 storage vs transfer costs.
     print("\n--- Cost breakdown ---")

@@ -86,6 +86,7 @@ from src.logger import LOG_CONFIG_EXECUTOR, log, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.result import SimulationResult
+from src.router.router import RouterCostConfig
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
@@ -321,13 +322,9 @@ def _run_single_config(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
 ) -> SimulationResult:
     """Top-level worker function suitable for process-pool pickling."""
-    # import logging
-    # from src.logger import set_log_mask, set_min_level, LOG_ALL
-
-    # set_log_mask(LOG_ALL)
-    # set_min_level(logging.DEBUG)
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
     return simulate_run_distributed(
@@ -335,6 +332,7 @@ def _run_single_config(
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
+        router_cost_config=router_cost_config,
         should_print=False,
         sla=sla,
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
@@ -627,6 +625,7 @@ def _run_colocated_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
@@ -651,6 +650,7 @@ def _run_colocated_configs(
                     ram_usage_fraction,
                     ssd_usage_fraction,
                     s3_spec,
+                    router_cost_config,
                 ): (i, cfg)
                 for (i, (status, cfg)) in enumerate(batch)
                 if status == "valid"
@@ -735,6 +735,7 @@ def _run_separate_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
@@ -770,92 +771,89 @@ def _run_separate_configs(
                             ram_usage_fraction,
                             ssd_usage_fraction,
                             s3_spec,
+                            router_cost_config,
                         ): (i, cfg)
                         for (i, (status, cfg)) in enumerate(batch)
                         if status == "valid"
                     }
 
-                    collected, failed_in_batch = _collect_future_results(
-                        futures, timeout_s
-                    )
-                    for i, config, result in collected:
-                        results.append((
-                            config["prefill_hardware"]
-                            + " + "
-                            + config["decode_hardware"],
-                            config["label"],
-                            result,
-                        ))
-                        successful.append((i, config))
-                    failed.extend(failed_in_batch)
-                    invalidated = 0
-                    for next_batch in config_batches:
-                        if len(next_batch) == 0:
-                            config_batches.remove(next_batch)
-                            continue
-                        for i, failed_config, exc in failed:
-                            if isinstance(exc, PrefillError):
-                                raise exc
-                            (status, cfg), should_continue = check_failed_config(
-                                next_batch, i, failed_config
-                            )
-                            if should_continue:
-                                continue
-                            if isinstance(exc, DecodeError) and (
-                                int(cfg["decode_nodes"])
-                                <= int(failed_config["decode_nodes"])
-                                and int(cfg["batch_size"])
-                                < int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to decode error in failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, DecodeLatencyError) and (
-                                int(cfg["decode_nodes"])
-                                <= int(failed_config["decode_nodes"])
-                                and int(cfg["batch_size"])
-                                > int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to decode latency error in failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
-                                continue
+                collected, failed_in_batch = _collect_future_results(futures, timeout_s)
+                for i, config, result in collected:
+                    results.append((
+                        config["prefill_hardware"] + " + " + config["decode_hardware"],
+                        config["label"],
+                        result,
+                    ))
+                    successful.append((i, config))
+                failed.extend(failed_in_batch)
+                invalidated = 0
+                for next_batch in config_batches:
+                    if len(next_batch) == 0:
+                        config_batches.remove(next_batch)
+                        continue
+                    for i, failed_config, exc in failed:
+                        if isinstance(exc, PrefillError):
                             raise exc
-                        for i, successful_config in successful:
-                            (status, cfg), should_continue = check_successful_config(
-                                next_batch, i, successful_config
-                            )
-                            if should_continue:
-                                continue
-                            if int(cfg["decode_nodes"]) > int(
-                                successful_config["decode_nodes"]
-                            ) or (
-                                int(cfg["decode_nodes"])
-                                == int(successful_config["decode_nodes"])
-                                and int(cfg["batch_size"])
-                                > int(successful_config["batch_size"])
-                            ):
-                                invalidated += 1
-                                next_batch[i] = ("invalid", cfg)
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
-                                )
-                        log(
-                            LOG_CONFIG_EXECUTOR,
-                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
+                        (status, cfg), should_continue = check_failed_config(
+                            next_batch, i, failed_config
                         )
+                        if should_continue:
+                            continue
+                        if isinstance(exc, DecodeError) and (
+                            int(cfg["decode_nodes"])
+                            <= int(failed_config["decode_nodes"])
+                            and int(cfg["batch_size"])
+                            < int(failed_config["batch_size"])
+                        ):
+                            next_batch[i] = ("invalid", cfg)
+                            invalidated += 1
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to decode error in failed config {failed_config['label']}.",
+                            )
+                        if isinstance(exc, DecodeLatencyError) and (
+                            int(cfg["decode_nodes"])
+                            <= int(failed_config["decode_nodes"])
+                            and int(cfg["batch_size"])
+                            > int(failed_config["batch_size"])
+                        ):
+                            next_batch[i] = ("invalid", cfg)
+                            invalidated += 1
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to decode latency error in failed config {failed_config['label']}.",
+                            )
+                        if isinstance(exc, (DecodeError, DecodeLatencyError)):
+                            continue
+                        raise exc
+                    for i, successful_config in successful:
+                        (status, cfg), should_continue = check_successful_config(
+                            next_batch, i, successful_config
+                        )
+                        if should_continue:
+                            continue
+                        if int(cfg["decode_nodes"]) > int(
+                            successful_config["decode_nodes"]
+                        ) or (
+                            int(cfg["decode_nodes"])
+                            == int(successful_config["decode_nodes"])
+                            and int(cfg["batch_size"])
+                            > int(successful_config["batch_size"])
+                        ):
+                            invalidated += 1
+                            next_batch[i] = ("invalid", cfg)
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                            )
                     log(
                         LOG_CONFIG_EXECUTOR,
-                        f"Invalidated {invalidated} configs in the config batches.",
+                        f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
                     )
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Invalidated {invalidated} configs in the config batches.",
+                )
         except Exception as e:
             if isinstance(e, PrefillError):
                 separate_batches = [
@@ -910,6 +908,7 @@ def _run_mixed_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run mixed-GPU configs with the same smart invalidation as separate configs.
@@ -956,92 +955,89 @@ def _run_mixed_configs(
                             ram_usage_fraction,
                             ssd_usage_fraction,
                             s3_spec,
+                            router_cost_config,
                         ): (i, cfg)
                         for (i, (status, cfg)) in enumerate(batch)
                         if status == "valid"
                     }
 
-                    collected, failed_in_batch = _collect_future_results(
-                        futures, timeout_s
-                    )
-                    for i, config, result in collected:
-                        results.append((
-                            config["prefill_hardware"]
-                            + " + "
-                            + config["decode_hardware"],
-                            config["label"],
-                            result,
-                        ))
-                        successful.append((i, config))
-                    failed.extend(failed_in_batch)
-                    invalidated = 0
-                    for next_batch in config_batches:
-                        if len(next_batch) == 0:
-                            config_batches.remove(next_batch)
-                            continue
-                        for i, failed_config, exc in failed:
-                            if isinstance(exc, PrefillError):
-                                raise exc
-                            (status, cfg), should_continue = check_failed_config(
-                                next_batch, i, failed_config
-                            )
-                            if should_continue:
-                                continue
-                            if isinstance(exc, DecodeError) and (
-                                int(cfg["decode_gpus_per_node"])
-                                <= int(failed_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                < int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, DecodeLatencyError) and (
-                                int(cfg["decode_gpus_per_node"])
-                                <= int(failed_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                > int(failed_config["batch_size"])
-                            ):
-                                next_batch[i] = ("invalid", cfg)
-                                invalidated += 1
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
-                                )
-                            if isinstance(exc, (DecodeError, DecodeLatencyError)):
-                                continue
+                collected, failed_in_batch = _collect_future_results(futures, timeout_s)
+                for i, config, result in collected:
+                    results.append((
+                        config["prefill_hardware"] + " + " + config["decode_hardware"],
+                        config["label"],
+                        result,
+                    ))
+                    successful.append((i, config))
+                failed.extend(failed_in_batch)
+                invalidated = 0
+                for next_batch in config_batches:
+                    if len(next_batch) == 0:
+                        config_batches.remove(next_batch)
+                        continue
+                    for i, failed_config, exc in failed:
+                        if isinstance(exc, PrefillError):
                             raise exc
-                        for i, successful_config in successful:
-                            (status, cfg), should_continue = check_successful_config(
-                                next_batch, i, successful_config
-                            )
-                            if should_continue:
-                                continue
-                            if int(cfg["decode_gpus_per_node"]) > int(
-                                successful_config["decode_gpus_per_node"]
-                            ) or (
-                                int(cfg["decode_gpus_per_node"])
-                                == int(successful_config["decode_gpus_per_node"])
-                                and int(cfg["batch_size"])
-                                > int(successful_config["batch_size"])
-                            ):
-                                invalidated += 1
-                                next_batch[i] = ("invalid", cfg)
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
-                                )
-                        log(
-                            LOG_CONFIG_EXECUTOR,
-                            f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
+                        (status, cfg), should_continue = check_failed_config(
+                            next_batch, i, failed_config
                         )
+                        if should_continue:
+                            continue
+                        if isinstance(exc, DecodeError) and (
+                            int(cfg["decode_gpus_per_node"])
+                            <= int(failed_config["decode_gpus_per_node"])
+                            and int(cfg["batch_size"])
+                            < int(failed_config["batch_size"])
+                        ):
+                            next_batch[i] = ("invalid", cfg)
+                            invalidated += 1
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                            )
+                        if isinstance(exc, DecodeLatencyError) and (
+                            int(cfg["decode_gpus_per_node"])
+                            <= int(failed_config["decode_gpus_per_node"])
+                            and int(cfg["batch_size"])
+                            > int(failed_config["batch_size"])
+                        ):
+                            next_batch[i] = ("invalid", cfg)
+                            invalidated += 1
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
+                            )
+                        if isinstance(exc, (DecodeError, DecodeLatencyError)):
+                            continue
+                        raise exc
+                    for i, successful_config in successful:
+                        (status, cfg), should_continue = check_successful_config(
+                            next_batch, i, successful_config
+                        )
+                        if should_continue:
+                            continue
+                        if int(cfg["decode_gpus_per_node"]) > int(
+                            successful_config["decode_gpus_per_node"]
+                        ) or (
+                            int(cfg["decode_gpus_per_node"])
+                            == int(successful_config["decode_gpus_per_node"])
+                            and int(cfg["batch_size"])
+                            > int(successful_config["batch_size"])
+                        ):
+                            invalidated += 1
+                            next_batch[i] = ("invalid", cfg)
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Invalidated config {cfg['label']} in the next batch due to successful config {successful_config['label']}.",
+                            )
                     log(
                         LOG_CONFIG_EXECUTOR,
-                        f"Invalidated {invalidated} configs in the config batches.",
+                        f"Invalidated {invalidated} configs in the next batch., {len(config_batches)}, {len(config_batches[0])}",
                     )
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Invalidated {invalidated} configs in the config batches.",
+                )
         except Exception as e:
             if isinstance(e, PrefillError):
                 mixed_batches = [
@@ -1096,6 +1092,7 @@ def run_all_colocated_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
@@ -1109,6 +1106,7 @@ def run_all_colocated_configs(
                     ram_usage_fraction,
                     ssd_usage_fraction,
                     s3_spec,
+                    router_cost_config,
                 ): (i, cfg)
                 for (i, (status, cfg)) in enumerate(batch)
                 if status == "valid"
@@ -1130,6 +1128,7 @@ def run_all_separate_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
@@ -1153,6 +1152,7 @@ def run_all_separate_configs(
                         ram_usage_fraction,
                         ssd_usage_fraction,
                         s3_spec,
+                        router_cost_config,
                     ): (i, cfg)
                     for (i, (status, cfg)) in enumerate(batch)
                     if status == "valid"
@@ -1161,7 +1161,7 @@ def run_all_separate_configs(
                 collected, _ = _collect_future_results(futures, timeout_s)
                 for _, config, result in collected:
                     results.append((
-                        config["prefill_hardware"],
+                        config["prefill_hardware"] + " + " + config["decode_hardware"],
                         config["label"],
                         result,
                     ))
@@ -1174,6 +1174,7 @@ def run_all_mixed_configs(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run all mixed-GPU configs without smart invalidation."""
@@ -1198,6 +1199,7 @@ def run_all_mixed_configs(
                         ram_usage_fraction,
                         ssd_usage_fraction,
                         s3_spec,
+                        router_cost_config,
                     ): (i, cfg)
                     for (i, (status, cfg)) in enumerate(batch)
                     if status == "valid"
@@ -1248,6 +1250,12 @@ def main() -> None:
         default=None,
         help="Comma-separated user counts to run, e.g. '1,10,100'",
     )
+    parser.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        help="If set, dump cProfile stats for this process to the given path",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -1284,6 +1292,25 @@ def main() -> None:
         down_gbps=float(config.get("s3_down_bw_gbps", env.s3_down_bw_gbps)),
         eviction_time_ms=float(
             config.get("s3_eviction_time_ms", env.s3_eviction_time_ms)
+        ),
+    )
+
+    router_cost_config = RouterCostConfig(
+        prefill_load_scale=float(
+            config.get("router_prefill_load_scale", env.router_prefill_load_scale)
+        ),
+        device_credit=float(
+            config.get("router_device_credit", env.router_device_credit)
+        ),
+        remote_ram_credit=float(
+            config.get("router_remote_ram_credit", env.router_remote_ram_credit)
+        ),
+        remote_ssd_credit=float(
+            config.get("router_remote_ssd_credit", env.router_remote_ssd_credit)
+        ),
+        s3_credit=float(config.get("router_s3_credit", env.router_s3_credit)),
+        busy_threshold_tokens=float(
+            config.get("router_busy_threshold_tokens", env.router_busy_threshold_tokens)
         ),
     )
 
@@ -1426,6 +1453,7 @@ def main() -> None:
                     ram_usage_fraction,
                     ssd_usage_fraction,
                     s3_spec,
+                    router_cost_config,
                     timeout_s=timeout_s,
                 )
             )
@@ -1436,6 +1464,7 @@ def main() -> None:
                 ram_usage_fraction,
                 ssd_usage_fraction,
                 s3_spec,
+                router_cost_config,
                 timeout_s=timeout_s,
             )
             mixed_results.sort(key=lambda x: x[0])
@@ -1446,6 +1475,7 @@ def main() -> None:
                 ram_usage_fraction,
                 ssd_usage_fraction,
                 s3_spec,
+                router_cost_config,
                 timeout_s=timeout_s,
             )
         else:
@@ -1456,6 +1486,7 @@ def main() -> None:
                     ram_usage_fraction,
                     ssd_usage_fraction,
                     s3_spec,
+                    router_cost_config,
                     timeout_s=timeout_s,
                 )
             )
@@ -1466,6 +1497,7 @@ def main() -> None:
                 ram_usage_fraction,
                 ssd_usage_fraction,
                 s3_spec,
+                router_cost_config,
                 timeout_s=timeout_s,
             )
             mixed_results.sort(key=lambda x: x[0])
@@ -1476,6 +1508,7 @@ def main() -> None:
                 ram_usage_fraction,
                 ssd_usage_fraction,
                 s3_spec,
+                router_cost_config,
                 timeout_s=timeout_s,
             )
         separate_results.sort(key=lambda x: x[0])
@@ -1523,4 +1556,26 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import cProfile
+    import pstats
+
+    args = sys.argv[1:]
+    profile_path: Path | None = None
+    for i, arg in enumerate(args):
+        if arg == "--profile" and i + 1 < len(args):
+            profile_path = Path(args[i + 1])
+            break
+
+    if profile_path is not None:
+        pr = cProfile.Profile()
+        pr.enable()
+        try:
+            main()
+        finally:
+            pr.disable()
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            pr.dump_stats(profile_path)
+            stats = pstats.Stats(str(profile_path))
+            stats.strip_dirs().sort_stats("cumulative").print_stats(40)
+    else:
+        main()

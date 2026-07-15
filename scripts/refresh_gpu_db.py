@@ -65,7 +65,8 @@ def _cli() -> int:
         return 0
 
     if not args.gpus:
-        parser.error("Provide at least one GPU name or use --list.")
+        print("Refetching all GPUs")
+        refresh_file()
 
     print(f"Refreshing {len(args.gpus)} GPU(s): {', '.join(args.gpus)}")
     refresh_file(args.gpus)

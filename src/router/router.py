@@ -12,7 +12,7 @@ The lowest-cost eligible worker is selected deterministically.
 
 from dataclasses import dataclass
 
-from src.cache.cache import Cache
+from src.cache.cache import S3_NODE_ID, Cache
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.logger import LOG_ROUTER, log, should_log
@@ -26,7 +26,7 @@ class RouterCostConfig:
     prefill_load_scale: float = 1.0
     device_credit: float = 1.0
     remote_ram_credit: float = 0.5
-    ssd_credit: float = 0.3
+    remote_ssd_credit: float = 0.3
     s3_credit: float = 0.1
     busy_threshold_tokens: float = 1_000_000.0
 
@@ -44,15 +44,34 @@ class Router:
             self.cost_config = RouterCostConfig()
 
     def route_requests(self):
-        """Route every request in ``self.queue`` to the lowest-cost worker."""
+        """Route every request in ``self.queue`` to the lowest-cost worker.
+
+        Active-token totals are maintained incrementally as decisions are made so
+        that the cost of each successive route reflects requests already routed
+        in this batch.
+        """
+        active_prefill: dict[int, float] = self._compute_active_prefill_tokens()
+        active_decode: dict[int, float] = self._compute_active_decode_tokens()
         while self.queue:
             req = self.queue.pop(0)
             if should_log(LOG_ROUTER):
                 log(LOG_ROUTER, f"Routing request {req.id} with stage {req.stage}")
             if req.stage == "prefill":
-                instance = self._choose_prefill_instance(req)
+                instance = self._choose_prefill_instance(
+                    req, active_prefill, active_decode
+                )
+                node_id = self._node_id(instance)
+                active_prefill[node_id] = active_prefill.get(node_id, 0.0) + max(
+                    0.0, req.isl - req.prefilled_tokens
+                )
             else:
-                instance = self._choose_decode_instance(req)
+                instance = self._choose_decode_instance(
+                    req, active_prefill, active_decode
+                )
+                node_id = self._node_id(instance)
+                active_decode[node_id] = (
+                    active_decode.get(node_id, 0.0) + req.isl + req.osl
+                )
             instance.add_request(req)
 
     def _node_id(self, instance: PrefillInstance | DecodeInstance) -> int:
@@ -89,18 +108,27 @@ class Router:
         return totals
 
     def _compute_active_decode_tokens(self) -> dict[int, float]:
-        """Return per-node remaining decode token totals by scanning once."""
+        """Return per-node remaining decode token totals by scanning once.
+
+        The full sequence length (ISL + remaining OSL) is counted so that decode
+        routing is aware of both the input context and the output tokens yet to
+        be generated.
+        """
         totals: dict[int, float] = {}
         for inst in self.decode_instances:
             node_id = inst.node_id
             total = 0.0
             for req, _ in inst.queue:
-                total += req.osl - req.decoded_tokens
+                total += req.isl + req.osl - req.decoded_tokens
             for download_req, _ in inst.download_queue:
-                total += download_req.request.osl - download_req.request.decoded_tokens
+                total += (
+                    download_req.request.isl
+                    + download_req.request.osl
+                    - download_req.request.decoded_tokens
+                )
             if inst.current_batch:
                 for req in inst.current_batch:
-                    total += req.osl - req.decoded_tokens
+                    total += req.isl + req.osl - req.decoded_tokens
             totals[node_id] = totals.get(node_id, 0.0) + total
         return totals
 
@@ -121,10 +149,6 @@ class Router:
         cfg = self.cost_config
         assert cfg is not None, "Router cost config must be set"
         session_id = (req.user_id, req.session_id)
-        effective_end, segments = self.cache._find_download_segments(
-            session_id, node_id, req.isl
-        )
-        overlap = min(effective_end, req.isl)
 
         # If the node also hosts decode instances, assume the KV produced here
         # will be consumed locally.  This colocated-affinity bonus uses the
@@ -134,31 +158,36 @@ class Router:
         else:
             local_output_credit = 0.0
 
+        items = self.cache.find_cache(session_id, node_id=node_id)
+        if not items:
+            return local_output_credit
+
+        overlap = min(items[-1].token_end, req.isl)
         if overlap <= 0:
             return local_output_credit
 
-        # If the node already has the entire prefix locally, full device credit.
-        local_prefix = self.cache.cached_prefix_on_node(session_id, node_id)
-        if local_prefix >= overlap:
-            return overlap * cfg.device_credit + local_output_credit
-
-        # Otherwise weight by the tiers present in the required prefix.
         credit = 0.0
         covered = 0
-        for start, end, source_node_id, source_layer_name in segments:
+        for item in items:
             if covered >= overlap:
                 break
-            seg_start = max(start, covered)
-            seg_end = min(end, overlap)
+            layer = item.layer
+            if layer is None:
+                continue
+            seg_start = max(item.token_start, covered)
+            seg_end = min(item.token_end, overlap)
+
             if seg_end <= seg_start:
                 continue
             seg_len = seg_end - seg_start
-            if source_node_id == node_id:
+            if (layer.node_id == node_id and layer.name == "RAM") or (
+                layer.node_id == node_id and layer.name == "SSD"
+            ):
                 tier_credit = cfg.device_credit
-            elif source_node_id == -1:
+            elif layer.node_id == S3_NODE_ID:
                 tier_credit = cfg.s3_credit
-            elif source_layer_name == "SSD":
-                tier_credit = cfg.ssd_credit
+            elif layer.name == "SSD":
+                tier_credit = cfg.remote_ssd_credit
             else:
                 tier_credit = cfg.remote_ram_credit
             credit += seg_len * tier_credit
@@ -180,7 +209,11 @@ class Router:
     def _decode_cost(
         self, req: Request, node_id: int, active_decode: dict[int, float]
     ) -> float:
-        return active_decode.get(node_id, 0.0) + req.osl
+        cfg = self.cost_config
+        assert cfg is not None, "Router cost config must be set"
+        overlap = self._overlap_credit(req, node_id)
+        adjusted_prefill = max(0.0, req.isl - overlap)
+        return active_decode.get(node_id, 0.0) + adjusted_prefill + req.osl
 
     def _total_cost(
         self,
@@ -190,24 +223,31 @@ class Router:
         active_prefill: dict[int, float],
         active_decode: dict[int, float],
     ) -> float:
-        prefill_cost = self._prefill_cost(req, node_id, active_prefill)
         decode_cost = self._decode_cost(req, node_id, active_decode)
         if is_prefill:
+            prefill_cost = self._prefill_cost(req, node_id, active_prefill)
             # When prefill routing, only charge the decode stage lightly so
             # colocated workers that will later decode the same request are
             # preferred, but the dominant term remains prefill locality.
             return prefill_cost + 0.1 * decode_cost
-        # Decode routing: full prefill + decode cost.
-        return prefill_cost + decode_cost
+        # Decode routing: only decode-stage costs (load + cache-adjusted work).
+        return decode_cost
 
-    def _choose_prefill_instance(self, req: Request) -> PrefillInstance:
+    def _choose_prefill_instance(
+        self,
+        req: Request,
+        active_prefill: dict[int, float] | None = None,
+        active_decode: dict[int, float] | None = None,
+    ) -> PrefillInstance:
         cfg = self.cost_config
         assert cfg is not None, "Router cost config must be set"
         candidates = self._instances_by_node(self.prefill_instances)
         assert candidates, "No prefill instances available"
 
-        active_prefill = self._compute_active_prefill_tokens()
-        active_decode = self._compute_active_decode_tokens()
+        if active_prefill is None:
+            active_prefill = self._compute_active_prefill_tokens()
+        if active_decode is None:
+            active_decode = self._compute_active_decode_tokens()
 
         best_node_id: int | None = None
         best_cost = float("inf")
@@ -235,6 +275,7 @@ class Router:
                     f"Prefill cost for request {req.id} on node {node_id}: {cost:.1f} "
                     f"(active_prefill={active_prefill.get(node_id, 0.0):.0f}, "
                     f"active_decode={active_decode.get(node_id, 0.0):.0f}, "
+                    f"cached_prefix={self._cached_prefix(req, node_id)})"
                     f"totoal cost {cost:.1f})",
                 )
             if cost < best_cost:
@@ -265,13 +306,20 @@ class Router:
             ),
         )
 
-    def _choose_decode_instance(self, req: Request) -> DecodeInstance:
+    def _choose_decode_instance(
+        self,
+        req: Request,
+        active_prefill: dict[int, float] | None = None,
+        active_decode: dict[int, float] | None = None,
+    ) -> DecodeInstance:
         cfg = self.cost_config
         candidates = self._instances_by_node(self.decode_instances)
         assert candidates, "No decode instances available"
 
-        active_prefill = self._compute_active_prefill_tokens()
-        active_decode = self._compute_active_decode_tokens()
+        if active_prefill is None:
+            active_prefill = self._compute_active_prefill_tokens()
+        if active_decode is None:
+            active_decode = self._compute_active_decode_tokens()
 
         best_node_id: int | None = None
         best_cost = float("inf")

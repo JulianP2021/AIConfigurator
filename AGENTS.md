@@ -239,7 +239,11 @@ This list captures the optimizations already applied and the remaining candidate
 - Replaced the inner `dict[(start, end), CacheItem]` per-session bucket with `SortedDict` from `sortedcontainers`, giving O(log N) range lookup and removing repeated full-bucket sorts in `_contiguous_prefix()`.
 - Added `_contiguous_prefix_from_sorted()` and `find_cache(node_id=...)` to exploit the per-session sorted order and avoid re-sorting for node-local prefix queries.
 - Replaced the remote/S3 item scan in `_find_download_segments()` with a `SortedDict` covering-index so each gap is resolved in O(log N) instead of O(all_items).
+- Fixed a covering-index key-collision bug where remote/S3 items sharing the same `token_start` overwrote each other; the index now keys on `(token_start, token_end)`.
+- Added a regression test for the shared-start collision (`tests/test_cache.py::test_download_uses_remote_item_with_shared_start`).
 - Added `sortedcontainers` to `pyproject.toml` project dependencies.
+- Added `__slots__` to hot objects (`Request`, `CacheItem`, `TransferLeg`, `_MultiTrackTransfer`, `UploadRequest`, `DownloadRequest`).
+- Cached `Model.dtype_size` and `_calculate_memory()` to reduce repeated FLOPs/memory model computation.
 
 ### Still possible, ordered by impact / risk
 

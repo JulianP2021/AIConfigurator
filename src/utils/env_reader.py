@@ -69,7 +69,7 @@ class EnvConfig:
     router_prefill_load_scale: float = 1.0
     router_device_credit: float = 1.0
     router_remote_ram_credit: float = 0.0
-    router_ssd_credit: float = 0.3
+    router_remote_ssd_credit: float = 0.3
     router_s3_credit: float = 0.1
     router_busy_threshold_tokens: float = 1_000_000.0
 
@@ -119,7 +119,7 @@ _DEFAULTS = {
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
     "ROUTER_DEVICE_CREDIT": "1.0",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
-    "ROUTER_SSD_CREDIT": "0.3",
+    "ROUTER_REMOTE_SSD_CREDIT": "0.3",
     "ROUTER_S3_CREDIT": "0.1",
     "ROUTER_BUSY_THRESHOLD_TOKENS": "1000000.0",
     "LOG_MASK": "15",
@@ -163,7 +163,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_DEVICE_CREDIT",
         "ROUTER_REMOTE_RAM_CREDIT",
-        "ROUTER_SSD_CREDIT",
+        "ROUTER_REMOTE_SSD_CREDIT",
         "ROUTER_S3_CREDIT",
         "ROUTER_BUSY_THRESHOLD_TOKENS",
     }:
@@ -255,7 +255,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         router_prefill_load_scale=float(merged["ROUTER_PREFILL_LOAD_SCALE"]),
         router_device_credit=float(merged["ROUTER_DEVICE_CREDIT"]),
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),
-        router_ssd_credit=float(merged["ROUTER_SSD_CREDIT"]),
+        router_remote_ssd_credit=float(merged["ROUTER_REMOTE_SSD_CREDIT"]),
         router_s3_credit=float(merged["ROUTER_S3_CREDIT"]),
         router_busy_threshold_tokens=float(merged["ROUTER_BUSY_THRESHOLD_TOKENS"]),
         log_mask=int(merged["LOG_MASK"], 0),
