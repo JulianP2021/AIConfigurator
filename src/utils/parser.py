@@ -335,4 +335,13 @@ def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
             "AWS hardware presets when generating configs."
         ),
     )
+    parser.add_argument(
+        "--high-end-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Only include high-end training GPUs (H100, H200, A100, B200, "
+            "B300) when generating configs."
+        ),
+    )
     return parser

@@ -202,20 +202,24 @@ class Cache:
         self._validate_capacity()
 
     def _validate_capacity(self) -> None:
-        """Raise if a node cannot store a minimal 512-token KV item in RAM/SSD."""
+        """Raise if a node cannot store a minimal 512-token KV item in RAM.
+
+        SSD validation is skipped for nodes that have no local NVMe storage;
+        those nodes will evict RAM directly to S3 (if enabled) or drop the item.
+        """
         min_item_bytes = self.kv_size(self.model, 512)
         for node_id, hardware in self.node_hardware.items():
             ram_cap = int(hardware.spec.cpu_ram * self.ram_usage_fraction)
-            ssd_cap = int(hardware.spec.nvme_mem * self.ssd_usage_fraction)
             if ram_cap < min_item_bytes:
                 raise ValueError(
                     f"Node {node_id} RAM capacity ({ram_cap} bytes with "
                     f"ram_usage_fraction={self.ram_usage_fraction}) is smaller than "
                     f"a 512-token KV item ({min_item_bytes} bytes)"
                 )
-            if ssd_cap < min_item_bytes:
+            raw_ssd_cap = hardware.spec.nvme_mem * self.ssd_usage_fraction
+            if 0 < raw_ssd_cap < min_item_bytes:
                 raise ValueError(
-                    f"Node {node_id} SSD capacity ({ssd_cap} bytes with "
+                    f"Node {node_id} SSD capacity ({int(raw_ssd_cap)} bytes with "
                     f"ssd_usage_fraction={self.ssd_usage_fraction}) is smaller than "
                     f"a 512-token KV item ({min_item_bytes} bytes)"
                 )
@@ -246,7 +250,9 @@ class Cache:
     def _ram_layer(self, node_id: int) -> CacheLayer:
         return self.get_layer(node_id, "RAM")
 
-    def _ssd_layer(self, node_id: int) -> CacheLayer:
+    def _ssd_layer(self, node_id: int) -> CacheLayer | None:
+        if self.ssd_capacity_bytes.get(node_id, 0) == 0:
+            return None
         return self.get_layer(node_id, "SSD")
 
     def _s3_layer(self) -> CacheLayer:
@@ -329,6 +335,8 @@ class Cache:
         S3 upload leg if an upload happened, otherwise None.
         """
         layer = self._ssd_layer(node_id)
+        if layer is None:
+            return None
         victim = layer.pop_lru()
         if victim is None:
             return None
@@ -337,7 +345,11 @@ class Cache:
         self.ssd_usage_bytes[node_id] -= victim_size
 
         s3_leg: TransferLeg | None = None
-        if self.s3_spec.enabled and not self._s3_covers(victim):
+        node = self.node_hardware.get(node_id)
+        s3_upload_ok = (
+            self.s3_spec.enabled and node is not None and node.spec.network_inet_up > 0
+        )
+        if s3_upload_ok and not self._s3_covers(victim):
             s3_layer = self._s3_layer()
             # Merge with any connected existing S3 item for the same session so
             # we keep a single contiguous S3 entry per (user_id, session_id).
@@ -392,6 +404,54 @@ class Cache:
         self.ram_usage_bytes[node_id] -= victim_size
 
         ssd_layer = self._ssd_layer(node_id)
+        s3_legs: list[TransferLeg] = []
+
+        if ssd_layer is None:
+            # No local SSD: evict RAM directly to S3 (if enabled and upload
+            # bandwidth exists) or drop.
+            victim_size = self._item_size(victim)
+            node = self.node_hardware.get(node_id)
+            s3_upload_ok = (
+                self.s3_spec.enabled
+                and node is not None
+                and node.spec.network_inet_up > 0
+            )
+            if s3_upload_ok and not self._s3_covers(victim):
+                s3_layer = self._s3_layer()
+                copied = CacheItem(
+                    victim.session_id, victim.token_start, victim.token_end
+                )
+                self._merge_with_layer_items(s3_layer, copied)
+                s3_layer._add_item(copied)
+                copied_size = self._item_size(copied)
+                self.s3_usage_bytes += copied_size
+                if self.s3_usage_bytes > self.s3_peak_usage_bytes:
+                    self.s3_peak_usage_bytes = self.s3_usage_bytes
+                self._touch(copied, s3_layer)
+                s3_legs.append(
+                    TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
+                )
+                self.s3_upload_requests += 1
+                self.cost_usd += (
+                    float(victim_size)
+                    / 1024
+                    / 1024
+                    / 1024
+                    * self.s3_spec.S3_UPLOAD_COST_GB
+                )
+                self.cost_usd += (
+                    self.s3_spec.S3_UPLOAD_REQ_COSTS / 1000 * victim.tokens / CHUNK_SIZE
+                )
+                self._evict_s3_stale()
+            if should_log(LOG_CACHE):
+                log(
+                    LOG_CACHE,
+                    f"Evicted RAM LRU KV for request {victim.session_id} "
+                    f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} RAM "
+                    f"(no SSD; dropped/S3)",
+                )
+            return victim, s3_legs
+
         # Merge with any connected existing SSD item for the same session so we
         # keep a single contiguous SSD entry per (user_id, session_id).  This may
         # delete old SSD items and free bytes, so it must happen before we
@@ -401,7 +461,6 @@ class Cache:
 
         # Make room on SSD for the merged victim, evicting SSD LRU to S3
         # synchronously if needed.
-        s3_legs: list[TransferLeg] = []
         while self.ssd_usage_bytes[node_id] + merged_size > self.ssd_capacity_bytes[
             node_id
         ] and any(item_dict for item_dict in ssd_layer.content.values()):
@@ -548,7 +607,8 @@ class Cache:
             return self._contiguous_prefix_from_sorted(self._find_all_items(session_id))
         layer = self.get_layer(node_id, "RAM")
         ram_dict = layer.content.get(session_id)
-        ssd_dict = self._ssd_layer(node_id).content.get(session_id)
+        ssd_layer = self._ssd_layer(node_id)
+        ssd_dict = ssd_layer.content.get(session_id) if ssd_layer else None
         if ram_dict is None and ssd_dict is None:
             return []
         if ram_dict is None:
@@ -687,7 +747,11 @@ class Cache:
         part of the new merged RAM item.  Source copies on other nodes are kept.
         Returns any destination-RAM eviction legs produced while making room.
         """
-        for layer in (self._ram_layer(node_id), self._ssd_layer(node_id)):
+        ssd_layer = self._ssd_layer(node_id)
+        layers = [self._ram_layer(node_id)]
+        if ssd_layer is not None:
+            layers.append(ssd_layer)
+        for layer in layers:
             item_dict = layer.content.get(session_id)
             if item_dict is None:
                 continue
@@ -735,10 +799,12 @@ class Cache:
 
         segments: list[tuple[int, int, int, str]] = []
 
-        # Promote local SSD portions that are already on the destination node.
+        # Local segments already on the destination node (RAM or SSD).
         for item in local_prefix:
             layer = self.find_cache_layer(item)
-            if layer is None or layer.name != "SSD":
+            if layer is None or layer.node_id != dest_node_id:
+                continue
+            if layer.name not in ("RAM", "SSD"):
                 continue
             seg_end = min(item.token_end, effective_end)
             segments.append((item.token_start, seg_end, layer.node_id, layer.name))
@@ -796,8 +862,15 @@ class Cache:
             segments.append((miss_start, seg_end, layer.node_id, layer.name))
             miss_start = seg_end
 
-        # S3 fallback for anything still missing.
-        if miss_start < effective_end and self.s3_spec.enabled:
+        # S3 fallback for anything still missing, but only if the destination
+        # node actually has internet download bandwidth.
+        node = self.node_hardware.get(dest_node_id)
+        s3_download_ok = (
+            self.s3_spec.enabled
+            and node is not None
+            and node.spec.network_inet_down > 0
+        )
+        if miss_start < effective_end and s3_download_ok:
             s3_layer = self._s3_layer()
             while miss_start < effective_end:
                 item = _covering_item(s3_index, miss_start)
@@ -857,7 +930,10 @@ class Cache:
                 f"RAM usage: {self.ram_usage_bytes[node_id]} / "
                 f"{self.ram_capacity_bytes[node_id]} bytes, "
                 f"SSD usage: {self.ssd_usage_bytes[node_id]} / "
-                f"{self.ssd_capacity_bytes[node_id]} bytes",
+                f"{self.ssd_capacity_bytes[node_id]} bytes"
+                if self.ssd_capacity_bytes.get(node_id, 0) > 0
+                else f"RAM usage: {self.ram_usage_bytes[node_id]} / "
+                f"{self.ram_capacity_bytes[node_id]} bytes (no SSD)",
             )
         return eviction_legs
 
@@ -996,10 +1072,14 @@ class Cache:
         if eviction_legs:
             tracks.append(eviction_legs)
         for start, end, source_node_id, source_layer_name in segments:
-            if source_node_id == node_id and source_layer_name == "RAM":
-                # Already in destination RAM; no physical transfer needed.
-                continue
             bytes_to_transfer = self.kv_size(self.model, end - start)
+            if source_node_id == node_id and source_layer_name == "RAM":
+                # Already in destination host RAM; still need a local RAM leg
+                # to model moving the KV into GPU memory for compute.
+                tracks.append([
+                    TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")
+                ])
+                continue
             track = self._build_data_legs(
                 source_layer_name, source_node_id, node_id, bytes_to_transfer
             )

@@ -328,6 +328,38 @@ def simulate_run_distributed(
                 # so recompute instead of forcing a zero-length step.
                 continue
             if next_ready_ms == float("inf"):
+                # Diagnostic print before raising.
+                print(
+                    "[DEADLOCK DIAGNOSTIC] global_time=",
+                    scheduler.time_ms,
+                    "finished=",
+                    len(finished_requests),
+                    "total=",
+                    scenario.requests.total_requests,
+                    "current_requests=",
+                    len(current_requests),
+                    "router_queue=",
+                    len(router.queue),
+                    "active_users=",
+                    len(request_generator._active_users),
+                    "idle_users=",
+                    len(request_generator._idle_users),
+                    "prefill_instances=",
+                    len(prefill_instances),
+                    "decode_instances=",
+                    len(decode_instances),
+                    file=__import__("sys").stderr,
+                )
+                for inst in prefill_instances + decode_instances:
+                    print(
+                        f"  instance node={inst.node_id} queue={len(inst.queue)} download={len(inst.download_queue)} upload={len(inst.upload_queue)} time_to_next={inst.time_to_next_completion()}",
+                        file=__import__("sys").stderr,
+                    )
+                for r in current_requests[:10]:
+                    print(
+                        f"  req id={r.id} user={r.user_id} session={r.session_id} stage={r.stage} isl={r.isl} osl={r.osl} decoded={r.decoded_tokens} prefilled={r.prefilled_tokens}",
+                        file=__import__("sys").stderr,
+                    )
                 raise RuntimeError(
                     "No compute/transfer events and no user will become ready, "
                     "but not all requests are finished."

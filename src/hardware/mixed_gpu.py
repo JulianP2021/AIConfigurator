@@ -3,8 +3,12 @@
 When a colocated node uses one GPU type for prefill and another for decode, the
 hourly price is derived from the base machine's full price: we subtract the
 compute cost of the GPUs removed from the base machine and add the compute cost
-of the donor GPUs.  The compute-only price is pinned to a fixed fraction of the
-machine's hourly total.
+of the donor GPUs.
+
+GPU-only compute prices are read from
+``src/hardware/aws_hardware.json`` under ``_pricing.gpu_compute_prices_usd_per_hour``.
+If a GPU type is missing from that table, we fall back to a fixed fraction of the
+machine's full hourly price.
 """
 
 import copy
@@ -14,16 +18,32 @@ from typing import Any
 from src.hardware.hardware import Hardware
 from src.hardware.scraper import (
     fetch_machine_hardware,
+    load_aws_hardware_db,
     load_combined_machine_db,
 )
 
 
-def _per_gpu_compute_price(
-    machine_name: str, compute_price_fraction: float = 0.6
-) -> float:
-    """Return the compute-only hourly price per GPU for a machine."""
+def _gpu_compute_price(machine_name: str, compute_price_fraction: float = 0.6) -> float:
+    """Return the compute-only hourly price for one GPU of ``machine_name``.
+
+    Looks up the per-family compute price from
+    ``aws_hardware.json::_pricing.gpu_family_pricing``.  If the machine's GPU
+    type is not listed or has no positive compute price, fall back to
+    ``compute_price_fraction`` of the machine's full hourly price divided by GPU
+    count.
+    """
     db = load_combined_machine_db()
     config = db[machine_name]
+    gpu_name = config.get("gpu_name", "")
+
+    pricing, _ = load_aws_hardware_db()
+
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name, {})
+    compute_price = family.get("compute_usd_per_gpu_hour", 0.0)
+    if compute_price > 0.0:
+        return float(compute_price)
+
     total_gpus = int(config.get("num_gpus", 1))
     compute_only_price = float(config.get("dph_base", 0.0)) * compute_price_fraction
     return compute_only_price / total_gpus if total_gpus > 0 else 0.0
@@ -73,8 +93,8 @@ def adjust_price_for_gpu_mix(
         )
     base_gpus_removed = base_total_gpus - base_gpus_to_keep
 
-    base_gpu_price = _per_gpu_compute_price(base_machine_name, compute_price_fraction)
-    donor_gpu_price = _per_gpu_compute_price(donor_machine_name, compute_price_fraction)
+    base_gpu_price = _gpu_compute_price(base_machine_name, compute_price_fraction)
+    donor_gpu_price = _gpu_compute_price(donor_machine_name, compute_price_fraction)
 
     base_full_price = float(base_config.get("dph_base", 0.0))
     new_price = (

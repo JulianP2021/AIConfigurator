@@ -143,22 +143,16 @@ _HOUR_S = 3600.0
 
 def _derive_custom_price(
     config: dict[str, Any],
-    pricing: dict[str, float],
+    pricing: dict[str, Any],
 ) -> float:
     """Derive an hourly price for a custom machine from unit prices.
 
-    The price is the sum of:
+    If the config specifies a ``gpu_name`` that exists in the per-family pricing
+    table, the per-family component prices are used (with global prices as
+    fallback for missing components).  Otherwise the legacy path is used:
 
-    * ``gpu_price_usd_per_hour`` (machine-specific, required in the config)
-    * CPU RAM: ``cpu_ram`` bytes * ``cpu_ram_usd_per_gb_hour`` / GB
-    * SSD: ``nvme_mem`` bytes * ``ssd_usd_per_gb_hour`` / GB
-    * SSD bandwidth: ``nvme_bw`` (bytes/s) converted to Gbps and multiplied by
-      ``ssd_bw_usd_per_gbps_hour``.
-    * Internet upload/download: respective bandwidths (bytes/s) converted to
-      GB/hour and multiplied by the corresponding unit prices.
-    * Inter-node upload/download: respective bandwidths (bytes/s) converted
-      to Gbps and multiplied by the corresponding unit prices.
-    * PCIe: ``pcie_bw`` (bytes/s) converted to GB/hour.
+    * ``gpu_price_usd_per_hour`` (machine-specific)
+    * global CPU RAM, SSD, bandwidth, internet, inter-node and PCIe prices.
 
     Parameters
     ----------
@@ -171,7 +165,6 @@ def _derive_custom_price(
     -------
     Hourly price in USD.
     """
-    gpu_price = float(config.get("gpu_price_usd_per_hour", 0.0))
 
     def unit(key: str) -> float:
         return float(pricing.get(key, 0.0))
@@ -179,29 +172,54 @@ def _derive_custom_price(
     def bytes_to_gb_h(val: float) -> float:
         return float(val) / _GB * _HOUR_S
 
-    cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
-    ssd_gb = float(config.get("nvme_mem", 0)) / _GB
-
     def bytes_to_gbps(val: float) -> float:
         return float(val) * 8.0 / 1e9
 
-    price = gpu_price
-    price += cpu_ram_gb * unit("cpu_ram_usd_per_gb_hour")
-    price += ssd_gb * unit("ssd_usd_per_gb_hour")
-    price += bytes_to_gbps(config.get("nvme_bw", 0)) * unit("ssd_bw_usd_per_gbps_hour")
-    price += bytes_to_gb_h(config.get("network_inet_up", 0)) * unit(
+    gpu_name = config.get("gpu_name", "")
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name, {}) if gpu_name else {}
+
+    def family_or_global(key: str) -> float:
+        return float(family.get(key, pricing.get(key, 0.0)))
+
+    num_gpus = int(config.get("num_gpus", 1))
+    cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
+    ssd_gb = float(config.get("nvme_mem", 0)) / _GB
+
+    # Per-family GPU compute price, otherwise legacy machine-specific GPU price.
+    if "compute_usd_per_gpu_hour" in family:
+        price = num_gpus * family["compute_usd_per_gpu_hour"]
+    else:
+        price = float(config.get("gpu_price_usd_per_hour", 0.0))
+
+    price += cpu_ram_gb * family_or_global("cpu_ram_usd_per_gb_hour")
+    price += ssd_gb * family_or_global("ssd_usd_per_gb_hour")
+    price += bytes_to_gbps(config.get("nvme_bw", 0)) * family_or_global(
+        "ssd_bw_usd_per_gbps_hour"
+    )
+    price += bytes_to_gb_h(config.get("network_inet_up", 0)) * family_or_global(
         "inet_up_usd_per_gb_hour"
     )
-    price += bytes_to_gb_h(config.get("network_inet_down", 0)) * unit(
+    price += bytes_to_gb_h(config.get("network_inet_down", 0)) * family_or_global(
         "inet_down_usd_per_gb_hour"
     )
-    price += bytes_to_gbps(config.get("network_inter_node_up", 0)) * unit(
-        "inter_node_up_usd_per_gbps_hour"
+    # Inter-node bandwidth is defined by environment/CLI defaults, not the
+    # machine config, but its unit price is still part of _pricing.  When the
+    # machine config does not provide explicit inter-node bandwidths, fall
+    # back to the same env default used at runtime.
+    inter_node_up_gbps = bytes_to_gbps(
+        config.get("network_inter_node_up", _resolve_inter_node_bw(None))
     )
-    price += bytes_to_gbps(config.get("network_inter_node_down", 0)) * unit(
+    inter_node_down_gbps = bytes_to_gbps(
+        config.get("network_inter_node_down", _resolve_inter_node_bw(None))
+    )
+    price += inter_node_up_gbps * family_or_global("inter_node_up_usd_per_gbps_hour")
+    price += inter_node_down_gbps * family_or_global(
         "inter_node_down_usd_per_gbps_hour"
     )
-    price += bytes_to_gb_h(config.get("pcie_bw", 0)) * unit("pcie_usd_per_gb_hour")
+    price += bytes_to_gb_h(config.get("pcie_bw", 0)) * family_or_global(
+        "pcie_usd_per_gb_hour"
+    )
 
     return price
 

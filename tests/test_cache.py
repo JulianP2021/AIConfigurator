@@ -152,14 +152,14 @@ class TestCacheDownload:
         dr = cache_with_fake_model.download_kv(0, req)
 
         assert req.prefilled_tokens == 128
-        assert dr.tracks == []
+        assert bottleneck_names(dr.tracks) == ["RAM_LOCAL"]
 
     def test_download_from_ram_local(self, cache_with_fake_model: Cache):
         req = Request(128, 8, user_id=1, session_id=10)
         cache_with_fake_model.insert_cache_item(CacheItem((1, 10), 0, 128), 0)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert dr.tracks == []
+        assert bottleneck_names(dr.tracks) == ["RAM_LOCAL"]
 
     def test_download_from_ram_local_replaces_existing_item(
         self, cache_with_fake_model: Cache
@@ -170,7 +170,7 @@ class TestCacheDownload:
         original_tick = old_item.last_access_tick
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert dr.tracks == []
+        assert bottleneck_names(dr.tracks) == ["RAM_LOCAL"]
 
         ram_items = cache_with_fake_model.find_cache((1, 10))
         assert len(ram_items) == 1
@@ -256,7 +256,10 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem((1, 31), 100, 200), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert bottleneck_names(dr.tracks) == ["NETWORK", "RAM_LOCAL"]
+        assert [bottleneck_names([track]) for track in dr.tracks] == [
+            ["RAM_LOCAL"],
+            ["NETWORK", "RAM_LOCAL"],
+        ]
 
         local_items = cache_with_fake_model.find_cache((1, 31), node_id=0)
         assert len(local_items) == 1
@@ -299,8 +302,10 @@ class TestCacheDownload:
 
         dr = cache.download_kv(0, req)
         # The longest covering item is fetched in a single track because it
-        # spans the remaining [100, 300) range.
+        # spans the remaining [100, 300) range.  The local [0, 100) prefix
+        # now emits a RAM_LOCAL leg as well.
         assert [bottleneck_names([track]) for track in dr.tracks] == [
+            ["RAM_LOCAL"],
             ["NETWORK", "RAM_LOCAL"],
         ]
 

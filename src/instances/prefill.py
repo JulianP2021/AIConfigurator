@@ -99,7 +99,13 @@ class PrefillInstance:
 
         Transfer completion times are handled globally by the
         ``BandwidthScheduler``; this method only reports compute events.
+
+        If the head download in the queue has no active legs (e.g. a zero-byte
+        download for a prefix that is already local), return 0 so the event
+        loop drains it immediately.
         """
+        if self.download_queue and not self.download_queue[0][0].active_legs:
+            return 0.0
         if self.queue:
             request = self.queue[0][0]
             if request.remaining_prefill_time_ms == -1:

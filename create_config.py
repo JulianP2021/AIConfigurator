@@ -56,21 +56,40 @@ if __name__ == "__main__":
     config["colocated"] = args.colocated
     config["prefill_gpus_per_node"] = args.prefill_gpus_per_node
 
+    # High-end training GPUs to keep when --high-end-only is set.
+    HIGH_END_GPUS = {
+        "A100_40GB",
+        "A100_80GB",
+        "H100 NVL",
+        "H200",
+        "H200 NVL",
+        "B200",
+        "B300",
+        "INF1",
+        "INF2",
+    }
+
     possible_machines: list[tuple[str, dict[str, Any]]] = []
 
     for machine_name, machine in machine_db.items():
         print(machine_name, " | ", machine["gpu_name"])
-        if machine["gpu_name"] in gpu_db:
-            for already_considered_machine, _ in possible_machines:
-                this_key = machine_name.split("x")
-                old_key = already_considered_machine.split("x")
-                if this_key[0] == old_key[0] and this_key[1][:1] == old_key[1][:1]:
-                    print(
-                        f"Skipping {machine_name} because {already_considered_machine} is already considered."
-                    )
-                    break
-            else:
-                possible_machines.append((machine_name, machine))
+        if machine["gpu_name"] not in gpu_db:
+            continue
+        if args.high_end_only and machine["gpu_name"] not in HIGH_END_GPUS:
+            print(
+                f"Skipping {machine_name} because {machine['gpu_name']} is not a high-end GPU."
+            )
+            continue
+        for already_considered_machine, _ in possible_machines:
+            this_key = machine_name.split("x")
+            old_key = already_considered_machine.split("x")
+            if this_key[0] == old_key[0] and this_key[1][:1] == old_key[1][:1]:
+                print(
+                    f"Skipping {machine_name} because {already_considered_machine} is already considered."
+                )
+                break
+        else:
+            possible_machines.append((machine_name, machine))
 
     sorted_possible_machines = sorted(possible_machines, key=lambda x: x[0])
 
