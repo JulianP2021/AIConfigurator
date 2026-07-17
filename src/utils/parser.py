@@ -336,6 +336,15 @@ def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--custom-hardware",
+        type=str,
+        default=None,
+        help=(
+            "Path to a custom hardware JSON file to use as the machine "
+            "database when generating configs. Takes precedence over --legacy."
+        ),
+    )
+    parser.add_argument(
         "--high-end-only",
         action="store_true",
         default=False,

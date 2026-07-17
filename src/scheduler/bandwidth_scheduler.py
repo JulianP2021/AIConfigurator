@@ -50,7 +50,7 @@ class BandwidthScheduler:
             log(
                 LOG_BANDWIDTH,
                 f"Node {node.id} bandwidths: "
-                f"RAM {node.hardware.spec.pcie_bw / 1e6:.2f} MB/s, "
+                f"RAM {max(node.hardware.spec.pcie_bw, node.hardware.spec.nvlink_bw) / 1e6:.2f} MB/s, "
                 f"SSD {node.hardware.spec.nvme_bw / 1e6:.2f} MB/s, "
                 f"Inter-node Up {node.hardware.spec.network_inter_node_up / 1e6:.2f} MB/s, "
                 f"Inter-node Down {node.hardware.spec.network_inter_node_down / 1e6:.2f} MB/s, "
@@ -116,10 +116,10 @@ class BandwidthScheduler:
         for transfer in self.transfers:
             for leg in transfer.active_legs:
                 if leg.bottleneck == "RAM_LOCAL":
+                    spec = self.node_specs[leg.source_node_id]
                     node_bw = (
-                        self.node_specs[leg.source_node_id].pcie_bw
-                        / ram_counts[leg.source_node_id]
-                    )
+                        spec.nvlink_bw if spec.nvlink_bw > 0 else spec.pcie_bw
+                    ) / ram_counts[leg.source_node_id]
                     leg.bandwidth_bytes_per_ms = node_bw / 1000.0
                 elif leg.bottleneck == "SSD_LOCAL":
                     node_bw = (

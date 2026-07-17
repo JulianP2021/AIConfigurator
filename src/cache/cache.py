@@ -495,9 +495,13 @@ class Cache:
             # frees at least a 512-token-sized slot, so the loop converges.
             victim, s3_legs = self._evict_ram_to_ssd(node_id)
             victim_size = self._item_size(victim)
-            eviction_legs.append(
-                TransferLeg(victim_size, node_id, node_id, "SSD_LOCAL")
-            )
+            # Only emit a local SSD leg if this node actually has an SSD tier.
+            # Nodes without SSD (e.g., Inferentia) evict directly to S3 or drop,
+            # and a zero-bandwidth SSD_LOCAL leg would deadlock the scheduler.
+            if self._ssd_layer(node_id) is not None:
+                eviction_legs.append(
+                    TransferLeg(victim_size, node_id, node_id, "SSD_LOCAL")
+                )
             eviction_legs.extend(s3_legs)
         return eviction_legs
 
@@ -740,12 +744,14 @@ class Cache:
         node_id: int,
         token_start: int,
         token_end: int,
-    ) -> list[TransferLeg]:
+    ) -> tuple[CacheItem, list[TransferLeg]]:
         """Create a single contiguous RAM item, deleting overlapping local copies.
 
         Local source items (same node) are removed because their data becomes
         part of the new merged RAM item.  Source copies on other nodes are kept.
-        Returns any destination-RAM eviction legs produced while making room.
+        Returns the merged ``CacheItem`` (its ``token_end`` reflects any expansion
+        from merging with existing items) and any destination-RAM eviction legs
+        produced while making room.
         """
         ssd_layer = self._ssd_layer(node_id)
         layers = [self._ram_layer(node_id)]
@@ -767,7 +773,8 @@ class Cache:
                 self.delete_item(existing)
 
         merged = CacheItem(session_id, token_start, token_end)
-        return self.insert_cache_item(merged, node_id)
+        eviction_legs = self.insert_cache_item(merged, node_id)
+        return merged, eviction_legs
 
     def _find_download_segments(
         self, session_id: tuple[int, int], dest_node_id: int, required_end: int
@@ -1065,28 +1072,54 @@ class Cache:
                 )
             return DownloadRequest(request, [])
 
+        # Verify source segments still exist before we optimistically mutate
+        # state.  A segment that disappeared (e.g. evicted by a concurrent upload)
+        # would make the computed transfer legs stale and corrupt the cache.
+        for start, end, source_node_id, source_layer_name in segments:
+            if source_layer_name == "S3":
+                layer = self._s3_layer()
+            else:
+                layer = self.get_layer(source_node_id, source_layer_name)
+            item_dict = layer.content.get(cache_key)
+            covering_item = None
+            if item_dict is not None:
+                for item in item_dict.values():
+                    if item.token_start <= start and item.token_end >= end:
+                        covering_item = item
+                        break
+            assert covering_item is not None, (
+                f"Download source segment [{start},{end}) for request {request.id} "
+                f"(user {request.user_id}, session {request.session_id}) no longer "
+                f"present on {source_layer_name} node {source_node_id}"
+            )
+
         # Optimistically update cache state: merge everything into one RAM item.
-        eviction_legs = self._merge_into_ram(cache_key, node_id, 0, effective_end)
+        merged_item, eviction_legs = self._merge_into_ram(
+            cache_key, node_id, 0, effective_end
+        )
 
         tracks: list[list[TransferLeg]] = []
         if eviction_legs:
             tracks.append(eviction_legs)
         for start, end, source_node_id, source_layer_name in segments:
-            bytes_to_transfer = self.kv_size(self.model, end - start)
             if source_node_id == node_id and source_layer_name == "RAM":
                 # Already in destination host RAM; still need a local RAM leg
                 # to model moving the KV into GPU memory for compute.
+                bytes_to_transfer = self.kv_size(self.model, end - start)
                 tracks.append([
                     TransferLeg(bytes_to_transfer, node_id, node_id, "RAM_LOCAL")
                 ])
                 continue
+            bytes_to_transfer = self.kv_size(self.model, end - start)
             track = self._build_data_legs(
                 source_layer_name, source_node_id, node_id, bytes_to_transfer
             )
             if track:
                 tracks.append(track)
 
-        request.prefilled_tokens = effective_end
+        # Use the actual merged cache end, which may be larger than effective_end
+        # if the inserted item merged with an existing overlapping cached prefix.
+        request.prefilled_tokens = merged_item.token_end
         if should_log(LOG_CACHE):
             log(
                 LOG_CACHE,

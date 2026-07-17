@@ -7,6 +7,7 @@ import pytest
 
 from src.cache.cache import Cache
 from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec, S3Spec
+from src.hardware.scraper import _clear_combined_machine_db_cache
 from src.model.model import Model
 from src.request.request import Request
 
@@ -174,3 +175,11 @@ def reset_logger_mask() -> Generator:
         yield
     finally:
         logger.set_log_mask(original)
+
+
+@pytest.fixture(autouse=True)
+def reset_machine_cache() -> Generator:
+    """Clear the hardware DB cache before each test."""
+    _clear_combined_machine_db_cache()
+    yield
+    _clear_combined_machine_db_cache()

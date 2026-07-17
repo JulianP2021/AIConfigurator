@@ -141,7 +141,15 @@ def fetch_mixed_gpu_hardware(
 
     db = load_combined_machine_db()
     base_config = copy.deepcopy(db[base_machine_name])
+    donor_config = db[donor_machine_name]
     total_gpus = base_gpus_to_keep + donor_gpus_to_add
+
+    # Mixed GPU nodes are limited by the slower GPU's local memory bandwidth.
+    base_nvlink = float(base_config.get("nvlink_bw", 0.0))
+    donor_nvlink = float(donor_config.get("nvlink_bw", 0.0))
+    base_config["nvlink_bw"] = (
+        min(base_nvlink, donor_nvlink) if base_nvlink and donor_nvlink else 0.0
+    )
 
     base_config["num_gpus"] = total_gpus
     base_config["dph_base"] = new_price

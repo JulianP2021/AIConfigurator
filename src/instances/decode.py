@@ -7,7 +7,7 @@ from src.cache.cache import Cache
 #     get_meta,
 #     run_static_inference,
 # )
-from src.eroors.errors import DecodeError
+from src.eroors.errors import DecodeError, KVStoreTooSmallError
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log, should_log
 from src.model.model import Model
@@ -168,7 +168,8 @@ class DecodeInstance:
 
         assert time_ms >= 0, "Time to process queue should be non-negative"
         if self._kv_cache_bytes > self.hardware.gpu_mem:
-            print(
+            log(
+                LOG_INSTANCE,
                 f"KV cache exceeds GPU memory for node {self.node_id}: "
                 f"{self._kv_cache_bytes} bytes used by {len(self.queue)} requests with {sum(r.cache_length for r, _ in self.queue) / len(self.queue) if self.queue else 0} avg tokens , {self.hardware.gpu_mem} bytes available",
             )
@@ -201,6 +202,11 @@ class DecodeInstance:
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
+
+            if request.prefilled_tokens < request.isl:
+                raise KVStoreTooSmallError(
+                    "KV download did not return all prefilles tokens"
+                )
 
         # Drain completed decode uploads.  The actual upload is the last track;
         # once it finishes the request is done, while any eviction tracks keep

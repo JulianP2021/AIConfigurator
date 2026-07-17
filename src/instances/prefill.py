@@ -213,13 +213,15 @@ class PrefillInstance:
                     )
                 self.queue.pop(0)
                 ur = self.cache.upload_kv(self.node_id, request)
-                assert ur.active_legs, (
-                    f"Prefill upload for request {request.id} (user {request.user_id}, "
-                    f"session {request.session_id}) on node {self.node_id} has no active legs"
-                )
-                request.prefill_upload_start_ms = now
-                self.scheduler.register(ur)
-                self.upload_queue.append((ur, 0))
+                if ur.active_legs:
+                    request.prefill_upload_start_ms = now
+                    self.scheduler.register(ur)
+                    self.upload_queue.append((ur, 0))
+                else:
+                    # The full KV was already cached locally; nothing to upload.
+                    request.prefill_upload_start_ms = now
+                    request.prefill_upload_end_ms = now
+                    finished_requests.append(request)
 
                 # The next request in line (if any) starts prefill service now.
                 if self.queue:

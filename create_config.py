@@ -16,7 +16,9 @@ if __name__ == "__main__":
     parser = get_create_config_parser(env)
     args = parser.parse_args()
 
-    if args.legacy:
+    if args.custom_hardware is not None:
+        _, machine_db = load_aws_hardware_db(args.custom_hardware)
+    elif args.legacy:
         machine_db = load_machine_db()
     else:
         _, machine_db = load_aws_hardware_db()
@@ -50,23 +52,18 @@ if __name__ == "__main__":
     config["user_delay_min_ms"] = args.user_delay_min_ms
     config["user_delay_max_ms"] = args.user_delay_max_ms
     config["random_seed"] = args.random_seed
-    config["batch_size"] = args.batch_size
-    config["num_prefill_nodes"] = args.num_prefill_nodes
-    config["num_decode_nodes"] = args.num_decode_nodes
-    config["colocated"] = args.colocated
-    config["prefill_gpus_per_node"] = args.prefill_gpus_per_node
 
     # High-end training GPUs to keep when --high-end-only is set.
     HIGH_END_GPUS = {
-        "A100_40GB",
-        "A100_80GB",
-        "H100 NVL",
+        # "A100_40GB",
+        # "A100_80GB",
+        # "H100 NVL",
         "H200",
-        "H200 NVL",
-        "B200",
-        "B300",
+        # "H200 NVL",
+        # "B200",
+        # "B300",
         "INF1",
-        "INF2",
+        # "INF2",
     }
 
     possible_machines: list[tuple[str, dict[str, Any]]] = []

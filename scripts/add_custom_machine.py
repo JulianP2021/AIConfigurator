@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Add custom machine presets to the local hardware database with derived pricing.
+
+The script looks up the GPU name in the local GPU database and derives hourly
+prices using per-family component costs from ``src/hardware/custom_hardware.json``
+(falling back to ``src/hardware/aws_hardware.json`` for pricing metadata when the
+custom file does not yet exist). If a component price is missing for a GPU
+family, the global fallback price from the same file is used.
+
+Every numeric option accepts a comma-separated list of values. The script
+computes the Cartesian product of all lists and emits one machine preset per
+combination. By default it runs in dry-run mode; use ``--write`` to persist the
+entries.
+
+Usage example::
+
+    .venv/bin/python scripts/add_custom_machine.py "My H200" H200 \
+        --num-gpus 1,2,4 \
+        --pcie-bw-gbps 128,256 \
+        --nvlink-bw-gbps 0,900 \
+        --ram-mem-gb 256,512 \
+        --ssd-mem-gb 2048,4096 \
+        --ssd-bw-gbps 12.8,25 \
+        --inet-bw-gbps 25 \
+        --write
+
+This writes to ``src/hardware/custom_hardware.json`` by default. Use
+``--custom-hardware`` to write to a different file.
+"""
+
+import argparse
+import itertools
+import json
+import sys
+
+from pathlib import Path
+from typing import Any
+
+
+# Allow importing ``src`` when the script is executed from the project root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.hardware.scraper import (
+    _machine_config_with_defaults,
+    _resolve_inter_node_bw,
+    load_aws_hardware_db,
+    load_gpu_db,
+)
+
+
+_GB = 1024**3
+
+
+def _gb_to_bytes(gb: float) -> int:
+    return int(gb * _GB)
+
+
+def _gbps_to_bytes_per_s(gbps: float) -> int:
+    return int(gbps * 1e9 / 8.0)
+
+
+def _parse_float_list(text: str) -> list[float]:
+    return [float(x.strip()) for x in text.split(",")]
+
+
+def _parse_int_list(text: str) -> list[int]:
+    return [int(float(x.strip())) for x in text.split(",")]
+
+
+def _build_machine_config(settings: dict[str, Any]) -> dict:
+    """Convert one combination of settings into a raw machine config dict."""
+    inet_up_gbps = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
+    inet_down_gbps = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+
+    config: dict[str, Any] = {
+        "name": settings["machine_name"],
+        "gpu_name": settings["gpu_name"],
+        "num_gpus": settings["num_gpus"],
+        "pcie_bw": _gbps_to_bytes_per_s(settings["pcie_bw_gbps"]),
+        "nvlink_bw": _gbps_to_bytes_per_s(settings["nvlink_bw_gbps"]),
+        "cpu_ram": _gb_to_bytes(settings["ram_mem_gb"]),
+        "nvme_mem": _gb_to_bytes(settings["ssd_mem_gb"]),
+        "nvme_bw": _gbps_to_bytes_per_s(settings["ssd_bw_gbps"]),
+        "network_inet_up": _gbps_to_bytes_per_s(inet_up_gbps),
+        "network_inet_down": _gbps_to_bytes_per_s(inet_down_gbps),
+        "network_inter_node_up": _resolve_inter_node_bw(
+            str(settings["inter_node_up_gbps"])
+        ),
+        "network_inter_node_down": _resolve_inter_node_bw(
+            str(settings["inter_node_down_gbps"])
+        ),
+    }
+
+    if settings.get("compute_usd_per_gpu_hour") is not None:
+        config["gpu_price_usd_per_hour"] = settings["compute_usd_per_gpu_hour"]
+
+    return config
+
+
+def _variant_name(base: str, settings: dict[str, Any]) -> str:
+    """Build a deterministic, unique machine name for one combination."""
+    slug = (
+        f"x{settings['num_gpus']} "
+        f"r{settings['ram_mem_gb']:.0f} "
+        f"s{settings['ssd_mem_gb']:.0f} "
+        f"p{settings['pcie_bw_gbps']:.0f}"
+    )
+    if settings["nvlink_bw_gbps"]:
+        slug += f" nvl{settings['nvlink_bw_gbps']:.0f}"
+    slug += f" sbw{settings['ssd_bw_gbps']:.1f}"
+    inet_up = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
+    inet_down = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+    slug += f" inet{inet_up:.1f}/{inet_down:.1f}"
+    return f"{base} {slug}"
+
+
+def _get_pricing(custom_path: Path) -> dict:
+    """Return pricing metadata, falling back to the default file if needed."""
+    target_pricing, _ = load_aws_hardware_db(custom_path)
+    if target_pricing:
+        return target_pricing
+    default_pricing, _ = load_aws_hardware_db()
+    if not default_pricing:
+        raise RuntimeError(
+            "Could not load pricing metadata from "
+            "src/hardware/aws_hardware.json. Run scripts/derive_family_pricing.py first."
+        )
+    return default_pricing
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Add custom machine presets with derived hourly pricing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Bandwidth values are interpreted as Gbps; memory values as GB. "
+        "Each option may be a comma-separated list; the script emits the Cartesian product.",
+    )
+    parser.add_argument("machine_name", help="Base name for the new machine presets.")
+    parser.add_argument(
+        "gpu_name",
+        help="GPU name(s) as they appear in _gpu_db.json. May be comma-separated.",
+    )
+    parser.add_argument(
+        "--num-gpus",
+        type=str,
+        default="1",
+        help="Number of GPUs per node. Comma-separated list accepted (default: 1).",
+    )
+    parser.add_argument(
+        "--pcie-bw-gbps",
+        type=str,
+        required=True,
+        help="PCIe bandwidth in Gbps. Comma-separated list accepted.",
+    )
+    parser.add_argument(
+        "--nvlink-bw-gbps",
+        type=str,
+        default="0",
+        help="NVLink bandwidth in Gbps. Comma-separated list accepted (default: 0).",
+    )
+    parser.add_argument(
+        "--ram-mem-gb",
+        type=str,
+        required=True,
+        help="CPU RAM size in GB. Comma-separated list accepted.",
+    )
+    parser.add_argument(
+        "--ssd-mem-gb",
+        type=str,
+        required=True,
+        help="Local SSD size in GB. Comma-separated list accepted.",
+    )
+    parser.add_argument(
+        "--ssd-bw-gbps",
+        type=str,
+        required=True,
+        help="SSD (NVMe) bandwidth in Gbps. Comma-separated list accepted.",
+    )
+    parser.add_argument(
+        "--inet-bw-gbps",
+        type=str,
+        default="0",
+        help="Symmetric internet up/down bandwidth in Gbps. Comma-separated list accepted (default: 0).",
+    )
+    parser.add_argument(
+        "--inet-up-gbps",
+        type=str,
+        default=None,
+        help="Internet upload bandwidth in Gbps (comma-separated; overrides --inet-bw-gbps).",
+    )
+    parser.add_argument(
+        "--inet-down-gbps",
+        type=str,
+        default=None,
+        help="Internet download bandwidth in Gbps (comma-separated; overrides --inet-bw-gbps).",
+    )
+    parser.add_argument(
+        "--inter-node-up-gbps",
+        type=str,
+        default="100",
+        help="Datacenter NIC upload bandwidth in Gbps. Comma-separated list accepted (default: 100).",
+    )
+    parser.add_argument(
+        "--inter-node-down-gbps",
+        type=str,
+        default="100",
+        help="Datacenter NIC download bandwidth in Gbps. Comma-separated list accepted (default: 100).",
+    )
+    parser.add_argument(
+        "--compute-usd-per-gpu-hour",
+        type=str,
+        default=None,
+        help="Override the derived compute price per GPU per hour (USD). Comma-separated list accepted.",
+    )
+    parser.add_argument(
+        "--custom-hardware",
+        type=Path,
+        default=Path("src/hardware/custom_hardware.json"),
+        help="Path to the custom hardware JSON file (default: src/hardware/custom_hardware.json).",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Actually write the entries to the custom hardware file. Without this flag the script runs in dry-run mode.",
+    )
+    args = parser.parse_args()
+
+    gpu_names = [g.strip() for g in args.gpu_name.split(",")]
+
+    # Validate GPU names in the local database.
+    gpu_db = load_gpu_db()
+    missing = [g for g in gpu_names if g not in gpu_db]
+    if missing:
+        print(
+            f"GPU(s) not found in local database: {missing}. "
+            f"Available: {sorted(gpu_db)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    pricing = _get_pricing(args.custom_hardware)
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    missing_families = [g for g in gpu_names if g not in family_pricing]
+    if missing_families:
+        print(
+            f"Warning: no per-family pricing for {missing_families}. "
+            "Falling back to global prices for components and zero for compute. "
+            "Use --compute-usd-per-gpu-hour to set a compute price.",
+            file=sys.stderr,
+        )
+
+    # Build dimension lists.
+    dimensions: dict[str, list[Any]] = {
+        "gpu_name": gpu_names,
+        "num_gpus": _parse_int_list(args.num_gpus),
+        "pcie_bw_gbps": _parse_float_list(args.pcie_bw_gbps),
+        "nvlink_bw_gbps": _parse_float_list(args.nvlink_bw_gbps),
+        "ram_mem_gb": _parse_float_list(args.ram_mem_gb),
+        "ssd_mem_gb": _parse_float_list(args.ssd_mem_gb),
+        "ssd_bw_gbps": _parse_float_list(args.ssd_bw_gbps),
+        "inet_bw_gbps": _parse_float_list(args.inet_bw_gbps),
+        "inter_node_up_gbps": _parse_float_list(args.inter_node_up_gbps),
+        "inter_node_down_gbps": _parse_float_list(args.inter_node_down_gbps),
+    }
+
+    if args.inet_up_gbps is not None:
+        dimensions["inet_up_gbps"] = _parse_float_list(args.inet_up_gbps)
+    if args.inet_down_gbps is not None:
+        dimensions["inet_down_gbps"] = _parse_float_list(args.inet_down_gbps)
+    if args.compute_usd_per_gpu_hour is not None:
+        dimensions["compute_usd_per_gpu_hour"] = _parse_float_list(
+            args.compute_usd_per_gpu_hour
+        )
+
+    keys = list(dimensions.keys())
+    combinations = list(itertools.product(*(dimensions[k] for k in keys)))
+
+    entries: dict[str, dict[str, Any]] = {}
+    printed: list[dict[str, Any]] = []
+
+    for combo in combinations:
+        settings = dict(zip(keys, combo, strict=False))
+        settings["machine_name"] = _variant_name(args.machine_name, settings)
+
+        raw_config = _build_machine_config(settings)
+        final_config = _machine_config_with_defaults(raw_config, pricing)
+        entries[settings["machine_name"]] = final_config
+
+        printed.append({
+            "name": settings["machine_name"],
+            "gpu": settings["gpu_name"],
+            "num_gpus": settings["num_gpus"],
+            "ram_gb": settings["ram_mem_gb"],
+            "ssd_gb": settings["ssd_mem_gb"],
+            "ssd_bw_gbps": settings["ssd_bw_gbps"],
+            "pcie_gbps": settings["pcie_bw_gbps"],
+            "nvlink_gbps": settings["nvlink_bw_gbps"],
+            "inet_up_gbps": settings.get("inet_up_gbps", settings["inet_bw_gbps"]),
+            "inet_down_gbps": settings.get("inet_down_gbps", settings["inet_bw_gbps"]),
+            "inter_node_up_gbps": settings["inter_node_up_gbps"],
+            "inter_node_down_gbps": settings["inter_node_down_gbps"],
+            "price": final_config.get("dph_base", 0.0),
+        })
+
+    # Print summary.
+    print(
+        f"Generated {len(printed)} machine preset(s) from base name {args.machine_name!r}:\n"
+    )
+    for entry in printed:
+        print(f"  {entry['name']}")
+        print(f"    GPU:    {entry['gpu']} x{entry['num_gpus']}")
+        print(f"    RAM:    {entry['ram_gb']:.1f} GB")
+        print(f"    SSD:    {entry['ssd_gb']:.1f} GB @ {entry['ssd_bw_gbps']:.1f} Gbps")
+        print(f"    PCIe:   {entry['pcie_gbps']:.1f} Gbps")
+        print(f"    NVLink: {entry['nvlink_gbps']:.1f} Gbps")
+        print(
+            f"    Internet up/down: {entry['inet_up_gbps']:.1f} / {entry['inet_down_gbps']:.1f} Gbps"
+        )
+        print(
+            f"    Inter-node up/down: {entry['inter_node_up_gbps']:.1f} / {entry['inter_node_down_gbps']:.1f} Gbps"
+        )
+        print(f"    Derived hourly price: ${entry['price']:.4f}/h")
+        print()
+
+    if not args.write:
+        print("Dry run; entries not written. Pass --write to persist them.")
+        print(json.dumps(entries, indent=2))
+        return 0
+
+    _, existing_machines = load_aws_hardware_db(args.custom_hardware)
+    output_data = {
+        "_pricing": pricing,
+        "machines": {**existing_machines, **entries},
+    }
+
+    args.custom_hardware.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
+    print(f"Wrote {len(entries)} entries to {args.custom_hardware}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

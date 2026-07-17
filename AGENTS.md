@@ -153,7 +153,7 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime. In new 
 
 - Bandwidth is scheduled globally by `BandwidthScheduler` using equal-share fairness.
 - Bottlenecks:
-  - `RAM_LOCAL` shares the node's `pcie_bw`.
+  - `RAM_LOCAL` shares the node's `nvlink_bw` if specified (greater than 0), otherwise `pcie_bw`.
   - `SSD_LOCAL` shares the node's `nvme_bw`.
   - `NETWORK` (node-to-node KV transfers) uses the minimum of the source node's `network_inter_node_up` share and the destination node's `network_inter_node_down` share.
   - `S3_UPLOAD` / `S3_DOWNLOAD` use the node's `network_inet_up` / `network_inet_down` internet link.
@@ -186,7 +186,7 @@ Use `src.logger.set_log_mask()` or `--log-mask` to change it at runtime. In new 
 
 - Bandwidth fields in `HardwareSpec` are stored as **bytes/second**. The machine DB loader already converts from Mbit/s.
 - `Model.kv_size_per_token` returns bytes per token; multiply by token count to get KV bytes.
-- `HardwareSpec` uses `pcie_bw` for local RAM bandwidth, not `ram_bw`.
+- `HardwareSpec` uses `nvlink_bw` for local RAM bandwidth when specified (greater than 0), otherwise `pcie_bw`. There is no separate `ram_bw` field.
 - The simulation event loop advances by the minimum of the next compute event, the next transfer event, and the next request arrival.
 - `request_id_counter` is module-level global state in `src/request/request.py`.
 

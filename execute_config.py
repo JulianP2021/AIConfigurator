@@ -76,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from src.eroors.errors import (
     DecodeError,
     DecodeLatencyError,
+    KVStoreTooSmallError,
     PrefillError,
     PrefillLatencyError,
 )
@@ -665,6 +666,7 @@ def _run_colocated_configs(
                 ))
                 successful.append((i, config))
             failed.extend(failed_in_batch)
+            failed = [e for e in failed if not isinstance(e[2], KVStoreTooSmallError)]
 
             for next_batch in config_batches:
                 if len(next_batch) == 0:
@@ -786,6 +788,10 @@ def _run_separate_configs(
                     ))
                     successful.append((i, config))
                 failed.extend(failed_in_batch)
+                failed = [
+                    e for e in failed if not isinstance(e[2], KVStoreTooSmallError)
+                ]
+
                 invalidated = 0
                 for next_batch in config_batches:
                     if len(next_batch) == 0:
@@ -970,6 +976,10 @@ def _run_mixed_configs(
                     ))
                     successful.append((i, config))
                 failed.extend(failed_in_batch)
+                failed = [
+                    e for e in failed if not isinstance(e[2], KVStoreTooSmallError)
+                ]
+
                 invalidated = 0
                 for next_batch in config_batches:
                     if len(next_batch) == 0:

@@ -188,18 +188,6 @@
     }
   },
   "machines": {
-    "My Custom H200 x1": {
-      "name": "My Custom H200 x1",
-      "gpu_name": "H200",
-      "num_gpus": 1,
-      "gpu_price_usd_per_hour": 2.5,
-      "nvme_mem": 1000000000000,
-      "nvme_bw": 2000000000,
-      "network_inet_up": 1000000000,
-      "network_inet_down": 1000000000,
-      "pcie_bw": 50000000000,
-      "cpu_ram": 200000000000
-    },
     "AWS p3.2xlarge (Tesla V100 x1)": {
       "name": "AWS p3.2xlarge (Tesla V100 x1)",
       "gpu_name": "TESLA_V100",
@@ -208,9 +196,10 @@
       "nvme_bw": 0,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 16000000000,
+      "pcie_bw": 16911433728,
       "cpu_ram": 64424509440,
-      "dph_base": 3.06
+      "dph_base": 3.06,
+      "nvlink_bw": 80530636800
     },
     "AWS p3.8xlarge (Tesla V100 x4)": {
       "name": "AWS p3.8xlarge (Tesla V100 x4)",
@@ -220,9 +209,10 @@
       "nvme_bw": 0,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 64000000000,
+      "pcie_bw": 67645734912,
       "cpu_ram": 257698037760,
-      "dph_base": 12.24
+      "dph_base": 12.24,
+      "nvlink_bw": 80530636800
     },
     "AWS p3.16xlarge (Tesla V100 x8)": {
       "name": "AWS p3.16xlarge (Tesla V100 x8)",
@@ -232,9 +222,10 @@
       "nvme_bw": 0,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 128000000000,
+      "pcie_bw": 135291469824,
       "cpu_ram": 515396075520,
-      "dph_base": 24.48
+      "dph_base": 24.48,
+      "nvlink_bw": 80530636800
     },
     "AWS p4d.24xlarge (A100 40GB x8)": {
       "name": "AWS p4d.24xlarge (A100 40GB x8)",
@@ -244,9 +235,10 @@
       "nvme_bw": 10000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 250000000000,
+      "pcie_bw": 270582939648,
       "cpu_ram": 1236950581248,
-      "dph_base": 21.957642
+      "dph_base": 21.957642,
+      "nvlink_bw": 322122547200
     },
     "AWS p4de.24xlarge (A100 80GB x8)": {
       "name": "AWS p4de.24xlarge (A100 80GB x8)",
@@ -256,9 +248,10 @@
       "nvme_bw": 10000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 250000000000,
+      "pcie_bw": 270582939648,
       "cpu_ram": 1236950581248,
-      "dph_base": 27.44705
+      "dph_base": 27.44705,
+      "nvlink_bw": 322122547200
     },
     "AWS p5.4xlarge (H100 NVL x1)": {
       "name": "AWS p5.4xlarge (H100 NVL x1)",
@@ -268,9 +261,10 @@
       "nvme_bw": 1250000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 250000000000,
+      "pcie_bw": 33822867456,
       "cpu_ram": 274877906944,
-      "dph_base": 6.88
+      "dph_base": 6.88,
+      "nvlink_bw": 483183820800
     },
     "AWS p5.24xlarge (H100 NVL x4)": {
       "name": "AWS p5.24xlarge (H100 NVL x4)",
@@ -280,9 +274,10 @@
       "nvme_bw": 5000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 1000000000000,
+      "pcie_bw": 135291469824,
       "cpu_ram": 1099511627776,
-      "dph_base": 27.52
+      "dph_base": 27.52,
+      "nvlink_bw": 483183820800
     },
     "AWS p5.48xlarge (H100 NVL x8)": {
       "name": "AWS p5.48xlarge (H100 NVL x8)",
@@ -292,9 +287,10 @@
       "nvme_bw": 10000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 2000000000000,
+      "pcie_bw": 270582939648,
       "cpu_ram": 2199023255552,
-      "dph_base": 55.04
+      "dph_base": 55.04,
+      "nvlink_bw": 483183820800
     },
     "AWS p5en.48xlarge (H200 x8)": {
       "name": "AWS p5en.48xlarge (H200 x8)",
@@ -304,9 +300,10 @@
       "nvme_bw": 10000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 2000000000000,
+      "pcie_bw": 270582939648,
       "cpu_ram": 2199023255552,
-      "dph_base": 63.296
+      "dph_base": 63.296,
+      "nvlink_bw": 483183820800
     },
     "AWS p5en.48xlarge (H200 NVL x8)": {
       "name": "AWS p5en.48xlarge (H200 NVL x8)",
@@ -316,9 +313,10 @@
       "nvme_bw": 10000000000,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 2000000000000,
+      "pcie_bw": 270582939648,
       "cpu_ram": 2199023255552,
-      "dph_base": 63.296
+      "dph_base": 63.296,
+      "nvlink_bw": 483183820800
     },
     "AWS g4dn.xlarge (TESLA_T4 x1)": {
       "name": "AWS g4dn.xlarge (TESLA_T4 x1)",
@@ -928,9 +926,10 @@
       "nvme_bw": 4080218931200,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 1862645149224,
+      "pcie_bw": 270582939648,
       "cpu_ram": 4398046511104,
-      "dph_base": 142.416
+      "dph_base": 142.416,
+      "nvlink_bw": 966367641600
     },
     "AWS p6-b200.48xlarge (B200 x8)": {
       "name": "AWS p6-b200.48xlarge (B200 x8)",
@@ -940,9 +939,10 @@
       "nvme_bw": 4080218931200,
       "network_inet_up": 0,
       "network_inet_down": 0,
-      "pcie_bw": 1862645149224,
+      "pcie_bw": 270582939648,
       "cpu_ram": 2199023255552,
-      "dph_base": 113.9328
+      "dph_base": 113.9328,
+      "nvlink_bw": 966367641600
     }
   }
 }

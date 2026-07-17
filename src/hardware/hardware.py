@@ -85,6 +85,7 @@ class HardwareSpec:
     storage_cost: float
     storage_total_cost: float
     verification: str
+    nvlink_bw: float = 0.0
 
 
 @dataclass(frozen=True)

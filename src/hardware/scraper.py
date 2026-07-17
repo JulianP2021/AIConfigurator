@@ -246,6 +246,18 @@ def parse_gpu_count(machine_name: str) -> int:
     return 1
 
 
+_combined_machine_db_cache: dict[str | None, dict[str, dict[str, Any]]] = {}
+
+
+def _clear_combined_machine_db_cache() -> None:
+    """Clear the combined machine database cache.
+
+    Tests that mock the underlying JSON loaders must call this before
+    exercising the lookup functions.
+    """
+    _combined_machine_db_cache.clear()
+
+
 def load_combined_machine_db(
     custom_path: pathlib.Path | str | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -254,11 +266,19 @@ def load_combined_machine_db(
     Custom hardware (from :func:`load_aws_hardware_db`) takes precedence
     over entries in ``_machine_db.json``.  This lets users define local
     hardware presets without modifying the scraped database.
+
+    The result is cached per ``custom_path`` because the JSON files are
+    read repeatedly for large config matrices.
     """
+    cache_key = str(custom_path) if custom_path is not None else None
+    if cache_key in _combined_machine_db_cache:
+        return _combined_machine_db_cache[cache_key]
+
     db = load_machine_db()
     _, custom = load_aws_hardware_db(custom_path)
     if custom:
         db = {**db, **custom}
+    _combined_machine_db_cache[cache_key] = db
     return db
 
 
@@ -464,6 +484,7 @@ def fetch_machine_hardware(
         os_version=scraped.get("os_version", ""),
         pci_gen=scraped.get("pci_gen", 0.0),
         pcie_bw=scraped.get("pcie_bw", 0.0),
+        nvlink_bw=scraped.get("nvlink_bw", 0.0),
         network_bw=scraped.get("network_bw", 0.0),
         reliability=scraped.get("reliability", 0.0),
         reliability_mult=scraped.get("reliability_mult", 0.0),

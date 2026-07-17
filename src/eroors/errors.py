@@ -29,3 +29,7 @@ class DecodeError(Exception):
 
 class DecodeLatencyError(Exception):
     """Exception raised for too large decode latency."""
+
+
+class KVStoreTooSmallError(Exception):
+    """Exception raised if decode can no longer download full KV after prefill upload."""
