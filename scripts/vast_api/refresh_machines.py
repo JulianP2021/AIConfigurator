@@ -3,8 +3,8 @@
 
 Examples::
 
-    python scripts/refresh_machines.py
-    python scripts/refresh_machines.py --list
+    python scripts/vast_api/refresh_machines.py
+    python scripts/vast_api/refresh_machines.py --list
 """
 
 import argparse
@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 # Allow importing ``src`` when the script is executed from the project root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.hardware.legacy.vast_scraper import refresh_machines_file
 from src.hardware.scraper import load_machine_db

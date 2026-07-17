@@ -223,4 +223,4 @@ results.json
 config.json
 results/
 saved_results/
-src/hardware/_*
+src/hardware/custom_hardware.json

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import math
+
 from dataclasses import dataclass
 from heapq import heappop, heappush
 
@@ -319,7 +321,7 @@ class Cache:
                         log(
                             LOG_CACHE,
                             f"Evicted stale S3 KV for request {item.session_id} "
-                            f"({item.tokens} tokens, {victim_size} bytes), "
+                            f"({(item.token_start, item.token_end)} tokens, {victim_size} bytes), "
                             f"last_access_ms={item.last_access_ms:.3f}, cutoff_ms={cutoff_ms:.3f}",
                         )
             if session_id in s3_layer.content and not s3_layer.content[session_id]:
@@ -327,24 +329,9 @@ class Cache:
         if self.s3_usage_bytes > self.s3_peak_usage_bytes:
             self.s3_peak_usage_bytes = self.s3_usage_bytes
 
-    def _evict_ssd_lru(self, node_id: int) -> TransferLeg | None:
-        """Delete the least-recently-used item from a node's SSD layer.
-
-        If S3 is enabled, the victim is copied to the shared S3 layer before
-        deletion (unless an equivalent copy already exists there).  Returns an
-        S3 upload leg if an upload happened, otherwise None.
-        """
-        layer = self._ssd_layer(node_id)
-        if layer is None:
-            return None
-        victim = layer.pop_lru()
-        if victim is None:
-            return None
-        victim_size = self._item_size(victim)
-        layer._remove_item(victim)
-        self.ssd_usage_bytes[node_id] -= victim_size
-
+    def upload_to_s3(self, victim: CacheItem, node_id: int) -> TransferLeg | None:
         s3_leg: TransferLeg | None = None
+        victim_size = self._item_size(victim)
         node = self.node_hardware.get(node_id)
         s3_upload_ok = (
             self.s3_spec.enabled and node is not None and node.spec.network_inet_up > 0
@@ -362,12 +349,14 @@ class Cache:
                 self.s3_peak_usage_bytes = self.s3_usage_bytes
             self._touch(copied, s3_layer)
             s3_leg = TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
-            self.s3_upload_requests += 1
+            self.s3_upload_requests += math.ceil(victim.tokens / CHUNK_SIZE)
             self.cost_usd += (
                 float(victim_size) / 1024 / 1024 / 1024 * self.s3_spec.S3_UPLOAD_COST_GB
             )
             self.cost_usd += (
-                self.s3_spec.S3_UPLOAD_REQ_COSTS / 1000 * victim.tokens / CHUNK_SIZE
+                self.s3_spec.S3_UPLOAD_REQ_COSTS
+                / 1000
+                * math.ceil(victim.tokens / CHUNK_SIZE)
             )
 
             if should_log(LOG_CACHE):
@@ -379,12 +368,56 @@ class Cache:
             # Run S3 stale-object eviction after every upload so the reported
             # peak S3 memory only counts recently-accessed objects.
             self._evict_s3_stale()
+        elif s3_upload_ok and self._s3_covers(victim):
+            if should_log(LOG_CACHE):
+                log(
+                    LOG_CACHE,
+                    f"Skipped S3 upload for request {victim.session_id} "
+                    f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id}: "
+                    f"already covered in S3",
+                )
 
         if should_log(LOG_CACHE):
             log(
                 LOG_CACHE,
                 f"Deleted SSD LRU KV for request {victim.session_id} "
                 f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} SSD",
+            )
+        return s3_leg
+
+    def _evict_ssd_lru(self, node_id: int) -> TransferLeg | None:
+        """Delete the least-recently-used item from a node's SSD layer.
+
+        If S3 is enabled, the victim is copied to the shared S3 layer before
+        deletion (unless an equivalent copy already exists there).  Returns an
+        S3 upload leg if an upload happened, otherwise None.
+        """
+        layer = self._ssd_layer(node_id)
+        if layer is None:
+            return None
+        victim = layer.pop_lru()
+        if victim is None:
+            return None
+        victim_size = self._item_size(victim)
+        layer._remove_item(victim)
+        self.ssd_usage_bytes[node_id] -= victim_size
+        if should_log(LOG_CACHE):
+            log(
+                LOG_CACHE,
+                f"Evicted SSD LRU victim for request {victim.session_id} "
+                f"({(victim.token_start, victim.token_end)} tokens, {victim_size} bytes) from node {node_id} SSD; "
+                f"will attempt S3 upload (enabled={self.s3_spec.enabled})",
+            )
+
+        s3_leg = self.upload_to_s3(victim, node_id)
+        node = self.node_hardware.get(node_id)
+        s3_upload_ok = (
+            self.s3_spec.enabled and node is not None and node.spec.network_inet_up > 0
+        )
+        if s3_leg is None and s3_upload_ok and not self._s3_covers(victim):
+            raise RuntimeError(
+                f"SSD victim {victim.session_id} range {(victim.token_start, victim.token_end)} "
+                f"on node {node_id} was deleted without an S3 copy: S3 does not cover it"
             )
         return s3_leg
 
@@ -409,48 +442,10 @@ class Cache:
         if ssd_layer is None:
             # No local SSD: evict RAM directly to S3 (if enabled and upload
             # bandwidth exists) or drop.
-            victim_size = self._item_size(victim)
-            node = self.node_hardware.get(node_id)
-            s3_upload_ok = (
-                self.s3_spec.enabled
-                and node is not None
-                and node.spec.network_inet_up > 0
-            )
-            if s3_upload_ok and not self._s3_covers(victim):
-                s3_layer = self._s3_layer()
-                copied = CacheItem(
-                    victim.session_id, victim.token_start, victim.token_end
-                )
-                self._merge_with_layer_items(s3_layer, copied)
-                s3_layer._add_item(copied)
-                copied_size = self._item_size(copied)
-                self.s3_usage_bytes += copied_size
-                if self.s3_usage_bytes > self.s3_peak_usage_bytes:
-                    self.s3_peak_usage_bytes = self.s3_usage_bytes
-                self._touch(copied, s3_layer)
-                s3_legs.append(
-                    TransferLeg(victim_size, node_id, S3_NODE_ID, "S3_UPLOAD")
-                )
-                self.s3_upload_requests += 1
-                self.cost_usd += (
-                    float(victim_size)
-                    / 1024
-                    / 1024
-                    / 1024
-                    * self.s3_spec.S3_UPLOAD_COST_GB
-                )
-                self.cost_usd += (
-                    self.s3_spec.S3_UPLOAD_REQ_COSTS / 1000 * victim.tokens / CHUNK_SIZE
-                )
-                self._evict_s3_stale()
-            if should_log(LOG_CACHE):
-                log(
-                    LOG_CACHE,
-                    f"Evicted RAM LRU KV for request {victim.session_id} "
-                    f"({victim.tokens} tokens, {victim_size} bytes) from node {node_id} RAM "
-                    f"(no SSD; dropped/S3)",
-                )
-            return victim, s3_legs
+            s3_leg = self.upload_to_s3(victim, node_id)
+            if not s3_leg:
+                raise RuntimeError("No S3 legs!!!")
+            return victim, [s3_leg]
 
         # Merge with any connected existing SSD item for the same session so we
         # keep a single contiguous SSD entry per (user_id, session_id).  This may
@@ -475,7 +470,8 @@ class Cache:
             log(
                 LOG_CACHE,
                 f"Evicted RAM LRU KV for request {victim.session_id} "
-                f"({victim.tokens} tokens, {merged_size} bytes) to node {node_id} SSD",
+                f"([({victim.token_start}, {victim.token_end})] tokens, {merged_size} bytes) "
+                f"to node {node_id} SSD",
             )
         return victim, s3_legs
 
@@ -933,7 +929,7 @@ class Cache:
             log(
                 LOG_CACHE,
                 f"Inserted cache item for request {item.session_id} on node {node_id} "
-                f"({item.tokens} tokens, {item_size} bytes), "
+                f"([({item.token_start}, {item.token_end})] tokens, {item_size} bytes), "
                 f"RAM usage: {self.ram_usage_bytes[node_id]} / "
                 f"{self.ram_capacity_bytes[node_id]} bytes, "
                 f"SSD usage: {self.ssd_usage_bytes[node_id]} / "
@@ -1015,6 +1011,18 @@ class Cache:
                 prior_cached_tokens,
                 request.prefilled_tokens + request.decoded_tokens,
             )
+            # If the prior prefix is on SSD, promote it into RAM as part of the
+            # upload so the node keeps a single contiguous RAM item.  Otherwise a
+            # later remote download can see the prefix split across RAM and SSD and
+            # fail to assemble the full contiguous range if the SSD portion is
+            # evicted before the download runs.
+            if cache_layer.name == "SSD":
+                self.delete_item(prior_cache[-1])
+                cache_item = CacheItem(
+                    cache_key,
+                    0,
+                    request.prefilled_tokens + request.decoded_tokens,
+                )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
         else:
             cache_item = CacheItem(
@@ -1027,11 +1035,26 @@ class Cache:
         bytes_to_transfer = self.kv_size(self.model, new_tokens)
 
         if should_log(LOG_CACHE):
+            prior_layers = (
+                [
+                    (
+                        item.token_start,
+                        item.token_end,
+                        self.find_cache_layer(item).name
+                        if self.find_cache_layer(item)
+                        else "?",
+                    )
+                    for item in prior_cache
+                ]
+                if prior_cache
+                else []
+            )
             log(
                 LOG_CACHE,
                 f"Uploading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "
                 f"bytes: {bytes_to_transfer}, cache size: {current_total_tokens} tokens, "
-                f"new tokens uploaded: {new_tokens}",
+                f"new tokens uploaded: {new_tokens}, prior_cached_tokens: {prior_cached_tokens}, "
+                f"prior_cache_ranges: {prior_layers}, inserted_range: [({cache_item.token_start}, {cache_item.token_end})]",
             )
 
         if bytes_to_transfer <= 0:
@@ -1097,6 +1120,13 @@ class Cache:
         merged_item, eviction_legs = self._merge_into_ram(
             cache_key, node_id, 0, effective_end
         )
+
+        if merged_item.token_end < request.prefilled_tokens:
+            raise RuntimeError(
+                f"Download merged_item token_end {merged_item.token_end} < "
+                f"request.prefilled_tokens {request.prefilled_tokens} for request {request.id}; "
+                f"segments={segments}"
+            )
 
         tracks: list[list[TransferLeg]] = []
         if eviction_legs:

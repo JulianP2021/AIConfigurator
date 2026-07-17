@@ -94,7 +94,7 @@ from src.simulations.simulation_distributed import (
 )
 from src.utils.env_reader import load_env
 from src.utils.output_filter import compact_json
-from src.utils.utils import add_result_metadata
+from src.utils.utils import add_result_metadata, parse_int_list
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -113,15 +113,9 @@ def parse_users_arg(raw: str | None) -> list[int] | None:
     raw = raw.strip()
     if not raw:
         return None
-    values: list[int] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        value = int(part)
-        if value <= 0:
-            raise ValueError(f"--users values must be positive integers, got: {part}")
-        values.append(value)
+    values = parse_int_list(raw)
+    if any(v <= 0 for v in values):
+        raise ValueError("--users values must be positive integers")
     if not values:
         raise ValueError(f"--users list is empty: {raw}")
     return sorted(set(values))
@@ -328,6 +322,8 @@ def _run_single_config(
     """Top-level worker function suitable for process-pool pickling."""
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
+    # set_log_mask(63)
+    # set_debug(True)
     return simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
@@ -1271,6 +1267,19 @@ def main() -> None:
     config = load_config(args.config)
     set_log_mask(LOG_CONFIG_EXECUTOR)
     set_log_mask(0)
+    # set_debug(True)
+
+    if config.get("sla"):
+        sla = config.get("sla")
+        print(sla)
+        sla = {"ttft_ms": float(sla["ttft_ms"]), "tpot_ms": float(sla["tpot_ms"])}
+    else:
+        sla = {
+            "ttft_ms": float(env.sla_ttft_ms),
+            "tpot_ms": float(env.sla_tpot_ms),
+        }
+
+    assert sla, "SLA not working"
 
     common = {
         "model": config.get("model", env.model),
@@ -1286,13 +1295,7 @@ def main() -> None:
         "user_delay_min_ms": config.get("user_delay_min_ms", env.user_delay_min_ms),
         "user_delay_max_ms": config.get("user_delay_max_ms", env.user_delay_max_ms),
         "random_seed": config.get("random_seed", env.random_seed),
-        "sla": config.get(
-            "sla",
-            {
-                "ttft_ms": config.get("sla_ttft_ms", env.sla_ttft_ms),
-                "tpot_ms": config.get("sla_tpot_ms", env.sla_tpot_ms),
-            },
-        ),
+        "sla": sla,
     }
     ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
     ssd_usage_fraction = float(config.get("ssd_usage_fraction", env.ssd_usage_fraction))
@@ -1447,7 +1450,7 @@ def main() -> None:
         The grouped config structures are deep-copied for each user count
         because the smart runner mutates batch status tuples in place.
         """
-        local_common = dict(common)
+        local_common = common
         local_common["users"] = users
 
         local_colocated = copy.deepcopy(colocated_config_batches)

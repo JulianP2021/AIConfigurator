@@ -3,9 +3,9 @@
 
 Examples::
 
-    python scripts/refresh_gpu_db.py B300
-    python scripts/refresh_gpu_db.py B300 B200 H100
-    python scripts/refresh_gpu_db.py --list
+    python scripts/vast_api/refresh_gpu_db.py B300
+    python scripts/vast_api/refresh_gpu_db.py B300 B200 H100
+    python scripts/vast_api/refresh_gpu_db.py --list
 """
 
 import argparse
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 # Allow importing ``src`` when the script is executed from the project root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.hardware.legacy.vast_scraper import refresh_file
 from src.hardware.scraper import load_gpu_db

@@ -46,9 +46,23 @@ from src.hardware.scraper import (
     load_aws_hardware_db,
     load_gpu_db,
 )
+from src.utils.utils import parse_float_list, parse_int_list
 
 
 _GB = 1024**3
+
+# GPUs known to expose NVLink/C2C-class die-to-die bandwidth. Used only for
+# warnings when the user supplies --nvlink-bw-gbps for a GPU outside this set.
+_NVLINK_CAPABLE_GPUS = {
+    "TESLA_V100",
+    "A100_40GB",
+    "A100_80GB",
+    "H100 NVL",
+    "H200",
+    "H200 NVL",
+    "B200",
+    "B300",
+}
 
 
 def _gb_to_bytes(gb: float) -> int:
@@ -57,14 +71,6 @@ def _gb_to_bytes(gb: float) -> int:
 
 def _gbps_to_bytes_per_s(gbps: float) -> int:
     return int(gbps * 1e9 / 8.0)
-
-
-def _parse_float_list(text: str) -> list[float]:
-    return [float(x.strip()) for x in text.split(",")]
-
-
-def _parse_int_list(text: str) -> list[int]:
-    return [int(float(x.strip())) for x in text.split(",")]
 
 
 def _build_machine_config(settings: dict[str, Any]) -> dict:
@@ -223,6 +229,11 @@ def main() -> int:
         action="store_true",
         help="Actually write the entries to the custom hardware file. Without this flag the script runs in dry-run mode.",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="When writing, replace all existing machines in the custom hardware file with the generated entries.",
+    )
     args = parser.parse_args()
 
     gpu_names = [g.strip() for g in args.gpu_name.split(",")]
@@ -238,7 +249,22 @@ def main() -> int:
         )
         return 1
 
+    nvlink_bws = parse_float_list(args.nvlink_bw_gbps)
+    for gpu, bw in itertools.product(gpu_names, nvlink_bws):
+        if bw > 0 and gpu not in _NVLINK_CAPABLE_GPUS:
+            print(
+                f"Warning: {gpu!r} is not in the known NVLink/C2C-capable GPU set. "
+                f"The supplied --nvlink-bw-gbps will still be stored and priced as "
+                f"a custom interconnect.",
+                file=sys.stderr,
+            )
+
     pricing = _get_pricing(args.custom_hardware)
+    # Bandwidth components are priced in USD per GB/s per GPU per hour;
+    # network components are priced in USD per Gbps per GPU per hour.
+    pricing.setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
+    pricing.setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
+    pricing.setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
     family_pricing = pricing.get("gpu_family_pricing", {})
     missing_families = [g for g in gpu_names if g not in family_pricing]
     if missing_families:
@@ -252,23 +278,23 @@ def main() -> int:
     # Build dimension lists.
     dimensions: dict[str, list[Any]] = {
         "gpu_name": gpu_names,
-        "num_gpus": _parse_int_list(args.num_gpus),
-        "pcie_bw_gbps": _parse_float_list(args.pcie_bw_gbps),
-        "nvlink_bw_gbps": _parse_float_list(args.nvlink_bw_gbps),
-        "ram_mem_gb": _parse_float_list(args.ram_mem_gb),
-        "ssd_mem_gb": _parse_float_list(args.ssd_mem_gb),
-        "ssd_bw_gbps": _parse_float_list(args.ssd_bw_gbps),
-        "inet_bw_gbps": _parse_float_list(args.inet_bw_gbps),
-        "inter_node_up_gbps": _parse_float_list(args.inter_node_up_gbps),
-        "inter_node_down_gbps": _parse_float_list(args.inter_node_down_gbps),
+        "num_gpus": parse_int_list(args.num_gpus),
+        "pcie_bw_gbps": parse_float_list(args.pcie_bw_gbps),
+        "nvlink_bw_gbps": parse_float_list(args.nvlink_bw_gbps),
+        "ram_mem_gb": parse_float_list(args.ram_mem_gb),
+        "ssd_mem_gb": parse_float_list(args.ssd_mem_gb),
+        "ssd_bw_gbps": parse_float_list(args.ssd_bw_gbps),
+        "inet_bw_gbps": parse_float_list(args.inet_bw_gbps),
+        "inter_node_up_gbps": parse_float_list(args.inter_node_up_gbps),
+        "inter_node_down_gbps": parse_float_list(args.inter_node_down_gbps),
     }
 
     if args.inet_up_gbps is not None:
-        dimensions["inet_up_gbps"] = _parse_float_list(args.inet_up_gbps)
+        dimensions["inet_up_gbps"] = parse_float_list(args.inet_up_gbps)
     if args.inet_down_gbps is not None:
-        dimensions["inet_down_gbps"] = _parse_float_list(args.inet_down_gbps)
+        dimensions["inet_down_gbps"] = parse_float_list(args.inet_down_gbps)
     if args.compute_usd_per_gpu_hour is not None:
-        dimensions["compute_usd_per_gpu_hour"] = _parse_float_list(
+        dimensions["compute_usd_per_gpu_hour"] = parse_float_list(
             args.compute_usd_per_gpu_hour
         )
 
@@ -324,14 +350,27 @@ def main() -> int:
 
     if not args.write:
         print("Dry run; entries not written. Pass --write to persist them.")
+        if args.clean:
+            print(
+                "Note: --clean only affects write mode; dry-run output always shows only the generated entries."
+            )
         print(json.dumps(entries, indent=2))
         return 0
 
-    _, existing_machines = load_aws_hardware_db(args.custom_hardware)
-    output_data = {
-        "_pricing": pricing,
-        "machines": {**existing_machines, **entries},
-    }
+    if args.clean:
+        output_data = {
+            "_pricing": pricing,
+            "machines": entries,
+        }
+        print(
+            f"Replacing all existing machines in {args.custom_hardware} with {len(entries)} generated entries."
+        )
+    else:
+        _, existing_machines = load_aws_hardware_db(args.custom_hardware)
+        output_data = {
+            "_pricing": pricing,
+            "machines": {**existing_machines, **entries},
+        }
 
     args.custom_hardware.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
     print(f"Wrote {len(entries)} entries to {args.custom_hardware}")

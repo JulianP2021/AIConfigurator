@@ -353,4 +353,13 @@ def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
             "B300) when generating configs."
         ),
     )
+    parser.add_argument(
+        "--config-types",
+        type=str,
+        default="colocated,mixed,separate",
+        help=(
+            "Comma-separated list of config categories to generate. "
+            "Choices: colocated, mixed, separate (default: all)."
+        ),
+    )
     return parser

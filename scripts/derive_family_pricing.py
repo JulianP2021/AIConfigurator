@@ -36,12 +36,13 @@ _COMPONENT_KEYS = [
     "compute_usd_per_gpu_hour",
     "cpu_ram_usd_per_gb_hour",
     "ssd_usd_per_gb_hour",
-    "ssd_bw_usd_per_gbps_hour",
-    "inet_up_usd_per_gb_hour",
-    "inet_down_usd_per_gb_hour",
+    "ssd_bw_usd_per_gb_s_hour",
+    "inet_up_usd_per_gbps_hour",
+    "inet_down_usd_per_gbps_hour",
     "inter_node_up_usd_per_gbps_hour",
     "inter_node_down_usd_per_gbps_hour",
-    "pcie_usd_per_gb_hour",
+    "pcie_bw_usd_per_gb_s_hour",
+    "nvlink_bw_usd_per_gb_s_hour",
 ]
 
 
@@ -63,12 +64,13 @@ def _extract_feature_vector(
         "compute": float(num_gpus),
         "cpu_ram_gb": float(cfg.get("cpu_ram", 0)) / _GB,
         "ssd_gb": float(cfg.get("nvme_mem", 0)) / _GB,
-        "ssd_bw_gbps": _bytes_to_gbps(float(cfg.get("nvme_bw", 0))),
-        "inet_up_gb_h": _bytes_to_gb_h(float(cfg.get("network_inet_up", 0))),
-        "inet_down_gb_h": _bytes_to_gb_h(float(cfg.get("network_inet_down", 0))),
+        "ssd_bw_gb_s": float(cfg.get("nvme_bw", 0)) / _GB,
+        "inet_up_gbps": _bytes_to_gbps(float(cfg.get("network_inet_up", 0))),
+        "inet_down_gbps": _bytes_to_gbps(float(cfg.get("network_inet_down", 0))),
         "inter_up_gbps": _bytes_to_gbps(float(cfg.get("network_inter_node_up", 0))),
         "inter_down_gbps": _bytes_to_gbps(float(cfg.get("network_inter_node_down", 0))),
-        "pcie_gb_h": _bytes_to_gb_h(float(cfg.get("pcie_bw", 0))),
+        "pcie_gb_s": float(cfg.get("pcie_bw", 0)) / _GB,
+        "nvlink_gb_s": float(cfg.get("nvlink_bw", 0)) / _GB,
         "hbm_gb": gpu_mem_gb_per_gpu * num_gpus,
     }
     return features, float(cfg.get("dph_base", 0.0))
@@ -153,12 +155,13 @@ def _derive_family(
     feature_to_component = {
         "cpu_ram_gb": "cpu_ram_usd_per_gb_hour",
         "ssd_gb": "ssd_usd_per_gb_hour",
-        "ssd_bw_gbps": "ssd_bw_usd_per_gbps_hour",
-        "inet_up_gb_h": "inet_up_usd_per_gb_hour",
-        "inet_down_gb_h": "inet_down_usd_per_gb_hour",
+        "ssd_bw_gb_s": "ssd_bw_usd_per_gb_s_hour",
+        "inet_up_gbps": "inet_up_usd_per_gbps_hour",
+        "inet_down_gbps": "inet_down_usd_per_gbps_hour",
         "inter_up_gbps": "inter_node_up_usd_per_gbps_hour",
         "inter_down_gbps": "inter_node_down_usd_per_gbps_hour",
-        "pcie_gb_h": "pcie_usd_per_gb_hour",
+        "pcie_gb_s": "pcie_bw_usd_per_gb_s_hour",
+        "nvlink_gb_s": "nvlink_bw_usd_per_gb_s_hour",
     }
 
     # Step 1: derive non-GPU component prices from configs that differ only in
@@ -226,12 +229,13 @@ def _derive_all_family_pricing(aws_data: dict) -> dict[str, dict[str, float]]:
                 f["compute"] * pricing["compute_usd_per_gpu_hour"]
                 + f["cpu_ram_gb"] * pricing["cpu_ram_usd_per_gb_hour"]
                 + f["ssd_gb"] * pricing["ssd_usd_per_gb_hour"]
-                + f["ssd_bw_gbps"] * pricing["ssd_bw_usd_per_gbps_hour"]
-                + f["inet_up_gb_h"] * pricing["inet_up_usd_per_gb_hour"]
-                + f["inet_down_gb_h"] * pricing["inet_down_usd_per_gb_hour"]
+                + f["ssd_bw_gb_s"] * pricing["ssd_bw_usd_per_gb_s_hour"]
+                + f["inet_up_gbps"] * pricing["inet_up_usd_per_gbps_hour"]
+                + f["inet_down_gbps"] * pricing["inet_down_usd_per_gbps_hour"]
                 + f["inter_up_gbps"] * pricing["inter_node_up_usd_per_gbps_hour"]
                 + f["inter_down_gbps"] * pricing["inter_node_down_usd_per_gbps_hour"]
-                + f["pcie_gb_h"] * pricing["pcie_usd_per_gb_hour"]
+                + f["pcie_gb_s"] * pricing["pcie_bw_usd_per_gb_s_hour"]
+                + f["nvlink_gb_s"] * pricing["nvlink_bw_usd_per_gb_s_hour"]
             )
             if actual > 0:
                 mape_sum += abs(predicted - actual) / actual
@@ -271,6 +275,10 @@ def main() -> None:
     family_pricing = _derive_all_family_pricing(aws_data)
 
     aws_data["_pricing"]["gpu_family_pricing"] = family_pricing
+    # Global fallbacks for bandwidth components (USD per GB/s per GPU per hour).
+    aws_data["_pricing"].setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
+    aws_data["_pricing"].setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
+    aws_data["_pricing"].setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
 
     output_path = args.output or args.input
     output_path.write_text(json.dumps(aws_data, indent=2), encoding="utf-8")

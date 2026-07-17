@@ -152,6 +152,16 @@ def calculate_memory(
     return total_memory
 
 
+def parse_float_list(text: str) -> list[float]:
+    """Parse a comma-separated string into a list of floats."""
+    return [float(x.strip()) for x in text.split(",")]
+
+
+def parse_int_list(text: str) -> list[int]:
+    """Parse a comma-separated string into a list of integers."""
+    return [int(float(x.strip())) for x in text.split(",")]
+
+
 def add_result_metadata(
     row: dict[str, object],
     label: str,
@@ -168,8 +178,8 @@ def add_result_metadata(
     row.pop("per_request_stats", None)
     row.update({
         "label": label,
-        # "prefill_hardware": cfg.get("prefill_hardware", ""),
-        # "decode_hardware": cfg.get("decode_hardware", ""),
+        "prefill_hardware": cfg.get("prefill_hardware", ""),
+        "decode_hardware": cfg.get("decode_hardware", ""),
         "colocated": cfg.get("colocated", "False"),
         "color": color,
         "has_error": False,

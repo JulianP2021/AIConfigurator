@@ -523,7 +523,7 @@ def _results_inner_html(
                 f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]}</td>'
                 f"<td>{row['prefill_hardware']}</td>"
                 f"<td>{row['decode_hardware']}</td>"
-                f"<td>{row['prefill_nodes']} / {row['decode_nodes']}</td>"
+                f"<td>{row['num_prefill_workers']} / {row['num_decode_workers']}</td>"
                 f"<td>{row['batch_size']}</td>"
                 f"<td>{row['ttft']:.2f}</td>"
                 f"<td>{row['max_ttft']:.2f}</td>"

@@ -67,17 +67,19 @@ def load_aws_hardware_db(
 
       * ``cpu_ram_usd_per_gb_hour`` USD per GB of CPU RAM per hour.
       * ``ssd_usd_per_gb_hour`` USD per GB of SSD storage per hour.
-      * ``ssd_bw_usd_per_gbps_hour`` USD per Gbps/hour of SSD (NVMe)
+      * ``ssd_bw_usd_per_gb_s_hour`` USD per GB/s per hour of SSD (NVMe)
         bandwidth.
-      * ``inet_up_usd_per_gb_hour`` USD per GB/hour of internet upload
+      * ``inet_up_usd_per_gbps_hour`` USD per Gbps per hour of internet upload
         bandwidth.
-      * ``inet_down_usd_per_gb_hour`` USD per GB/hour of internet download
+      * ``inet_down_usd_per_gbps_hour`` USD per Gbps per hour of internet download
         bandwidth.
-      * ``inter_node_up_usd_per_gbps_hour`` USD per Gbps/hour of datacenter NIC
-        upload bandwidth.
-      * ``inter_node_down_usd_per_gbps_hour`` USD per Gbps/hour of datacenter NIC
-        download bandwidth.
-      * ``pcie_usd_per_gb_hour`` USD per GB/hour of PCIe bandwidth.
+      * ``inter_node_up_usd_per_gbps_hour`` USD per Gbps per hour of datacenter
+        NIC upload bandwidth.
+      * ``inter_node_down_usd_per_gbps_hour`` USD per Gbps per hour of datacenter
+        NIC download bandwidth.
+      * ``pcie_bw_usd_per_gb_s_hour`` USD per GB/s per hour of PCIe bandwidth.
+      * ``nvlink_bw_usd_per_gb_s_hour`` USD per GB/s per hour of NVLink/C2C
+        bandwidth.
 
     * ``machines``: mapping of hardware names to config dicts.  Each config
       must provide ``gpu_name`` so the GPU spec can be resolved from the cached
@@ -180,7 +182,14 @@ def _derive_custom_price(
     family = family_pricing.get(gpu_name, {}) if gpu_name else {}
 
     def family_or_global(key: str) -> float:
-        return float(family.get(key, pricing.get(key, 0.0)))
+        """Return family price if positive, otherwise the global fallback.
+
+        Per-family component tables set values to 0.0 when a cost is bundled
+        into the per-GPU compute price. For custom machines we still want to
+        apply a global unit price when one is configured.
+        """
+        val = float(family.get(key, 0.0))
+        return val if val > 0 else float(pricing.get(key, 0.0))
 
     num_gpus = int(config.get("num_gpus", 1))
     cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
@@ -194,14 +203,14 @@ def _derive_custom_price(
 
     price += cpu_ram_gb * family_or_global("cpu_ram_usd_per_gb_hour")
     price += ssd_gb * family_or_global("ssd_usd_per_gb_hour")
-    price += bytes_to_gbps(config.get("nvme_bw", 0)) * family_or_global(
-        "ssd_bw_usd_per_gbps_hour"
+    price += (float(config.get("nvme_bw", 0)) / _GB) * family_or_global(
+        "ssd_bw_usd_per_gb_s_hour"
     )
-    price += bytes_to_gb_h(config.get("network_inet_up", 0)) * family_or_global(
-        "inet_up_usd_per_gb_hour"
+    price += bytes_to_gbps(config.get("network_inet_up", 0)) * family_or_global(
+        "inet_up_usd_per_gbps_hour"
     )
-    price += bytes_to_gb_h(config.get("network_inet_down", 0)) * family_or_global(
-        "inet_down_usd_per_gb_hour"
+    price += bytes_to_gbps(config.get("network_inet_down", 0)) * family_or_global(
+        "inet_down_usd_per_gbps_hour"
     )
     # Inter-node bandwidth is defined by environment/CLI defaults, not the
     # machine config, but its unit price is still part of _pricing.  When the
@@ -217,9 +226,17 @@ def _derive_custom_price(
     price += inter_node_down_gbps * family_or_global(
         "inter_node_down_usd_per_gbps_hour"
     )
-    price += bytes_to_gb_h(config.get("pcie_bw", 0)) * family_or_global(
-        "pcie_usd_per_gb_hour"
+    price += (float(config.get("pcie_bw", 0)) / _GB) * family_or_global(
+        "pcie_bw_usd_per_gb_s_hour"
     )
+
+    # NVLink/C2C bandwidth is priced per GPU per GB/s of bandwidth per hour.
+    # The config stores per-GPU bandwidth in bytes/sec.
+    nvlink_bw_gb_s = float(config.get("nvlink_bw", 0)) / _GB
+    if nvlink_bw_gb_s > 0:
+        price += (
+            nvlink_bw_gb_s * num_gpus * family_or_global("nvlink_bw_usd_per_gb_s_hour")
+        )
 
     return price
 
@@ -267,17 +284,35 @@ def load_combined_machine_db(
     over entries in ``_machine_db.json``.  This lets users define local
     hardware presets without modifying the scraped database.
 
+    When ``custom_path`` is not provided, the default ``aws_hardware.json``
+    and ``custom_hardware.json`` are both merged in, with later files taking
+    precedence.
+
     The result is cached per ``custom_path`` because the JSON files are
     read repeatedly for large config matrices.
     """
-    cache_key = str(custom_path) if custom_path is not None else None
+    cache_key = str(custom_path) if custom_path is not None else "__default__"
     if cache_key in _combined_machine_db_cache:
         return _combined_machine_db_cache[cache_key]
 
     db = load_machine_db()
-    _, custom = load_aws_hardware_db(custom_path)
-    if custom:
-        db = {**db, **custom}
+
+    # Default AWS-style custom hardware (e.g. scraped AWS presets).
+    _, aws_custom = load_aws_hardware_db()
+    if aws_custom:
+        db = {**db, **aws_custom}
+
+    if custom_path is not None:
+        _, user_custom = load_aws_hardware_db(custom_path)
+        if user_custom:
+            db = {**db, **user_custom}
+    else:
+        # User-specific custom presets live in custom_hardware.json.
+        default_custom_path = pathlib.Path(__file__).parent / "custom_hardware.json"
+        _, default_custom = load_aws_hardware_db(default_custom_path)
+        if default_custom:
+            db = {**db, **default_custom}
+
     _combined_machine_db_cache[cache_key] = db
     return db
 
