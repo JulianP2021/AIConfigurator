@@ -136,6 +136,34 @@ def s3_tiny_hardware() -> Hardware:
 
 
 @pytest.fixture
+def no_ssd_hardware() -> Hardware:
+    """A hardware preset with no local NVMe/SSD tier."""
+    spec = _make_spec(
+        ram_mem=10_000_000_000,
+        ram_bw=10_000_000_000,
+        nvme_mem=0,
+        nvme_bw=0,
+        network_inet_up=100_000_000,
+        network_inet_down=200_000_000,
+    )
+    return Hardware(name="no-ssd", spec=spec)
+
+
+@pytest.fixture
+def no_inet_hardware() -> Hardware:
+    """A hardware preset with S3-capable storage but no internet bandwidth."""
+    spec = _make_spec(
+        ram_mem=10_000_000_000,
+        ram_bw=10_000_000_000,
+        nvme_mem=5_000_000_000,
+        nvme_bw=1_000_000_000,
+        network_inet_up=0,
+        network_inet_down=0,
+    )
+    return Hardware(name="no-inet", spec=spec)
+
+
+@pytest.fixture
 def cache_with_fake_model(fake_model: Model, tiny_hardware: Hardware) -> Cache:
     """A cache backed by tiny hardware and a fake 100-byte-per-token model."""
     return Cache(

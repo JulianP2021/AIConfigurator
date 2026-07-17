@@ -745,30 +745,49 @@ class Cache:
 
         Local source items (same node) are removed because their data becomes
         part of the new merged RAM item.  Source copies on other nodes are kept.
-        Returns the merged ``CacheItem`` (its ``token_end`` reflects any expansion
-        from merging with existing items) and any destination-RAM eviction legs
-        produced while making room.
+        The inserted item is expanded to cover any local item that overlaps or
+        touches it so the resulting RAM entry is the union of the downloaded
+        prefix and any local cached data.  Returns the merged ``CacheItem`` and
+        any destination-RAM eviction legs produced while making room.
         """
         ssd_layer = self._ssd_layer(node_id)
         layers = [self._ram_layer(node_id)]
         if ssd_layer is not None:
             layers.append(ssd_layer)
-        for layer in layers:
-            item_dict = layer.content.get(session_id)
-            if item_dict is None:
-                continue
-            for existing in list(item_dict.values()):
-                if (
-                    existing.token_end <= token_start
-                    or existing.token_start >= token_end
-                ):
+
+        cluster_start = token_start
+        cluster_end = token_end
+        to_delete: set[CacheItem] = set()
+
+        # Fixed-point expansion: absorb any local item connected to the cluster.
+        changed = True
+        while changed:
+            changed = False
+            for layer in layers:
+                item_dict = layer.content.get(session_id)
+                if item_dict is None:
                     continue
-                # Items inserted by tests may not have a layer back-pointer.
-                if existing.layer is None:
-                    existing.layer = layer
+                for existing in list(item_dict.values()):
+                    if existing in to_delete:
+                        continue
+                    if (
+                        existing.token_end < cluster_start - 1
+                        or existing.token_start > cluster_end
+                    ):
+                        continue
+                    to_delete.add(existing)
+                    cluster_start = min(cluster_start, existing.token_start)
+                    cluster_end = max(cluster_end, existing.token_end)
+                    changed = True
+
+        for existing in to_delete:
+            # Items inserted by tests may not have a layer back-pointer.
+            if existing.layer is None:
+                existing.layer = self.find_cache_layer(existing)
+            if existing.layer is not None:
                 self.delete_item(existing)
 
-        merged = CacheItem(session_id, token_start, token_end)
+        merged = CacheItem(session_id, cluster_start, cluster_end)
         eviction_legs = self.insert_cache_item(merged, node_id)
         return merged, eviction_legs
 
@@ -786,9 +805,49 @@ class Cache:
         all_items = self._find_all_items(session_id)
         global_prefix = self._contiguous_prefix_from_sorted(all_items)
 
+        if should_log(LOG_CACHE):
+            all_ranges = [
+                (
+                    item.token_start,
+                    item.token_end,
+                    self.find_cache_layer(item).name
+                    if self.find_cache_layer(item)
+                    else "?",
+                    self.find_cache_layer(item).node_id
+                    if self.find_cache_layer(item)
+                    else -2,
+                )
+                for item in all_items
+            ]
+            log(
+                LOG_CACHE,
+                f"_find_download_segments for session {session_id} dest={dest_node_id} "
+                f"required_end={required_end}: all_ranges={all_ranges} "
+                f"global_prefix_end={global_prefix[-1].token_end if global_prefix else 0}",
+            )
+
         if not global_prefix:
             return 0, []
-        effective_end = min(required_end, global_prefix[-1].token_end)
+
+        # If the destination already holds a prefix starting at 0 and the global
+        # prefix extends further than the request requires, download the full
+        # contiguous prefix so the local RAM item can grow by merging with
+        # adjacent remote data.
+        local_prefix_end = 0
+        if local_items := [
+            item
+            for item in global_prefix
+            if (layer := self.find_cache_layer(item)) is not None
+            and layer.node_id == dest_node_id
+        ]:
+            local_prefix = self._contiguous_prefix_from_sorted(local_items)
+            if local_prefix and local_prefix[0].token_start <= 0:
+                local_prefix_end = local_prefix[-1].token_end
+
+        if local_prefix_end > 0 and global_prefix[-1].token_end > required_end:
+            effective_end = global_prefix[-1].token_end
+        else:
+            effective_end = min(required_end, global_prefix[-1].token_end)
 
         local_items = [
             item
@@ -796,26 +855,7 @@ class Cache:
             if (layer := self.find_cache_layer(item)) is not None
             and layer.node_id == dest_node_id
         ]
-        local_prefix = self._contiguous_prefix_from_sorted(local_items)
-        local_end = local_prefix[-1].token_end if local_prefix else 0
-        local_end = min(local_end, effective_end)
 
-        segments: list[tuple[int, int, int, str]] = []
-
-        # Local segments already on the destination node (RAM or SSD).
-        for item in local_prefix:
-            layer = self.find_cache_layer(item)
-            if layer is None or layer.node_id != dest_node_id:
-                continue
-            if layer.name not in ("RAM", "SSD"):
-                continue
-            seg_end = min(item.token_end, effective_end)
-            segments.append((item.token_start, seg_end, layer.node_id, layer.name))
-
-        # Build a sorted global index of remote and S3 items to resolve gaps
-        # without scanning the entire item list for each miss.  Keys are the
-        # unique (token_start, token_end) tuple so overlapping starts from
-        # different nodes do not collide.
         remote_items = [
             item
             for item in all_items
@@ -828,82 +868,125 @@ class Cache:
             if (layer := self.find_cache_layer(item)) is not None
             and layer.node_id == S3_NODE_ID
         ]
-        remote_index = SortedDict({
-            (item.token_start, item.token_end): item for item in remote_items
-        })
-        s3_index = SortedDict({
-            (item.token_start, item.token_end): item for item in s3_items
-        })
+        # Build covering indexes keyed by (token_start, token_end).  Make sure
+        # items carry a layer back-pointer, otherwise _covering_item cannot
+        # determine the source layer for the returned segment.
+        local_index = SortedDict()
+        for item in local_items:
+            if (
+                item.layer is None
+                and (layer := self.find_cache_layer(item)) is not None
+            ):
+                item.layer = layer
+            local_index[(item.token_start, item.token_end)] = item
+
+        remote_index = SortedDict()
+        for item in remote_items:
+            if (
+                item.layer is None
+                and (layer := self.find_cache_layer(item)) is not None
+            ):
+                item.layer = layer
+            remote_index[(item.token_start, item.token_end)] = item
+
+        s3_index = SortedDict()
+        for item in s3_items:
+            if (
+                item.layer is None
+                and (layer := self.find_cache_layer(item)) is not None
+            ):
+                item.layer = layer
+            s3_index[(item.token_start, item.token_end)] = item
 
         def _covering_item(
             index: SortedDict[tuple[int, int], CacheItem], pos: int
         ) -> CacheItem | None:
-            """Return the item in ``index`` that covers ``pos``, or None."""
+            """Return the covering item in ``index`` that extends furthest past ``pos``.
+
+            Several items may cover ``pos``; the longest one is chosen so gaps
+            are closed as far as possible.  Returns None if no item covers ``pos``.
+            """
             if not index:
                 return None
-            # Find the last item whose token_start is <= pos.  Using a tuple
-            # key with an infinite upper bound makes bisect_right work on the
-            # start coordinate while keeping all unique (start, end) pairs.
+            # All candidates have token_start <= pos.  Scan backwards over those
+            # candidates and pick the item with the maximum token_end that
+            # actually covers pos.
             idx = index.bisect_right((pos, float("inf")))
-            if idx == 0:
-                return None
-            idx -= 1
-            item = index.peekitem(idx)[1]
-            if pos < item.token_start or pos >= item.token_end:
-                return None
-            return item
+            best: CacheItem | None = None
+            while idx > 0:
+                idx -= 1
+                _, item = index.peekitem(idx)
+                if item.token_start > pos:
+                    continue
+                if pos < item.token_end and (
+                    best is None or item.token_end > best.token_end
+                ):
+                    best = item
+            return best
 
-        # Fetch any remaining ranges from remote node sources first.
-        miss_start = local_end
-        while miss_start < effective_end:
-            item = _covering_item(remote_index, miss_start)
-            if item is None:
-                break
-            layer = item.layer
-            assert layer is not None
-            seg_end = min(item.token_end, effective_end)
-            segments.append((miss_start, seg_end, layer.node_id, layer.name))
-            miss_start = seg_end
+        segments: list[tuple[int, int, int, str]] = []
 
-        # S3 fallback for anything still missing, but only if the destination
-        # node actually has internet download bandwidth.
         node = self.node_hardware.get(dest_node_id)
         s3_download_ok = (
             self.s3_spec.enabled
             and node is not None
             and node.spec.network_inet_down > 0
         )
-        if miss_start < effective_end and s3_download_ok:
-            s3_layer = self._s3_layer()
-            while miss_start < effective_end:
-                item = _covering_item(s3_index, miss_start)
-                if item is None:
-                    break
-                seg_end = min(item.token_end, effective_end)
-                segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
-                # Reading from S3 refreshes the object's access time so it
-                # is not evicted while still being actively downloaded.
-                self._touch(item, s3_layer)
 
-                tokens = seg_end - miss_start
-                bytes_to_transfer = self.kv_size(self.model, tokens)
-                self.s3_download_requests += 1
-                self.cost_usd += (
-                    float(bytes_to_transfer)
-                    / 1024
-                    / 1024
-                    / 1024
-                    * self.s3_spec.S3_DOWNLOAD_COST_GB
-                )
-                self.cost_usd += (
-                    self.s3_spec.S3_DOWNLOAD_REQ_COSTS / 1000 * tokens / CHUNK_SIZE
-                )
+        miss_start = 0
+        s3_layer = self._s3_layer()
+
+        while miss_start < effective_end:
+            item = _covering_item(local_index, miss_start)
+            if item is not None:
+                layer = item.layer
+                assert layer is not None
+                seg_end = min(item.token_end, effective_end)
+                segments.append((miss_start, seg_end, layer.node_id, layer.name))
                 miss_start = seg_end
+                self._touch(item, layer)
+                continue
+            if miss_start < effective_end:
+                item = _covering_item(remote_index, miss_start)
+                if item is not None:
+                    layer = item.layer
+                    assert layer is not None
+                    seg_end = min(item.token_end, effective_end)
+                    segments.append((miss_start, seg_end, layer.node_id, layer.name))
+                    miss_start = seg_end
+                    self._touch(item, layer)
+                    continue
+            if miss_start < effective_end and s3_download_ok:
+                item = _covering_item(s3_index, miss_start)
+                if item is not None:
+                    seg_end = min(item.token_end, effective_end)
+                    seg_tokens = seg_end - miss_start
+                    segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
+                    miss_start = seg_end
+                    self._touch(item, s3_layer)
+                    bytes_to_transfer = self.kv_size(self.model, seg_tokens)
+                    self.s3_download_requests += 1
+                    self.cost_usd += (
+                        float(bytes_to_transfer)
+                        / 1024
+                        / 1024
+                        / 1024
+                        * self.s3_spec.S3_DOWNLOAD_COST_GB
+                    )
+                    self.cost_usd += (
+                        self.s3_spec.S3_DOWNLOAD_REQ_COSTS
+                        / 1000
+                        * seg_tokens
+                        / CHUNK_SIZE
+                    )
+                    continue
+
+            break
 
         if miss_start < effective_end:
-            # Coverage gap: stop at what we can satisfy.
-            effective_end = miss_start
-
+            raise Exception(
+                f"{[(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in all_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in local_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in remote_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in s3_items], miss_start, effective_end}"
+            )
         return effective_end, segments
 
     def insert_cache_item(self, item: CacheItem, node_id: int) -> list[TransferLeg]:
@@ -1011,18 +1094,6 @@ class Cache:
                 prior_cached_tokens,
                 request.prefilled_tokens + request.decoded_tokens,
             )
-            # If the prior prefix is on SSD, promote it into RAM as part of the
-            # upload so the node keeps a single contiguous RAM item.  Otherwise a
-            # later remote download can see the prefix split across RAM and SSD and
-            # fail to assemble the full contiguous range if the SSD portion is
-            # evicted before the download runs.
-            if cache_layer.name == "SSD":
-                self.delete_item(prior_cache[-1])
-                cache_item = CacheItem(
-                    cache_key,
-                    0,
-                    request.prefilled_tokens + request.decoded_tokens,
-                )
             eviction_legs = self.insert_cache_item(cache_item, node_id)
         else:
             cache_item = CacheItem(
@@ -1125,7 +1196,7 @@ class Cache:
             raise RuntimeError(
                 f"Download merged_item token_end {merged_item.token_end} < "
                 f"request.prefilled_tokens {request.prefilled_tokens} for request {request.id}; "
-                f"segments={segments}"
+                f"segments={segments}, all_item={[(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in self._find_all_items(cache_key)]}"
             )
 
         tracks: list[list[TransferLeg]] = []
