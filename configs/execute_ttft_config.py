@@ -45,6 +45,7 @@ from typing import Any
 # Ensure project root is on sys.path when running the script directly.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from configs.utils.config_utils import get_focus
 from src.hardware.hardware import S3Spec
 from src.logger import LOG_CONFIG_EXECUTOR, log, set_log_mask, should_log
 from src.result import SimulationResult
@@ -57,7 +58,6 @@ from src.utils.config_runner import (
     validate_colocated_configs,
 )
 from src.utils.env_reader import load_env
-from src.utils.output_filter import compact_json
 from src.utils.utils import add_result_metadata, parse_float_list
 
 
@@ -78,16 +78,7 @@ def _slugify(value: object) -> str:
 
 
 def _run_focus(cfg: dict[str, Any]) -> tuple[str, Any]:
-    focus = str(cfg.get("focus") or cfg.get("config_type") or "default")
-    focus_value = cfg.get("focus_value")
-    if focus_value is None:
-        if focus in {"colocated", "mixed"}:
-            focus_value = cfg.get("prefill_nodes")
-        elif focus == "separate":
-            focus_value = f"{cfg.get('prefill_nodes')}x{cfg.get('decode_nodes')}"
-        else:
-            focus_value = cfg.get("batch_size") or cfg.get("prefill_nodes")
-    return focus, focus_value
+    return get_focus(cfg["label"], cfg["gpu"])
 
 
 def _build_run_config(
@@ -191,18 +182,19 @@ def _run_sweep(
     )
 
     results: list[dict[str, Any]] = []
-    palette = [
-        "#58a6ff",
-        "#3fb950",
-        "#f85149",
-        "#d29922",
-        "#a371f7",
-        "#79c0ff",
-        "#56d364",
-        "#f0883e",
-        "#db61a2",
-        "#39c5cf",
-    ]
+    """RAM|NVLink|SSD|SSD BW|INET BW"""
+    palette = {
+        "RAM": "#58a6ff",
+        "NVLink": "#3fb950",
+        "SSD": "#f85149",
+        "SSD BW": "#d29922",
+        "INET BW": "#a371f7",
+        # "#79c0ff",
+        # "#56d364",
+        # "#f0883e",
+        # "#db61a2",
+        # "#39c5cf",
+    }
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
         futures = {
@@ -254,10 +246,10 @@ def _run_sweep(
                             f"Config '{run_spec['cfg']['label']}' failed: {exc}",
                         )
 
-    for i, (run_spec, result) in enumerate(successful.values()):
+    for run_spec, result in successful.values():
         row = result.to_dict()
-        color = palette[i % len(palette)]
         focus, focus_value = _run_focus(run_spec["cfg"])
+        color = palette[focus]
         add_result_metadata(
             row,
             str(run_spec["cfg"]["label"]),
@@ -280,14 +272,14 @@ def _run_sweep(
 
 
 def _write_results_dir(
-    output_dir: Path,
+    results_dir: Path,
     config: dict[str, Any],
     results: list[dict[str, Any]],
     ttft_values: list[float],
     user_delay_values: list[float],
     user_delay_fraction: float,
 ) -> list[Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in results:
         focus = str(row.get("focus") or row.get("config_type") or "default")
@@ -309,7 +301,7 @@ def _write_results_dir(
             "results": rows,
         }
         file_name = f"results_{_slugify(focus)}_{_slugify(focus_value)}.json"
-        out_path = output_dir / file_name
+        out_path = results_dir / file_name
         with out_path.open("w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
         written.append(out_path)
@@ -324,7 +316,7 @@ def main() -> None:
         "--config", type=Path, required=True, help="Path to the base config JSON"
     )
     parser.add_argument(
-        "--output-dir",
+        "--results-dir",
         type=Path,
         default=None,
         help="Directory where per-focus results_*.json files will be written",
@@ -339,13 +331,13 @@ def main() -> None:
         "--ttft-values",
         type=_parse_float_values,
         required=True,
-        help="Comma-separated TTFT SLA values in ms, e.g. '50,100,150'",
+        help="Comma-separated TTFT SLA values in s, e.g. '10,20,50,100'",
     )
     parser.add_argument(
         "--user-delay-values",
         type=_parse_float_values,
         required=True,
-        help="Comma-separated user-delay values in ms, e.g. '0,50,100'",
+        help="Comma-separated user-delay values in minutes, e.g. '20,50,100'",
     )
     parser.add_argument(
         "--user-delay-fraction",
@@ -360,9 +352,11 @@ def main() -> None:
         help="Per-config timeout in seconds (default: 240.0)",
     )
     args = parser.parse_args()
+    args.ttft_values = [f * 1000 for f in args.ttft_values]
+    args.user_delay_values = [f * 1000 * 60 for f in args.user_delay_values]
 
-    if args.output_dir is None and args.output is None:
-        parser.error("Provide --output-dir")
+    if args.results_dir is None and args.output is None:
+        parser.error("Provide --results-dir")
 
     config = load_config(args.config)
     set_log_mask(LOG_CONFIG_EXECUTOR)
@@ -385,9 +379,10 @@ def main() -> None:
         },
         "results": results,
     }
-    if args.output_dir is not None:
+
+    if args.results_dir is not None:
         written = _write_results_dir(
-            args.output_dir,
+            args.results_dir,
             payload["config"],
             results,
             args.ttft_values,
@@ -396,11 +391,11 @@ def main() -> None:
         )
         summary = {
             "benchmark": payload["benchmark"],
-            "output_dir": str(args.output_dir),
+            "results_dir": str(args.results_dir),
             "files": [str(path) for path in written],
             "result_count": len(results),
         }
-        print(compact_json(summary))
+        print(summary)
 
 
 if __name__ == "__main__":

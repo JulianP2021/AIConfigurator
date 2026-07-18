@@ -75,8 +75,8 @@ def _gbps_to_bytes_per_s(gbps: float) -> int:
 
 def _build_machine_config(settings: dict[str, Any]) -> dict:
     """Convert one combination of settings into a raw machine config dict."""
-    inet_up_gbps = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
-    inet_down_gbps = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+    inet_up_gbps = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
+    inet_down_gbps = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
 
     config: dict[str, Any] = {
         "name": settings["machine_name"],
@@ -114,8 +114,8 @@ def _variant_name(base: str, settings: dict[str, Any]) -> str:
     if settings["nvlink_bw_gbps"]:
         slug += f" nvl{settings['nvlink_bw_gbps']:.0f}"
     slug += f" sbw{settings['ssd_bw_gbps']:.1f}"
-    inet_up = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
-    inet_down = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+    inet_up = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
+    inet_down = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
     slug += f" inet{inet_up:.1f}/{inet_down:.1f}"
     return f"{base} {slug}"
 

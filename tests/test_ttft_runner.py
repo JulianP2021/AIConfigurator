@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from execute_ttft_config import (
+from configs.execute_ttft_config import (
     _build_run_config,
     _expand_run_specs,
     _write_results_dir,
@@ -21,6 +21,7 @@ class TestValidateColocatedConfigs:
             validate_colocated_configs([
                 {
                     "label": "bad",
+                    "gpu": "H200",
                     "prefill_hardware": "H200 x8 #a",
                     "decode_hardware": "H200 x8 #a",
                     "prefill_nodes": 1,
@@ -47,7 +48,7 @@ class TestTTFTExpansion:
             sla_ttft_ms=float("inf"),
             sla_tpot_ms=float("inf"),
         )
-        monkeypatch.setattr("execute_ttft_config.load_env", lambda: fake_env)
+        monkeypatch.setattr("configs.execute_ttft_config.load_env", lambda: fake_env)
 
         config = {
             "model": "Qwen/Qwen3-8B",
@@ -59,9 +60,10 @@ class TestTTFTExpansion:
             "think_time_ms": 0.0,
             "configs": [
                 {
-                    "label": "colocated-a",
+                    "label": "Focused H200 SSD BW 50.0GBps x8 r2200 s32625 p270 nvl483 sbw50.0 inet0.0/0.0",
                     "prefill_hardware": "H200 x8 #a",
                     "decode_hardware": "H200 x8 #a",
+                    "gpu": "H200",
                     "prefill_nodes": 1,
                     "decode_nodes": 1,
                     "prefill_gpus_per_node": 4,
@@ -89,7 +91,8 @@ class TestTTFTExpansion:
 
     def test_build_run_config_encodes_label(self) -> None:
         cfg = {
-            "label": "base",
+            "label": "Focused H200 SSD BW 50.0GBps x8 r2200 s32625 p270 nvl483 sbw50.0 inet0.0/0.0",
+            "gpu": "H200",
             "prefill_hardware": "H200 x8 #a",
             "decode_hardware": "H200 x8 #a",
             "prefill_nodes": 1,
@@ -99,14 +102,18 @@ class TestTTFTExpansion:
 
         run_cfg = _build_run_config(cfg, 100.0, 50.0)
 
-        assert run_cfg["label"] == "base | TTFT=100ms | delay=50ms"
+        assert (
+            run_cfg["label"]
+            == "Focused H200 SSD BW 50.0GBps x8 r2200 s32625 p270 nvl483 sbw50.0 inet0.0/0.0 | TTFT=100ms | delay=50ms"
+        )
         assert run_cfg["benchmark_ttft_ms"] == 100.0
         assert run_cfg["benchmark_user_delay_ms"] == 50.0
         assert run_cfg["benchmark_mode"] == "ttft_cost_by_delay"
 
     def test_build_run_config_keeps_focus_metadata(self) -> None:
         cfg = {
-            "label": "base",
+            "label": "Focused H200 SSD BW 50.0GBps x8 r2200 s32625 p270 nvl483 sbw50.0 inet0.0/0.0",
+            "gpu": "H200",
             "prefill_hardware": "H200 x8 #a",
             "decode_hardware": "H200 x8 #a",
             "prefill_nodes": 2,
@@ -118,8 +125,8 @@ class TestTTFTExpansion:
 
         run_cfg = _build_run_config(cfg, 100.0, 50.0)
 
-        assert run_cfg["focus"] == "nodes"
-        assert run_cfg["focus_value"] == 2
+        assert run_cfg["focus"] == "SSD BW"
+        assert run_cfg["focus_value"] == "50.0"
 
     def test_write_results_dir_groups_by_focus(self, tmp_path) -> None:
         payload = {

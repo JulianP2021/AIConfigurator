@@ -670,22 +670,10 @@ def _build_ttft_cost_plots_by_delay(
 ) -> list[str]:
     valid_rows = [row for row in results if not row.get("has_error")]
     color_map: dict[tuple[str, str], str] = {}
-    palette = [
-        "#58a6ff",
-        "#3fb950",
-        "#f85149",
-        "#d29922",
-        "#a371f7",
-        "#79c0ff",
-        "#56d364",
-        "#f0883e",
-        "#db61a2",
-        "#39c5cf",
-    ]
     for row in valid_rows:
-        key = _focus_color_key(row)
+        key = row["focus"]
         if key not in color_map:
-            color_map[key] = palette[len(color_map) % len(palette)]
+            color_map[key] = row["color"]
 
     by_delay: dict[float, list[dict[str, Any]]] = {}
     for row in valid_rows:
@@ -705,24 +693,22 @@ def _build_ttft_cost_plots_by_delay(
         )
         fig, ax = plt.subplots(figsize=(8, 6))
         for row in rows:
-            color = color_map[_focus_color_key(row)]
-            row["color"] = color
             ax.scatter(
                 row["ttft"],
                 row["total_cost_usd_per_hour"],
                 s=120,
-                color=color,
+                color=row["color"],
                 edgecolors="white",
                 linewidths=0.5,
                 zorder=3,
             )
             ax.annotate(
-                row["label"],
+                row["focus_value"],
                 (row["ttft"], row["total_cost_usd_per_hour"]),
                 textcoords="offset points",
                 xytext=(8, 4),
                 fontsize=9,
-                color=color,
+                color=row["color"],
             )
 
         ax.set_xlabel("TTFT (ms)")

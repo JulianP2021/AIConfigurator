@@ -1,6 +1,23 @@
 import argparse
+import re
 
 from typing import Any
+
+
+def get_focus(machine_name: str, gpu_name: str) -> tuple[str, Any]:
+    pattern = re.compile(
+        rf"^(?:Colocated:\s+)?Focused {re.escape(gpu_name)}(?: "
+        r"(?P<focus>RAM|NVLink|SSD|SSD BW|INET BW) "
+        r"(?P<value>\d+(?:\.\d+)?)"
+        r"(?P<unit>GB|GBps|Gbps)"
+        r")?\s+x\d+\b"
+    )
+    m = pattern.match(machine_name)
+
+    assert m, f"Machine name: {machine_name}, gpu name: {gpu_name}"
+
+    m = m.groupdict()
+    return m["focus"], m["value"]
 
 
 def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, Any]:

@@ -6,7 +6,7 @@ configs into batches of compatible hardware for parallel execution.
 
 import pytest
 
-from execute_config import (
+from configs.execute_config import (
     _group_colocated_configs,
     _group_separate_configs,
     extreme_first_eytzinger_layout,

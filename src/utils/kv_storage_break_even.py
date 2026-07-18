@@ -8,26 +8,15 @@ The comparison is per-GPU: one KV cache belongs to one GPU instance, so the
 recompute cost uses the GPU's prefill time and the per-GPU hourly price.
 """
 
-from pathlib import Path
 
 from src.hardware.hardware import Hardware
+from src.hardware.scraper import get_pricing
 from src.model.model import Model
 from src.utils.utils import _calculate_flops, _calculate_memory
 
 
 _S3_STORAGE_COST_USD_PER_GB_MONTH = 0.022
 _HOURS_PER_MONTH = 30 * 24
-
-
-def _default_aws_pricing() -> dict[str, float]:
-    """Load unit prices from the AWS hardware JSON file, if present."""
-    pricing_path = Path(__file__).parent.parent / "hardware" / "aws_hardware.json"
-    if not pricing_path.exists():
-        return {}
-    import json
-
-    data = json.loads(pricing_path.read_text(encoding="utf-8"))
-    return data.get("_pricing", {})
 
 
 def kv_storage_break_even_seconds(
@@ -83,7 +72,7 @@ def kv_storage_break_even_seconds(
     kv_size_bytes = model.kv_size_per_token * isl
     kv_size_gb = kv_size_bytes / (1024**3)
 
-    pricing = _default_aws_pricing()
+    pricing = get_pricing()
     if ram_price_usd_per_gb_hour is None:
         ram_price_usd_per_gb_hour = pricing.get("cpu_ram_usd_per_gb_hour", 0.0)
     if ssd_price_usd_per_gb_hour is None:

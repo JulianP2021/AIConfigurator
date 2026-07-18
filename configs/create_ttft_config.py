@@ -14,7 +14,6 @@ The generated config JSON can then be fed into ``execute_ttft_config.py``.
 from __future__ import annotations
 import argparse
 import json
-import re
 import sys
 
 from pathlib import Path
@@ -23,7 +22,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from configs.utils.config_utils import build_base_config
+from configs.utils.config_utils import build_base_config, get_focus
 from src.hardware.scraper import (
     load_aws_hardware_db,
     load_gpu_db,
@@ -44,23 +43,6 @@ def _parse_config_type(value: str) -> str:
             f"Invalid config type '{value}'. Allowed: {sorted(allowed)}"
         )
     return config_type
-
-
-def _build_focus_metadata(machine_name: str, gpu_name: str) -> tuple[str, Any]:
-    pattern = re.compile(
-        rf"^Focused {re.escape(gpu_name)}(?: "
-        r"(?P<focus>RAM|NVLink|SSD|SSD BW) "
-        r"(?P<value>\d+(?:\.\d+)?)"
-        r"(?P<unit>GB|Gbps)"
-        r")?\s+x\d+\b"
-    )
-    m = pattern.match(machine_name)
-
-    assert m, f"Machine name: {machine_name}, gpu name: {gpu_name}"
-
-    m = m.groupdict()
-    return m["focus"], m["value"]
-
 
 def _machine_candidates(
     machine_db: dict[str, dict[str, Any]],
@@ -103,9 +85,10 @@ def _generate_configs(
             assert decode_gpus_per_node > 0
             assert decode_gpus_per_node < total_gpus
 
-            focus, focus_value = _build_focus_metadata(machine_name, gpu_name)
+            focus, focus_value = get_focus(machine_name, gpu_name)
             configs.append({
                 "label": (f"{config_type.title()}: {machine_name}"),
+                "gpu": gpu_name,
                 "prefill_hardware": machine_name,
                 "decode_hardware": machine_name,
                 "prefill_nodes": args.prefill_nodes,

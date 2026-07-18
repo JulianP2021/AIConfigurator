@@ -5,24 +5,12 @@ in RAM, SSD, or S3.  Costs are derived from the AWS pricing metadata by default
 but can be overridden by the caller.
 """
 
-from pathlib import Path
-
+from src.hardware.scraper import get_pricing
 from src.model.model import Model
 
 
 _S3_STORAGE_COST_USD_PER_GB_MONTH = 0.022
 _HOURS_PER_MONTH = 30 * 24
-
-
-def _default_aws_pricing() -> dict[str, float]:
-    """Load unit prices from the AWS hardware JSON file, if present."""
-    pricing_path = Path(__file__).parent.parent / "hardware" / "aws_hardware.json"
-    if not pricing_path.exists():
-        return {}
-    import json
-
-    data = json.loads(pricing_path.read_text(encoding="utf-8"))
-    return data.get("_pricing", {})
 
 
 def kv_storage_cost_per_hour_usd(
@@ -68,7 +56,7 @@ def kv_storage_cost_per_hour_usd(
     else:
         kv_size_gb = kv_size_gb_per_token * tokens
 
-    pricing = _default_aws_pricing()
+    pricing = get_pricing()
     if ram_price_usd_per_gb_hour is None:
         ram_price_usd_per_gb_hour = pricing.get("cpu_ram_usd_per_gb_hour", 0.0)
     if ssd_price_usd_per_gb_hour is None:

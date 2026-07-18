@@ -84,7 +84,9 @@ def build_common_config(
     }
 
 
-def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedScenario:
+def build_scenario(
+    common: dict[str, Any], cfg: dict[str, Any], custom_path: str | None = None
+) -> DistributedScenario:
     required = {
         "label",
         "prefill_hardware",
@@ -100,11 +102,11 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
             f"Config '{cfg.get('label', '<unknown>')}' missing required fields: {missing}"
         )
 
-    prefill_hw_name = resolve_machine_name(cfg["prefill_hardware"])
-    decode_hw_name = resolve_machine_name(cfg["decode_hardware"])
+    prefill_hw_name = resolve_machine_name(cfg["prefill_hardware"], custom_path)
+    decode_hw_name = resolve_machine_name(cfg["decode_hardware"], custom_path)
 
-    prefill_hw = fetch_machine_hardware(prefill_hw_name)
-    decode_hw = fetch_machine_hardware(decode_hw_name)
+    prefill_hw = fetch_machine_hardware(prefill_hw_name, custom_path=custom_path)
+    decode_hw = fetch_machine_hardware(decode_hw_name, custom_path=custom_path)
 
     batch_size = int(cfg["batch_size"])
     prefill_nodes = int(cfg["prefill_nodes"])

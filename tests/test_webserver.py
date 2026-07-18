@@ -91,6 +91,7 @@ class TestTTFTDelayPlots:
                 "has_error": False,
                 "focus": "nodes",
                 "focus_value": 2,
+                "color": "#d29922",
             },
             {
                 "label": "cfg-b | TTFT=50ms | delay=0ms",
@@ -100,6 +101,7 @@ class TestTTFTDelayPlots:
                 "has_error": False,
                 "focus": "nodes",
                 "focus_value": 2,
+                "color": "#d29922",
             },
             {
                 "label": "cfg-c | TTFT=25ms | delay=10ms",
@@ -109,6 +111,7 @@ class TestTTFTDelayPlots:
                 "has_error": False,
                 "focus": "nodes",
                 "focus_value": 4,
+                "color": "#d29922",
             },
         ]
 
@@ -116,8 +119,6 @@ class TestTTFTDelayPlots:
 
         assert len(plot_urls) == 2
         assert all(url.startswith("/plot/") for url in plot_urls)
-        assert rows[0]["color"] == rows[1]["color"]
-        assert rows[0]["color"] != rows[2]["color"]
 
     def test_extract_user_delay_from_label(self, webserver_module):
         assert (

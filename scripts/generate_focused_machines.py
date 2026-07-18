@@ -51,6 +51,7 @@ _DEFAULT_FOCUS_VALUES: dict[str, list[float]] = {
     "nvlink": [0.0, 400.0, 800.0, 1600.0],
     "ssd_mem": [1024.0, 2048.0, 4096.0, 8192.0],
     "ssd_bw": [6.4, 12.8, 25.0, 50.0],
+    "inet_bw": [10.0, 25.0, 40.0],
 }
 
 
@@ -63,10 +64,17 @@ def _generate_focused_entries(
 ) -> dict[str, dict[str, Any]]:
     """Build machine entries, one sweep per focused dimension."""
     pricing = _get_pricing(Path("src/hardware/custom_hardware.json"))
-    pricing.setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
-    pricing.setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
-    pricing.setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
-
+    keys = [
+        "ssd_bw_usd_per_gb_s_hour",
+        "pcie_bw_usd_per_gb_s_hour",
+        "nvlink_bw_usd_per_gb_s_hour",
+        "inet_up_usd_per_gbps_hour",
+        "inet_down_usd_per_gbps_hour",
+    ]
+    for key in keys:
+        assert pricing.get(key, 0) > 0, (
+            f"{key} not found in pricing, pricing: {pricing}"
+        )
     if gpu_name not in _NVLINK_CAPABLE_GPUS and baseline["nvlink_bw_gbps"] > 0:
         print(
             f"Warning: {gpu_name!r} is not in the known NVLink/C2C-capable GPU set. "
@@ -100,13 +108,16 @@ def _generate_focused_entries(
                 name_suffix = f" RAM {value:.0f}GB"
             elif dim == "nvlink":
                 settings["nvlink_bw_gbps"] = value
-                name_suffix = f" NVLink {value:.0f}Gbps"
+                name_suffix = f" NVLink {value:.0f}GBps"
             elif dim == "ssd_mem":
                 settings["ssd_mem_gb"] = value
                 name_suffix = f" SSD {value:.0f}GB"
             elif dim == "ssd_bw":
                 settings["ssd_bw_gbps"] = value
-                name_suffix = f" SSD BW {value:.1f}Gbps"
+                name_suffix = f" SSD BW {value:.1f}GBps"
+            elif dim == "inet_bw":
+                settings["inet_bw_gbps"] = value
+                name_suffix = f" INET BW {value:.1f}Gbps"
             else:
                 continue
 
@@ -119,6 +130,7 @@ def _generate_focused_entries(
                     "nvlink_bw_gbps",
                     "ssd_mem_gb",
                     "ssd_bw_gbps",
+                    "inet_bw_gbps",
                 )
             ):
                 continue
@@ -191,8 +203,8 @@ def main() -> int:
     parser.add_argument(
         "--focus",
         type=str,
-        default="ram,nvlink,ssd_mem,ssd_bw",
-        help="Comma-separated list of dimensions to sweep (default: ram,nvlink,ssd_mem,ssd_bw).",
+        default="ram,nvlink,ssd_mem,ssd_bw,inet_bw",
+        help="Comma-separated list of dimensions to sweep (default: ram,nvlink,ssd_mem,ssd_bw,inet_bw).",
     )
     parser.add_argument(
         "--focus-values-ram",
@@ -204,7 +216,7 @@ def main() -> int:
         "--focus-values-nvlink",
         type=str,
         default=None,
-        help="Override NVLink focus sweep in Gbps (comma-separated).",
+        help="Override NVLink focus sweep in GBps (comma-separated).",
     )
     parser.add_argument(
         "--focus-values-ssd-mem",
@@ -216,13 +228,19 @@ def main() -> int:
         "--focus-values-ssd-bw",
         type=str,
         default=None,
-        help="Override SSD bandwidth focus sweep in Gbps (comma-separated).",
+        help="Override SSD bandwidth focus sweep in GBps (comma-separated).",
+    )
+    parser.add_argument(
+        "--focus-values-inet-bw",
+        type=str,
+        default=None,
+        help="Override INET bandwidth focus sweep in Gbps (comma-separated).",
     )
     parser.add_argument(
         "--custom-hardware",
         type=Path,
-        default=Path("src/hardware/custom_hardware.json"),
-        help="Path to the custom hardware JSON file (default: src/hardware/custom_hardware.json).",
+        default=Path("src/hardware/data/custom_hardware.json"),
+        help="Path to the custom hardware JSON file (default: src/hardware/data/custom_hardware.json).",
     )
     parser.add_argument(
         "--write",
@@ -239,7 +257,7 @@ def main() -> int:
     base_name = args.base_name or f"Focused {args.gpu_name}"
 
     focus_dimensions = [d.strip().lower() for d in args.focus.split(",")]
-    allowed = {"ram", "nvlink", "ssd_mem", "ssd_bw"}
+    allowed = {"ram", "nvlink", "ssd_mem", "ssd_bw", "inet_bw"}
     invalid = set(focus_dimensions) - allowed
     if invalid:
         print(
@@ -257,8 +275,10 @@ def main() -> int:
         focus_values["ssd_mem"] = parse_float_list(args.focus_values_ssd_mem)
     if args.focus_values_ssd_bw is not None:
         focus_values["ssd_bw"] = parse_float_list(args.focus_values_ssd_bw)
+    if args.focus_values_inet_bw is not None:
+        focus_values["inet_bw"] = parse_float_list(args.focus_values_inet_bw)
 
-    for dim in ("ram", "nvlink", "ssd_mem", "ssd_bw"):
+    for dim in ("ram", "nvlink", "ssd_mem", "ssd_bw", "inet_bw"):
         if dim in focus_dimensions and dim not in focus_values:
             focus_values[dim] = _DEFAULT_FOCUS_VALUES[dim]
 
@@ -297,9 +317,6 @@ def main() -> int:
         return 0
 
     pricing = _get_pricing(args.custom_hardware)
-    pricing.setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
-    pricing.setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
-    pricing.setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
 
     if args.clean:
         output_data = {"_pricing": pricing, "machines": entries}
@@ -309,7 +326,6 @@ def main() -> int:
     else:
         _, existing_machines = load_aws_hardware_db(args.custom_hardware)
         output_data = {
-            "_pricing": pricing,
             "machines": {**existing_machines, **entries},
         }
 

@@ -8,16 +8,16 @@ used when explicitly refreshing the cached JSON files.
 
 import json
 import os
-import pathlib
 import re
 
+from pathlib import Path
 from typing import Any
 
 from src.hardware.hardware import Hardware
 from src.hardware.legacy.vast_scraper import _fetch_specs
 
 
-_GPU_DB_PATH = pathlib.Path(__file__).parent / "legacy" / "_gpu_db.json"
+_GPU_DB_PATH = Path(__file__).parent / "legacy" / "_gpu_db.json"
 
 
 def _resolve_inter_node_bw(value: str | None, default_gbps: float = 100.0) -> int:
@@ -51,12 +51,14 @@ def lookup(gpu_name: str) -> dict[str, Any]:
 # Machine / node scraper backed by ``_machine_db.json``
 # ---------------------------------------------------------------------------
 
-_MACHINE_DB_PATH = pathlib.Path(__file__).parent / "legacy" / "_machine_db.json"
-_AWS_HARDWARE_PATH = pathlib.Path(__file__).parent / "aws_hardware.json"
+_MACHINE_DB_PATH = Path(__file__).parent / "legacy" / "_machine_db.json"
+_AWS_HARDWARE_PATH = Path(__file__).parent / "data/" / "aws_hardware.json"
+_PRICING_PATH = Path(__file__).parent / "data" / "pricing.json"
 
 
 def load_aws_hardware_db(
-    path: pathlib.Path | str | None = None,
+    aws_path: Path | str | None = None,
+    pricing_path: Path | str | None = None,
 ) -> tuple[dict[Any, Any], dict[str, dict[str, Any]]]:
     """Load user-supplied custom hardware definitions.
 
@@ -101,20 +103,14 @@ def load_aws_hardware_db(
     empty) and ``machines`` is a name -> config dict.  When the file does not
     exist, ``({}, {})`` is returned.
     """
-    target = pathlib.Path(path) if path is not None else _AWS_HARDWARE_PATH
+    target = Path(aws_path) if aws_path is not None else _AWS_HARDWARE_PATH
     if not target.exists():
         return {}, {}
-    data = json.loads(target.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
+    aws_data = json.loads(target.read_text(encoding="utf-8"))
+    if not isinstance(aws_data, dict):
         raise ValueError(f"Custom hardware file {target} must contain a JSON object")
 
-    pricing = data.get("_pricing", {})
-    if not isinstance(pricing, dict):
-        raise ValueError(
-            f"Custom hardware file {target}: '_pricing' must be a JSON object"
-        )
-
-    raw_machines = data.get("machines", {})
+    raw_machines = aws_data.get("machines", {})
     if not isinstance(raw_machines, dict):
         raise ValueError(
             f"Custom hardware file {target}: 'machines' must be a JSON object mapping names to configs"
@@ -130,10 +126,23 @@ def load_aws_hardware_db(
         if "name" not in config:
             config = {**config, "name": name}
         normalized[name] = config
+    target = Path(pricing_path) if pricing_path is not None else _PRICING_PATH
+    if not target.exists():
+        return {}, {}
+    pricing_data = json.loads(target.read_text(encoding="utf-8"))
+    if not isinstance(pricing_data, dict):
+        raise ValueError(f"Custom hardware file {target} must contain a JSON object")
+
+    pricing = pricing_data.get("_pricing", {})
+    if not isinstance(pricing, dict):
+        raise ValueError(
+            f"Custom hardware file {target}: '_pricing' must be a JSON object"
+        )
+
     return pricing, normalized
 
 
-def _default_custom_hardware_path() -> pathlib.Path:
+def _default_custom_hardware_path() -> Path:
     """Return the default location for the custom hardware file."""
     return _AWS_HARDWARE_PATH
 
@@ -189,7 +198,11 @@ def _derive_custom_price(
         apply a global unit price when one is configured.
         """
         val = float(family.get(key, 0.0))
-        return val if val > 0 else float(pricing.get(key, 0.0))
+        if val > 0:
+            return val
+        if float(pricing.get(key, 0.0)) > 0:
+            return float(pricing.get(key, 0.0))
+        raise RuntimeError(f"Pricing is 0 for {key}")
 
     num_gpus = int(config.get("num_gpus", 1))
     cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
@@ -276,7 +289,7 @@ def _clear_combined_machine_db_cache() -> None:
 
 
 def load_combined_machine_db(
-    custom_path: pathlib.Path | str | None = None,
+    custom_path: Path | str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return machine database with custom hardware entries merged in.
 
@@ -308,7 +321,7 @@ def load_combined_machine_db(
             db = {**db, **user_custom}
     else:
         # User-specific custom presets live in custom_hardware.json.
-        default_custom_path = pathlib.Path(__file__).parent / "custom_hardware.json"
+        default_custom_path = Path(__file__).parent / "data" / "custom_hardware.json"
         _, default_custom = load_aws_hardware_db(default_custom_path)
         if default_custom:
             db = {**db, **default_custom}
@@ -318,7 +331,7 @@ def load_combined_machine_db(
 
 
 def resolve_machine_name(
-    machine_name: str, custom_path: pathlib.Path | str | None = None
+    machine_name: str, custom_path: Path | str | None = None
 ) -> str:
     """Resolve ``machine_name`` to an exact machine key from the local cache.
 
@@ -353,7 +366,7 @@ def resolve_machine_name(
 
 
 def lookup_machine(
-    machine_name: str, custom_path: pathlib.Path | str | None = None
+    machine_name: str, custom_path: Path | str | None = None
 ) -> dict[str, Any]:
     """Return cached machine config, checking custom hardware first."""
     db = load_combined_machine_db(custom_path)
@@ -436,7 +449,7 @@ def _machine_config_with_defaults(
 def fetch_machine_hardware(
     machine_name: str,
     machine_config_override: dict[str, Any] | None = None,
-    custom_path: pathlib.Path | str | None = None,
+    custom_path: Path | str | None = None,
 ) -> Hardware:
     """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache.
 
@@ -529,3 +542,13 @@ def fetch_machine_hardware(
         verification=scraped.get("verification", ""),
     )
     return Hardware(name=scraped["name"], spec=spec)
+
+
+def get_pricing(path: Path | None = None):
+    """Load unit prices from the AWS hardware JSON file, if present."""
+    if not path:
+        path = _PRICING_PATH
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data.get("_pricing", {})
