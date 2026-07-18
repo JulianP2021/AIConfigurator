@@ -6,11 +6,12 @@ import concurrent.futures
 import io
 import json
 import os
+import re
 import sys
 import uuid
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, redirect_stdout
+from contextlib import asynccontextmanager, redirect_stdout, suppress
 from pathlib import Path
 from typing import Any
 
@@ -277,9 +278,12 @@ def _build_results_page(
     plot_urls: list[str] | None = None,
     error: str | None = None,
     show_debug_tables: bool = False,
+    plot_title: str = "Cost-Latency Plots",
 ) -> str:
     """Build the results HTML page (for /simulate full page) or just the inner content."""
-    inner = _results_inner_html(results, plot_urls, error, show_debug_tables)
+    inner = _results_inner_html(
+        results, plot_urls, error, show_debug_tables, plot_title
+    )
     return (
         """<!DOCTYPE html>
 <html lang="en">
@@ -429,6 +433,7 @@ def _results_inner_html(
     plot_urls: list[str] | None = None,
     error: str | None = None,
     _show_debug_tables: bool = False,
+    plot_title: str = "Cost-Latency Plots",
 ) -> str:
     """Inner HTML for results (used when injecting via JS)."""
     html = ""
@@ -580,7 +585,9 @@ def _results_inner_html(
         html += "</tbody></table></div>\n"
 
     if plot_urls:
-        html += '<div class="card plot-card"><h2>Cost-Latency Plots</h2><div class="plot-grid">'
+        html += (
+            f'<div class="card plot-card"><h2>{plot_title}</h2><div class="plot-grid">'
+        )
         for url in plot_urls:
             html += (
                 f'<div><img src="{url}" class="plot-img" alt="Cost-Latency Plot"></div>'
@@ -632,6 +639,110 @@ def _build_single_plot(
     return f"/plot/{pid}"
 
 
+def _extract_user_delay_ms(row: dict[str, Any]) -> float | None:
+    for key in ("user_delay_ms", "user_delay_min_ms", "user_delay_max_ms"):
+        value = row.get(key)
+        if value is not None:
+            return float(value)
+    label = str(row.get("label", ""))
+    match = re.search(r"delay=([0-9.+-eE]+)ms", label)
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def _focus_color_key(row: dict[str, Any]) -> tuple[str, str]:
+    focus = row.get("focus") or row.get("config_type")
+    focus_value = row.get("focus_value")
+    if focus is None and focus_value is None:
+        delay_ms = _extract_user_delay_ms(row)
+        if delay_ms is not None:
+            return ("user_delay_ms", f"{delay_ms:g}")
+        ttft_ms = row.get("ttft_sla_ms") or row.get("sweep_ttft_ms") or row.get("ttft")
+        if ttft_ms is not None:
+            return ("ttft_ms", f"{float(ttft_ms):g}")
+        return ("default", str(row.get("label", "")))
+    return (str(focus or "default"), str(focus_value))
+
+
+def _build_ttft_cost_plots_by_delay(
+    results: list[dict[str, float | int | str]],
+) -> list[str]:
+    valid_rows = [row for row in results if not row.get("has_error")]
+    color_map: dict[tuple[str, str], str] = {}
+    palette = [
+        "#58a6ff",
+        "#3fb950",
+        "#f85149",
+        "#d29922",
+        "#a371f7",
+        "#79c0ff",
+        "#56d364",
+        "#f0883e",
+        "#db61a2",
+        "#39c5cf",
+    ]
+    for row in valid_rows:
+        key = _focus_color_key(row)
+        if key not in color_map:
+            color_map[key] = palette[len(color_map) % len(palette)]
+
+    by_delay: dict[float, list[dict[str, Any]]] = {}
+    for row in valid_rows:
+        delay_ms = _extract_user_delay_ms(row)
+        if delay_ms is None:
+            continue
+        by_delay.setdefault(round(delay_ms, 6), []).append(row)
+
+    plot_urls: list[str] = []
+    for delay_ms in sorted(by_delay):
+        rows = sorted(
+            by_delay[delay_ms],
+            key=lambda r: (
+                r.get("ttft", float("inf")),
+                r.get("total_cost_usd_per_hour", float("inf")),
+            ),
+        )
+        fig, ax = plt.subplots(figsize=(8, 6))
+        for row in rows:
+            color = color_map[_focus_color_key(row)]
+            row["color"] = color
+            ax.scatter(
+                row["ttft"],
+                row["total_cost_usd_per_hour"],
+                s=120,
+                color=color,
+                edgecolors="white",
+                linewidths=0.5,
+                zorder=3,
+            )
+            ax.annotate(
+                row["label"],
+                (row["ttft"], row["total_cost_usd_per_hour"]),
+                textcoords="offset points",
+                xytext=(8, 4),
+                fontsize=9,
+                color=color,
+            )
+
+        ax.set_xlabel("TTFT (ms)")
+        ax.set_ylabel("Total cost ($/hour)")
+        ax.set_title(f"TTFT vs Cost (user delay {delay_ms:g} ms)")
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=0)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        pid = str(uuid.uuid4())
+        _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+        plot_urls.append(f"/plot/{pid}")
+
+    return plot_urls
+
+
 def _load_results_from_dir(results_dir: Path) -> list[dict[str, Any]]:
     """Load every results_*.json file from a directory and tag rows with users."""
     rows: list[dict[str, Any]] = []
@@ -642,10 +753,8 @@ def _load_results_from_dir(results_dir: Path) -> list[dict[str, Any]]:
             if "users" not in row:
                 # Infer users from filename like results_users_100.json
                 stem = path.stem.replace("results_users_", "")
-                try:
+                with suppress(ValueError):
                     row["users"] = int(stem)
-                except ValueError:
-                    continue
             rows.append(row)
     return rows
 
@@ -1133,6 +1242,7 @@ async def import_page():
 async def import_results(
     results_json: str = Form(""),
     results_dir: str = Form(""),
+    plot_mode: str = Form("comparison"),
 ):
     """Render a results page from pasted JSON or from a results directory.
 
@@ -1175,9 +1285,14 @@ async def import_results(
             if "color" not in row:
                 row["color"] = COLORS[i % len(COLORS)]
 
-        # Directory imports always render the users/cost plot. Single JSON
-        # imports render the full set of comparison plots.
-        if from_directory:
+        benchmark_mode = plot_mode.strip().lower()
+        if benchmark_mode in {"ttft", "ttft_cost", "ttft_cost_by_delay"}:
+            plot_urls = _build_ttft_cost_plots_by_delay(results)
+            if not plot_urls:
+                raise ValueError(
+                    "Imported results do not contain user_delay_ms metadata needed for TTFT plots"
+                )
+        elif from_directory:
             plot_url, selected = _build_users_cost_plot(results)
             plot_urls = [plot_url]
             results = selected
@@ -1187,7 +1302,14 @@ async def import_results(
             for row in results:
                 row["color"] = _color_for_row(row)
             plot_urls = _build_comparison_plots(results)
-        return HTMLResponse(content=_build_results_page(results, plot_urls, None))
+        plot_title = (
+            "TTFT vs Cost by User Delay"
+            if benchmark_mode in {"ttft", "ttft_cost", "ttft_cost_by_delay"}
+            else "Cost-Latency Plots"
+        )
+        return HTMLResponse(
+            content=_build_results_page(results, plot_urls, None, plot_title=plot_title)
+        )
     except Exception as exc:
         import traceback
 

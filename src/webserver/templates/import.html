@@ -101,6 +101,12 @@
         <div class="card">
             <h2>Option 1: Paste results JSON</h2>
             <form action="/import_results" method="post">
+                <label for="plot_mode">Plot mode</label>
+                <select id="plot_mode" name="plot_mode">
+                    <option value="comparison" selected>Current comparison plots</option>
+                    <option value="ttft_cost_by_delay">TTFT vs cost by user delay</option>
+                </select>
+                <p class="hint">Use the TTFT mode for sweep results that include <code>user_delay_ms</code> metadata.</p>
                 <label for="results_json">Paste a results JSON array or <code>{"results": [...]}</code> object</label>
                 <textarea id="results_json" name="results_json" placeholder='{"results": [{"label": "Config 1", "ttft": 10, ...}]}'></textarea>
                 <p class="hint">Accepts either a raw array of result rows or an object with a <code>results</code> key.</p>
@@ -113,6 +119,11 @@
         <div class="card">
             <h2>Option 2: Load from results directory</h2>
             <form action="/import_results" method="post">
+                <label for="plot_mode_dir">Plot mode</label>
+                <select id="plot_mode_dir" name="plot_mode">
+                    <option value="comparison" selected>Current comparison plots</option>
+                    <option value="ttft_cost_by_delay">TTFT vs cost by user delay</option>
+                </select>
                 <label for="results_dir">Results directory path</label>
                 <input type="text" id="results_dir" name="results_dir" placeholder="/path/to/results">
                 <p class="hint">Directory must contain files named <code>results_users_&lt;N&gt;.json</code>.</p>

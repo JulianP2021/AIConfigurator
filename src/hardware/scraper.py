@@ -57,7 +57,7 @@ _AWS_HARDWARE_PATH = pathlib.Path(__file__).parent / "aws_hardware.json"
 
 def load_aws_hardware_db(
     path: pathlib.Path | str | None = None,
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[Any, Any], dict[str, dict[str, Any]]]:
     """Load user-supplied custom hardware definitions.
 
     The file is a JSON object with two top-level keys:

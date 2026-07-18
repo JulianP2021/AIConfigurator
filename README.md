@@ -12,8 +12,10 @@ The simulator is primarily used to compare hardware topologies, batch sizes, cac
 2. [Repository layout](#repository-layout)
 3. [Scripts and entry points](#scripts-and-entry-points)
    - [`main.py`](#mainpy)
-   - [`create_config.py`](#create_configpy)
-   - [`execute_config.py`](#execute_configpy)
+  - [`configs/create_config.py`](#configscreate_configpy)
+  - [`configs/execute_config.py`](#configsexecute_configpy)
+  - [`configs/create_ttft_config.py`](#configscreate_ttft_configpy)
+  - [`configs/execute_ttft_config.py`](#configsexecute_ttft_configpy)
    - [`src/webserver/server.py`](#srcwebserverserverpy)
    - [`scripts/add_custom_machine.py`](#scriptsadd_custom_machinepy)
    - [`scripts/generate_focused_machines.py`](#scriptsgenerate_focused_machinespy)
@@ -49,8 +51,8 @@ The project uses a local virtual environment under `.venv`.
   --num-prefill-nodes 1 --num-decode-nodes 1
 
 # Generate and run a swept config matrix
-.venv/bin/python create_config.py --config-name config.json
-.venv/bin/python execute_config.py --config config.json --output results.json
+.venv/bin/python configs/create_config.py --config-name config.json
+.venv/bin/python configs/execute_config.py --config config.json --output results.json
 
 # Start the FastAPI web server
 .venv/bin/python -m uvicorn src.webserver.server:app --reload
@@ -67,8 +69,10 @@ The project uses a local virtual environment under `.venv`.
 .
 ├── .env                          # Default simulator parameters
 ├── main.py                       # CLI entry point for single simulations
-├── create_config.py              # Generate swept config.json matrices
-├── execute_config.py             # Run config matrices in parallel
+├── configs/create_config.py      # Generate swept config.json matrices
+├── configs/execute_config.py     # Run config matrices in parallel
+├── configs/create_ttft_config.py  # Generate fixed-topology TTFT config JSON
+├── configs/execute_ttft_config.py # Run TTFT sweeps into grouped results files
 ├── config.json                   # Example generated config matrix
 ├── src/
 │   ├── cache/cache.py            # Two-tier RAM/SSD/S3 KV cache
@@ -126,7 +130,7 @@ Example:
 
 The output is a compact JSON `SimulationResult` plus human-readable breakdowns of request shape, cost, and S3 counters.
 
-### `create_config.py`
+### `configs/create_config.py`
 
 Generate a `config.json` that sweeps over hardware topologies. It mirrors the CLI flags of `main.py` and emits one entry per combination of machine, node count, GPU split, and batch size.
 
@@ -139,7 +143,7 @@ Supported topology categories (`--config-types`):
 Example:
 
 ```bash
-.venv/bin/python create_config.py \
+.venv/bin/python configs/create_config.py \
   --model Qwen/Qwen3-8B \
   --isl 30000 --osl 2000 \
   --sessions-per-user 20 --users 40 \
@@ -148,12 +152,12 @@ Example:
   --config-name config.json
 ```
 
-### `execute_config.py`
+### `configs/execute_config.py`
 
 Run a generated `config.json` in parallel. Each valid config is executed in a separate process with a configurable per-config timeout. Failed configs can invalidate related smaller/larger configs in the sweep so the matrix terminates early.
 
 ```bash
-.venv/bin/python execute_config.py \
+.venv/bin/python configs/execute_config.py \
   --config config.json \
   --output results.json \
   --timeout 120.0
@@ -464,7 +468,7 @@ Machine presets are loaded from a combined database (`src/hardware/aws_hardware.
 
 ### Example `config.json`
 
-The following example matches the current `.env` defaults and sweeps over a few node counts and batch sizes on AWS H200 hardware. Save it as `config.json` and run with `execute_config.py`.
+The following example matches the current `.env` defaults and sweeps over a few node counts and batch sizes on AWS H200 hardware. Save it as `config.json` and run with `configs/execute_config.py`.
 
 ```json
 {
@@ -534,7 +538,7 @@ The following example matches the current `.env` defaults and sweeps over a few 
 Run it:
 
 ```bash
-.venv/bin/python execute_config.py --config config.json --output results.json --timeout 120.0
+.venv/bin/python configs/execute_config.py --config config.json --output results.json --timeout 120.0
 ```
 
 ---

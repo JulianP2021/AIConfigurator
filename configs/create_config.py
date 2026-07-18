@@ -3,6 +3,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from configs.utils.config_utils import build_base_config
 from src.hardware.scraper import (
     load_aws_hardware_db,
     load_gpu_db,
@@ -29,36 +33,7 @@ if __name__ == "__main__":
 
     print(args.sla)
 
-    config = {}
-    config["model"] = args.model
-    config["isl"] = args.isl
-    config["osl"] = args.osl
-    config["sessions_per_user"] = args.sessions_per_user
-    config["users"] = args.users
-    config["think_time_ms"] = args.think_time_ms
-    config["max_session_turns"] = args.max_session_turns
-    config["ram_usage_fraction"] = args.ram_usage_fraction
-    config["ssd_usage_fraction"] = args.ssd_usage_fraction
-    config["router_prefill_load_scale"] = args.router_prefill_load_scale
-    config["router_device_credit"] = args.router_device_credit
-    config["router_remote_ram_credit"] = args.router_remote_ram_credit
-    config["router_remote_ssd_credit"] = args.router_remote_ssd_credit
-    config["router_s3_credit"] = args.router_s3_credit
-    config["router_busy_threshold_tokens"] = args.router_busy_threshold_tokens
-    config["s3_enabled"] = args.s3_enabled
-    config["s3_up_bw_gbps"] = args.s3_up_bw_gbps
-    config["s3_down_bw_gbps"] = args.s3_down_bw_gbps
-    config["s3_eviction_time_ms"] = args.s3_eviction_time_ms
-    config["inter_node_network_up_gbps"] = args.inter_node_network_up_gbps
-    config["inter_node_network_down_gbps"] = args.inter_node_network_down_gbps
-    config["sla"] = {
-        "ttft_ms": f"{args.sla['ttft_ms']}",
-        "tpot_ms": f"{args.sla['ttft_ms']}",
-    }
-    config["user_delay_fraction"] = args.user_delay_fraction
-    config["user_delay_min_ms"] = args.user_delay_min_ms
-    config["user_delay_max_ms"] = args.user_delay_max_ms
-    config["random_seed"] = args.random_seed
+    config = build_base_config(args, "USER")
 
     # High-end training GPUs to keep when --high-end-only is set.
     HIGH_END_GPUS = {

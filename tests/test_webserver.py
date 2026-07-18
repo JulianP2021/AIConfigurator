@@ -78,3 +78,65 @@ class TestBuildNodesInterNodeBandwidth:
         for node in nodes:
             assert node.hardware.spec.network_inter_node_up == expected
             assert node.hardware.spec.network_inter_node_down == expected
+
+
+class TestTTFTDelayPlots:
+    def test_build_ttft_cost_plots_groups_by_user_delay(self, webserver_module):
+        rows = [
+            {
+                "label": "cfg-a | TTFT=25ms | delay=0ms",
+                "ttft": 25.0,
+                "total_cost_usd_per_hour": 1.25,
+                "user_delay_ms": 0.0,
+                "has_error": False,
+                "focus": "nodes",
+                "focus_value": 2,
+            },
+            {
+                "label": "cfg-b | TTFT=50ms | delay=0ms",
+                "ttft": 50.0,
+                "total_cost_usd_per_hour": 1.50,
+                "user_delay_ms": 0.0,
+                "has_error": False,
+                "focus": "nodes",
+                "focus_value": 2,
+            },
+            {
+                "label": "cfg-c | TTFT=25ms | delay=10ms",
+                "ttft": 25.0,
+                "total_cost_usd_per_hour": 1.75,
+                "user_delay_ms": 10.0,
+                "has_error": False,
+                "focus": "nodes",
+                "focus_value": 4,
+            },
+        ]
+
+        plot_urls = webserver_module._build_ttft_cost_plots_by_delay(rows)
+
+        assert len(plot_urls) == 2
+        assert all(url.startswith("/plot/") for url in plot_urls)
+        assert rows[0]["color"] == rows[1]["color"]
+        assert rows[0]["color"] != rows[2]["color"]
+
+    def test_extract_user_delay_from_label(self, webserver_module):
+        assert (
+            webserver_module._extract_user_delay_ms({
+                "label": "cfg | TTFT=100ms | delay=50ms"
+            })
+            == 50.0
+        )
+
+    def test_load_results_from_dir_keeps_rows_without_users(
+        self, webserver_module, tmp_path
+    ):
+        path = tmp_path / "results_nodes_2.json"
+        path.write_text(
+            '{"results": [{"label": "cfg", "ttft": 10.0, "total_cost_usd_per_hour": 1.0}]}',
+            encoding="utf-8",
+        )
+
+        rows = webserver_module._load_results_from_dir(tmp_path)
+
+        assert len(rows) == 1
+        assert rows[0]["label"] == "cfg"

@@ -168,6 +168,7 @@ def add_result_metadata(
     cfg: dict[str, object],
     color: str,
     users: int | None = None,
+    extra_fields: dict[str, object] | None = None,
 ) -> None:
     """Layer webserver-specific metadata onto a SimulationResult.to_dict() row.
 
@@ -186,6 +187,8 @@ def add_result_metadata(
     })
     if users is not None:
         row["users"] = users
+    if extra_fields:
+        row.update(extra_fields)
 
 
 def get_shape(lst, shape=()):

@@ -210,10 +210,11 @@ Covered areas:
 - `tests/test_sla.py` — per-request TTFT/TPOT SLA enforcement.
 - `tests/test_router.py` — routing and cost scoring.
 - `tests/test_execute_config.py` / `tests/test_scraper.py` — config-execution utilities.
+- `configs/create_ttft_config.py` / `configs/execute_ttft_config.py` — fixed-topology TTFT benchmark generation and execution.
 
-## Batch runner (`execute_config.py`)
+## Batch runner (`configs/execute_config.py`)
 
-`execute_config.py --config config.json [--output results.json] [--timeout T]` runs a matrix of scenarios in parallel.
+`configs/execute_config.py --config config.json [--output results.json] [--timeout T]` runs a matrix of scenarios in parallel.
 
 - Each valid config is simulated in a separate process (default `max_workers=8`).
 - A **per-config timeout** (`--timeout` seconds, default `120.0`) is enforced with
