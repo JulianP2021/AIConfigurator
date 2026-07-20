@@ -15,7 +15,7 @@
     "gpu_bw": 3360000000000,
     "gpu_max_power": 0.0,
     "gpu_max_temp": 0.0,
-    "price_usd_per_hour": 1.9333333333333336
+    "price_usd_per_hour": 0.0
   },
   "TESLA_V100": {
     "name": "TESLA_V100",

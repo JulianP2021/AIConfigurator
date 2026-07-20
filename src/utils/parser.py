@@ -186,6 +186,13 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Weight of prefill load in routing cost (default: {env.router_prefill_load_scale})",
     )
     parser.add_argument(
+        "--router--active-work-scale",
+        type=float,
+        default=env.router_active_work_scale,
+        help=f"Weight of prefill load in routing cost (default: {env.router_active_work_scale})",
+    )
+
+    parser.add_argument(
         "--router-device-credit",
         type=float,
         default=env.router_device_credit,

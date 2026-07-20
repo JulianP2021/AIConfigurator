@@ -268,8 +268,9 @@ class TestCacheInsertion:
         cache.ram_capacity_bytes[0] = 51_300
         cache.insert_cache_item(CacheItem((1, 0), 0, 512), 0)
 
-        with pytest.raises(RuntimeError, match="No S3 legs"):
-            cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+
+        assert len(cache.download_kv(0, Request(0, 1000, 1, 0)).tracks) == 0
 
     def test_insert_merges_into_ssd_during_eviction(self, small_cache: Cache):
         """When a new RAM item overlaps an existing SSD item, the SSD copy merges in."""
@@ -795,8 +796,11 @@ class TestCacheS3:
         )
         cache.ram_capacity_bytes[0] = 51_300
         cache.insert_cache_item(CacheItem((1, 0), 0, 512), 0)
-        with pytest.raises(RuntimeError, match="No S3 legs"):
-            cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+        cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
+
+        dr = cache.download_kv(0, Request(0, 1000, 1, 0))
+        assert len(dr.tracks) == 0
+        assert dr.request.prefilled_tokens == 0
 
     def test_s3_upload_skipped_when_covered(
         self, fake_model: Model, s3_tiny_hardware: Hardware, s3_enabled: S3Spec

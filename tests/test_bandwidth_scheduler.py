@@ -67,8 +67,8 @@ class TestBandwidthScheduler:
         dr = DownloadRequest(req, [[TransferLeg(100_000_000, 0, 1, "NETWORK")]])
         scheduler.register(dr)
 
-        # NETWORK has 0 ms latency. Source inter-node up = 100 MB/s, dest inter-node down = 200 MB/s => bottleneck is up.
-        expected_ms = 100_000_000 / (tiny_hardware.spec.network_inter_node_up / 1000.0)
+        # NETWORK has 0 ms latency. Source inter-node up = 100 Mb/s, dest inter-node down = 200 Mb/s => bottleneck is up.
+        expected_ms = 100_000_000 / (tiny_hardware.spec.network_inter_node_up / 8000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_ssd_local_uses_nvme_bw(self, tiny_hardware: Hardware):
@@ -166,7 +166,7 @@ class TestBandwidthScheduler:
         expected_bw = min(
             s3_spec.down_bw_bytes_per_s, tiny_hardware.spec.network_inet_down
         )
-        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
+        expected_ms = 1_000_000_000 / (expected_bw / 8000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_s3_upload_shared(self, tiny_hardware: Hardware):
@@ -199,5 +199,5 @@ class TestBandwidthScheduler:
             s3_spec.up_bw_bytes_per_s,
             tiny_hardware.spec.network_inet_up / 2,
         )
-        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
+        expected_ms = 1_000_000_000 / (expected_bw / 8000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)

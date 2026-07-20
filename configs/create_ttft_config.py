@@ -44,6 +44,7 @@ def _parse_config_type(value: str) -> str:
         )
     return config_type
 
+
 def _machine_candidates(
     machine_db: dict[str, dict[str, Any]],
     gpu_db: dict[str, dict[str, Any]],

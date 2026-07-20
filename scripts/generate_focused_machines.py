@@ -51,6 +51,7 @@ _DEFAULT_FOCUS_VALUES: dict[str, list[float]] = {
     "nvlink": [0.0, 400.0, 800.0, 1600.0],
     "ssd_mem": [1024.0, 2048.0, 4096.0, 8192.0],
     "ssd_bw": [6.4, 12.8, 25.0, 50.0],
+    "inter_node_bw": [50.0, 100.0, 200.0],
     "inet_bw": [10.0, 25.0, 40.0],
 }
 
@@ -68,6 +69,8 @@ def _generate_focused_entries(
         "ssd_bw_usd_per_gb_s_hour",
         "pcie_bw_usd_per_gb_s_hour",
         "nvlink_bw_usd_per_gb_s_hour",
+        "inter_node_up_usd_per_gbps_hour",
+        "inter_node_down_usd_per_gbps_hour",
         "inet_up_usd_per_gbps_hour",
         "inet_down_usd_per_gbps_hour",
     ]
@@ -115,6 +118,10 @@ def _generate_focused_entries(
             elif dim == "ssd_bw":
                 settings["ssd_bw_gbps"] = value
                 name_suffix = f" SSD BW {value:.1f}GBps"
+            elif dim == "inter_node_bw":
+                settings["inter_node_up_gbps"] = value
+                settings["inter_node_down_gbps"] = value
+                name_suffix = f" INTER NODE BW {value:.1f}Gbps"
             elif dim == "inet_bw":
                 settings["inet_bw_gbps"] = value
                 name_suffix = f" INET BW {value:.1f}Gbps"
@@ -130,6 +137,8 @@ def _generate_focused_entries(
                     "nvlink_bw_gbps",
                     "ssd_mem_gb",
                     "ssd_bw_gbps",
+                    "inter_node_up_gbps",
+                    "inter_node_down_gbps",
                     "inet_bw_gbps",
                 )
             ):
@@ -168,13 +177,13 @@ def main() -> int:
         "--pcie-bw-gbps",
         type=float,
         default=128.0,
-        help="Baseline PCIe bandwidth in Gbps (default: 128).",
+        help="Baseline PCIe bandwidth in GBps (default: 128).",
     )
     parser.add_argument(
         "--nvlink-bw-gbps",
         type=float,
         default=800.0,
-        help="Baseline NVLink bandwidth in Gbps (default: 800).",
+        help="Baseline NVLink bandwidth in GBps (default: 800).",
     )
     parser.add_argument(
         "--ram-mem-gb",
@@ -192,7 +201,13 @@ def main() -> int:
         "--ssd-bw-gbps",
         type=float,
         default=12.8,
-        help="Baseline SSD (NVMe) bandwidth in Gbps (default: 12.8).",
+        help="Baseline SSD (NVMe) bandwidth in GBps (default: 12.8).",
+    )
+    parser.add_argument(
+        "--inter-node-bw-gbps",
+        type=float,
+        default=100.0,
+        help="Baseline INTER NODE bandwidth in Gbps (default: 100.0).",
     )
     parser.add_argument(
         "--inet-bw-gbps",
@@ -203,8 +218,8 @@ def main() -> int:
     parser.add_argument(
         "--focus",
         type=str,
-        default="ram,nvlink,ssd_mem,ssd_bw,inet_bw",
-        help="Comma-separated list of dimensions to sweep (default: ram,nvlink,ssd_mem,ssd_bw,inet_bw).",
+        default="ram,nvlink,ssd_mem,ssd_bw,inter_node_bw,inet_bw",
+        help="Comma-separated list of dimensions to sweep (default: ram,nvlink,ssd_mem,ssd_bw,inter_node_bw,inet_bw).",
     )
     parser.add_argument(
         "--focus-values-ram",
@@ -229,6 +244,12 @@ def main() -> int:
         type=str,
         default=None,
         help="Override SSD bandwidth focus sweep in GBps (comma-separated).",
+    )
+    parser.add_argument(
+        "--focus-values-inter-node-bw",
+        type=str,
+        default=None,
+        help="Override INTER NODE bandwidth focus sweep in GBps (comma-separated).",
     )
     parser.add_argument(
         "--focus-values-inet-bw",
@@ -257,7 +278,7 @@ def main() -> int:
     base_name = args.base_name or f"Focused {args.gpu_name}"
 
     focus_dimensions = [d.strip().lower() for d in args.focus.split(",")]
-    allowed = {"ram", "nvlink", "ssd_mem", "ssd_bw", "inet_bw"}
+    allowed = {"ram", "nvlink", "ssd_mem", "ssd_bw", "inter_node_bw", "inet_bw"}
     invalid = set(focus_dimensions) - allowed
     if invalid:
         print(
@@ -275,10 +296,14 @@ def main() -> int:
         focus_values["ssd_mem"] = parse_float_list(args.focus_values_ssd_mem)
     if args.focus_values_ssd_bw is not None:
         focus_values["ssd_bw"] = parse_float_list(args.focus_values_ssd_bw)
+    if args.focus_values_inter_node_bw is not None:
+        focus_values["inter_node_bw"] = parse_float_list(
+            args.focus_values_inter_node_bw
+        )
     if args.focus_values_inet_bw is not None:
         focus_values["inet_bw"] = parse_float_list(args.focus_values_inet_bw)
 
-    for dim in ("ram", "nvlink", "ssd_mem", "ssd_bw", "inet_bw"):
+    for dim in ("ram", "nvlink", "ssd_mem", "ssd_bw", "inter_node_bw", "inet_bw"):
         if dim in focus_dimensions and dim not in focus_values:
             focus_values[dim] = _DEFAULT_FOCUS_VALUES[dim]
 
@@ -292,8 +317,8 @@ def main() -> int:
         "inet_bw_gbps": args.inet_bw_gbps,
         "inet_up_gbps": args.inet_bw_gbps,
         "inet_down_gbps": args.inet_bw_gbps,
-        "inter_node_up_gbps": 100.0,
-        "inter_node_down_gbps": 100.0,
+        "inter_node_up_gbps": args.inter_node_bw_gbps,
+        "inter_node_down_gbps": args.inter_node_bw_gbps,
     }
 
     entries = _generate_focused_entries(

@@ -7,7 +7,7 @@ from typing import Any
 def get_focus(machine_name: str, gpu_name: str) -> tuple[str, Any]:
     pattern = re.compile(
         rf"^(?:Colocated:\s+)?Focused {re.escape(gpu_name)}(?: "
-        r"(?P<focus>RAM|NVLink|SSD|SSD BW|INET BW) "
+        r"(?P<focus>RAM|NVLink|SSD|SSD BW|INTER NODE BW|INET BW) "
         r"(?P<value>\d+(?:\.\d+)?)"
         r"(?P<unit>GB|GBps|Gbps)"
         r")?\s+x\d+\b"

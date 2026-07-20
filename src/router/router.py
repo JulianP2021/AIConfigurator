@@ -24,6 +24,7 @@ class RouterCostConfig:
     """Tunable knobs for the Dynamo-style routing cost function."""
 
     prefill_load_scale: float = 1.0
+    active_work_scale: float = 0.0001
     device_credit: float = 1.0
     remote_ram_credit: float = 0.5
     remote_ssd_credit: float = 0.3
@@ -203,7 +204,7 @@ class Router:
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
         return cfg.prefill_load_scale * (
-            active_prefill.get(node_id, 0.0) + adjusted_prefill
+            active_prefill.get(node_id, 0.0) * 0.0001 + adjusted_prefill
         )
 
     def _decode_cost(
@@ -213,7 +214,7 @@ class Router:
         assert cfg is not None, "Router cost config must be set"
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
-        return active_decode.get(node_id, 0.0) + adjusted_prefill + req.osl
+        return active_decode.get(node_id, 0.0) * 0.0001 + adjusted_prefill + req.osl
 
     def _total_cost(
         self,
@@ -283,13 +284,7 @@ class Router:
                 best_node_id = node_id
 
         if best_node_id is None:
-            # All workers were busy; fall back to lowest raw load.
-            best_node_id = min(
-                candidates,
-                key=lambda nid: (
-                    active_prefill.get(nid, 0.0) + active_decode.get(nid, 0.0)
-                ),
-            )
+            raise RuntimeError("Nodes too busy, extend busy threshhold")
 
         # Pick the least-loaded prefill instance on the chosen node by uncached
         # prefill tokens, falling back to queue depth for ties.

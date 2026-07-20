@@ -8,7 +8,6 @@ The comparison is per-GPU: one KV cache belongs to one GPU instance, so the
 recompute cost uses the GPU's prefill time and the per-GPU hourly price.
 """
 
-
 from src.hardware.hardware import Hardware
 from src.hardware.scraper import get_pricing
 from src.model.model import Model

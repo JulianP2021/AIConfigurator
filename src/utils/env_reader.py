@@ -67,19 +67,14 @@ class EnvConfig:
     # Credits reduce the effective prefill load when the worker already holds
     # the corresponding KV tier. Higher credit -> stronger preference for locality.
     router_prefill_load_scale: float = 1.0
-    router_device_credit: float = 1.0
+    router_active_work_scale: float = 0.001
+    router_device_credit: float = 0.8
     router_remote_ram_credit: float = 0.0
     router_remote_ssd_credit: float = 0.3
     router_s3_credit: float = 0.1
     router_busy_threshold_tokens: float = 1_000_000.0
 
-    # Logging bitmask:
-    #   bit 0 (1)  = cache
-    #   bit 1 (2)  = instances
-    #   bit 2 (4)  = router
-    #   bit 3 (8)  = simulation
-    #   0 = nothing, 15 = everything
-    log_mask: int = 15
+    log_mask: int = 0
     debug: bool = False
 
     # Hardware preset
@@ -117,6 +112,7 @@ _DEFAULTS = {
     "INTER_NODE_NETWORK_UP_GBPS": "100.0",
     "INTER_NODE_NETWORK_DOWN_GBPS": "100.0",
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
+    "ROUTER_ACTIVE_WORK_SCALE": "0.001",
     "ROUTER_DEVICE_CREDIT": "1.0",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
     "ROUTER_REMOTE_SSD_CREDIT": "0.3",
@@ -161,6 +157,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "USER_DELAY_MIN_MS",
         "USER_DELAY_MAX_MS",
         "ROUTER_PREFILL_LOAD_SCALE",
+        "ROUTER_ACTIVE_WORK_SCALE",
         "ROUTER_DEVICE_CREDIT",
         "ROUTER_REMOTE_RAM_CREDIT",
         "ROUTER_REMOTE_SSD_CREDIT",
@@ -253,6 +250,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         inter_node_network_up_gbps=float(merged["INTER_NODE_NETWORK_UP_GBPS"]),
         inter_node_network_down_gbps=float(merged["INTER_NODE_NETWORK_DOWN_GBPS"]),
         router_prefill_load_scale=float(merged["ROUTER_PREFILL_LOAD_SCALE"]),
+        router_active_work_scale=float(merged["ROUTER_ACTIVE_WORK_SCALE"]),
         router_device_credit=float(merged["ROUTER_DEVICE_CREDIT"]),
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),
         router_remote_ssd_credit=float(merged["ROUTER_REMOTE_SSD_CREDIT"]),

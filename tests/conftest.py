@@ -101,8 +101,8 @@ def tiny_hardware() -> Hardware:
         ram_bw=10_000_000_000,  # 10 GB/s
         nvme_mem=5_000_000_000,  # 5 GB
         nvme_bw=1_000_000_000,  # 1 GB/s
-        network_inet_up=100_000_000,  # 100 MB/s
-        network_inet_down=200_000_000,  # 200 MB/s
+        network_inet_up=100_000_000,  # 100 Mb/s
+        network_inet_down=200_000_000,  # 200 Mb/s
     )
     return Hardware(name="tiny", spec=spec)
 

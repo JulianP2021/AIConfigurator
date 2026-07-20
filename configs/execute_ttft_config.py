@@ -166,6 +166,9 @@ def _run_sweep(
         prefill_load_scale=float(
             config.get("router_prefill_load_scale", env.router_prefill_load_scale)
         ),
+        active_work_scale=float(
+            config.get("router_active_work_scale", env.router_active_work_scale)
+        ),
         device_credit=float(
             config.get("router_device_credit", env.router_device_credit)
         ),
@@ -189,7 +192,8 @@ def _run_sweep(
         "SSD": "#f85149",
         "SSD BW": "#d29922",
         "INET BW": "#a371f7",
-        # "#79c0ff",
+        "INTER NODE BW": "#0f00b3",
+        None: "#000000",
         # "#56d364",
         # "#f0883e",
         # "#db61a2",
@@ -261,7 +265,6 @@ def _run_sweep(
                 "tpot_sla_ms": float("inf"),
                 "user_delay_ms": run_spec["user_delay_ms"],
                 "user_delay_fraction": user_delay_fraction,
-                "sweep_ttft_ms": run_spec["ttft_ms"],
                 "focus": focus,
                 "focus_value": focus_value,
             },

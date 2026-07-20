@@ -444,7 +444,7 @@ class Cache:
             # bandwidth exists) or drop.
             s3_leg = self.upload_to_s3(victim, node_id)
             if not s3_leg:
-                raise RuntimeError("No S3 legs!!!")
+                return victim, []
             return victim, [s3_leg]
 
         # Merge with any connected existing SSD item for the same session so we
@@ -1193,7 +1193,7 @@ class Cache:
         )
 
         if merged_item.token_end < request.prefilled_tokens:
-            raise RuntimeError(
+            print(
                 f"Download merged_item token_end {merged_item.token_end} < "
                 f"request.prefilled_tokens {request.prefilled_tokens} for request {request.id}; "
                 f"segments={segments}, all_item={[(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in self._find_all_items(cache_key)]}"

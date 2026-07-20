@@ -140,14 +140,14 @@ class BandwidthScheduler:
                         self.node_specs[leg.dest_node_id].network_inter_node_down
                         / remote_down_counts[leg.dest_node_id]
                     )
-                    leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 1000.0
+                    leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 8000.0
                 elif leg.bottleneck == "S3_UPLOAD":
                     node_bw = (
                         self.node_specs[leg.source_node_id].network_inet_up
                         / remote_up_counts[leg.source_node_id]
                     )
                     leg.bandwidth_bytes_per_ms = (
-                        min(self.s3_spec.up_bw_bytes_per_s, node_bw) / 1000.0
+                        min(self.s3_spec.up_bw_bytes_per_s, node_bw) / 8000.0
                     )
                 elif leg.bottleneck == "S3_DOWNLOAD":
                     node_bw = (
@@ -155,7 +155,7 @@ class BandwidthScheduler:
                         / remote_down_counts[leg.dest_node_id]
                     )
                     leg.bandwidth_bytes_per_ms = (
-                        min(self.s3_spec.down_bw_bytes_per_s, node_bw) / 1000.0
+                        min(self.s3_spec.down_bw_bytes_per_s, node_bw) / 8000.0
                     )
 
     def next_event_ms(self) -> float:

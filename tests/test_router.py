@@ -61,6 +61,36 @@ def _make_cache() -> Cache:
 
 
 class TestRouterCostFunction:
+    def prefer_cache_over_tokens(self):
+        cache = _make_cache()
+        item_0_1000 = CacheItem((1, 0), 0, 1000)
+        layer_0 = CacheLayer(0, "RAM")
+        layer_0._add_item(item_0_1000)
+        cache.layers = {
+            0: [layer_0],
+            1: [CacheLayer(1, "RAM")],
+        }
+
+        prefill_0 = _make_prefill_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        decode_0 = _make_decode_instance(0)
+        decode_1 = _make_decode_instance(1)
+
+        router = Router(
+            queue=[],
+            prefill_instances=[prefill_0, prefill_1],
+            decode_instances=[decode_0, decode_1],
+            cache=cache,
+            cost_config=RouterCostConfig(active_work_scale=0.001),
+        )
+
+        # Put one active prefill request on node 0.
+        prefill_0.queue.append((Request(isl=50000, osl=10), -1))
+
+        req = Request(isl=1000, osl=100, user_id=1, session_id=0)
+        chosen = router._choose_decode_instance(req)
+        assert chosen.node_id == 0
+
     def test_prefill_prefers_node_with_cached_prefix(self):
         cache = _make_cache()
         item_0_500 = CacheItem((1, 0), 0, 500)

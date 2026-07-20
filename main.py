@@ -197,6 +197,7 @@ def main():
 
     router_cost_config = RouterCostConfig(
         prefill_load_scale=args.router_prefill_load_scale,
+        active_work_scale=args.router_active_work_scale,
         device_credit=args.router_device_credit,
         remote_ram_credit=args.router_remote_ram_credit,
         remote_ssd_credit=args.router_remote_ssd_credit,

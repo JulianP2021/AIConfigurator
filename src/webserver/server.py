@@ -241,6 +241,8 @@ def _run_single_config(
         remote_ssd_credit=router_remote_ssd_credit,
         s3_credit=router_s3_credit,
         busy_threshold_tokens=router_busy_threshold_tokens,
+        active_work_scale=0.001,
+        # @TODO add as input
     )
     with io.StringIO() as buf, redirect_stdout(buf):
         try:
@@ -651,20 +653,6 @@ def _extract_user_delay_ms(row: dict[str, Any]) -> float | None:
     return None
 
 
-def _focus_color_key(row: dict[str, Any]) -> tuple[str, str]:
-    focus = row.get("focus") or row.get("config_type")
-    focus_value = row.get("focus_value")
-    if focus is None and focus_value is None:
-        delay_ms = _extract_user_delay_ms(row)
-        if delay_ms is not None:
-            return ("user_delay_ms", f"{delay_ms:g}")
-        ttft_ms = row.get("ttft_sla_ms") or row.get("sweep_ttft_ms") or row.get("ttft")
-        if ttft_ms is not None:
-            return ("ttft_ms", f"{float(ttft_ms):g}")
-        return ("default", str(row.get("label", "")))
-    return (str(focus or "default"), str(focus_value))
-
-
 def _build_ttft_cost_plots_by_delay(
     results: list[dict[str, float | int | str]],
 ) -> list[str]:
@@ -672,8 +660,7 @@ def _build_ttft_cost_plots_by_delay(
     color_map: dict[tuple[str, str], str] = {}
     for row in valid_rows:
         key = row["focus"]
-        if key not in color_map:
-            color_map[key] = row["color"]
+        color_map[key] = row["color"]
 
     by_delay: dict[float, list[dict[str, Any]]] = {}
     for row in valid_rows:
@@ -694,7 +681,7 @@ def _build_ttft_cost_plots_by_delay(
         fig, ax = plt.subplots(figsize=(8, 6))
         for row in rows:
             ax.scatter(
-                row["ttft"],
+                row["kv_download_time"],
                 row["total_cost_usd_per_hour"],
                 s=120,
                 color=row["color"],
@@ -703,19 +690,37 @@ def _build_ttft_cost_plots_by_delay(
                 zorder=3,
             )
             ax.annotate(
-                row["focus_value"],
-                (row["ttft"], row["total_cost_usd_per_hour"]),
+                "D" + (row["focus_value"] if row["focus_value"] else ""),
+                (row["kv_download_time"], row["total_cost_usd_per_hour"]),
                 textcoords="offset points",
                 xytext=(8, 4),
                 fontsize=9,
                 color=row["color"],
             )
 
-        ax.set_xlabel("TTFT (ms)")
+            ax.scatter(
+                row["kv_upload_time"],
+                row["total_cost_usd_per_hour"],
+                s=120,
+                color=row["color"],
+                edgecolors="white",
+                linewidths=0.5,
+                zorder=3,
+            )
+            ax.annotate(
+                "U" + (row["focus_value"] if row["focus_value"] else ""),
+                (row["kv_upload_time"], row["total_cost_usd_per_hour"]),
+                textcoords="offset points",
+                xytext=(8, 4),
+                fontsize=9,
+                color=row["color"],
+            )
+
+        ax.set_xlabel("UP/DOWNLOAD (ms)")
         ax.set_ylabel("Total cost ($/hour)")
-        ax.set_title(f"TTFT vs Cost (user delay {delay_ms:g} ms)")
-        ax.set_ylim(bottom=0)
-        ax.set_xlim(left=0)
+        ax.set_title(f"UP/DOWNLOAD vs Cost (user delay {delay_ms / 1000 / 60:g} min)")
+        # ax.set_ylim(bottom=0)
+        # ax.set_xlim(left=0)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
         buf = io.BytesIO()
@@ -757,30 +762,6 @@ def _resolve_results_dir(results_dir: str) -> Path:
     if alt.is_dir():
         return alt
     return path
-
-
-def _top_n_per_user_count(
-    rows: list[dict[str, Any]],
-    n: int = 10,
-) -> list[dict[str, Any]]:
-    """Return the top ``n`` cheapest configs for each distinct user count."""
-    by_users: dict[int, list[dict[str, Any]]] = {}
-    for row in rows:
-        users = int(row.get("users", 0))
-        if users <= 0:
-            continue
-        by_users.setdefault(users, []).append(row)
-
-    selected: list[dict[str, Any]] = []
-    for users in sorted(by_users):
-        ranked = sorted(
-            by_users[users],
-            key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
-        )
-        for row in ranked[:n]:
-            row["users"] = users
-            selected.append(row)
-    return selected
 
 
 def _build_users_cost_plot(

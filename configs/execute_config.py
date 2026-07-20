@@ -1314,6 +1314,9 @@ def main() -> None:
         prefill_load_scale=float(
             config.get("router_prefill_load_scale", env.router_prefill_load_scale)
         ),
+        active_work_scale=float(
+            config.get("router_active_work_scale", env.router_active_work_scale)
+        ),
         device_credit=float(
             config.get("router_device_credit", env.router_device_credit)
         ),

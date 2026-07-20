@@ -114,6 +114,13 @@ def _variant_name(base: str, settings: dict[str, Any]) -> str:
     if settings["nvlink_bw_gbps"]:
         slug += f" nvl{settings['nvlink_bw_gbps']:.0f}"
     slug += f" sbw{settings['ssd_bw_gbps']:.1f}"
+
+    inter_node_up = settings.get("inter_node_up_gbps")
+    inter_node_down = settings.get("inter_node_down_gbps")
+
+    print(settings)
+    slug += f" in{inter_node_up:.1f}/{inter_node_down:.1f}"
+
     inet_up = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
     inet_down = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
     slug += f" inet{inet_up:.1f}/{inet_down:.1f}"
