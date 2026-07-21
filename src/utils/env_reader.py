@@ -32,9 +32,10 @@ class EnvConfig:
     # Random seed for reproducible request timing (including user delays)
     random_seed: int | None = None
 
-    # Per-request latency SLAs (default inf = disabled)
-    sla_ttft_ms: float = float("inf")
-    sla_tpot_ms: float = float("inf")
+    # Per-request latency SLAs. Must be finite positive numbers because the
+    # request generator builds a deterministic arrival schedule from them.
+    sla_ttft_ms: float = 30000.0
+    sla_tpot_ms: float = 100.0
 
     # Topology
     batch_size: int = 10
@@ -93,8 +94,8 @@ _DEFAULTS = {
     "USER_DELAY_MIN_MS": "0.0",
     "USER_DELAY_MAX_MS": "0.0",
     "RANDOM_SEED": "",
-    "SLA_TTFT_MS": "inf",
-    "SLA_TPOT_MS": "inf",
+    "SLA_TTFT_MS": "30000.0",
+    "SLA_TPOT_MS": "100.0",
     "BATCH_SIZE": "10",
     "NUM_PREFILL_NODES": "1",
     "NUM_DECODE_NODES": "1",

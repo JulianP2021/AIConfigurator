@@ -439,6 +439,12 @@ def _machine_config_with_defaults(
                 f"Custom hardware {merged.get('name', config)!r} is missing required field {required!r}"
             )
 
+    # Inter-node bandwidth defaults to 100 Gb/s when not supplied; it is
+    # normally overridden via environment variables / CLI / webserver.
+    for inter_key in ("network_inter_node_up", "network_inter_node_down"):
+        if inter_key not in merged or merged[inter_key] is None:
+            merged[inter_key] = _resolve_inter_node_bw(None, default_gbps=100.0)
+
     # Derive price for custom entries when pricing metadata is provided.
     if pricing and not merged.get("dph_base"):
         merged["dph_base"] = _derive_custom_price(merged, pricing)

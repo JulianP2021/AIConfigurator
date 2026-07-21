@@ -1,3 +1,4 @@
+import math
 import random
 
 from dataclasses import dataclass
@@ -379,6 +380,8 @@ class RequestGenerator:
     delay_fraction: float
     delay_min_ms: float
     delay_max_ms: float
+    ttft_sla_ms: float
+    tpot_sla_ms: float
 
     def __init__(
         self,
@@ -389,7 +392,18 @@ class RequestGenerator:
         delay_fraction: float,
         delay_min_ms: float,
         delay_max_ms: float,
+        ttft_sla_ms: float,
+        tpot_sla_ms: float,
     ) -> None:
+        if not math.isfinite(ttft_sla_ms) or ttft_sla_ms <= 0:
+            raise ValueError(
+                f"ttft_sla_ms must be a finite positive number, got {ttft_sla_ms}"
+            )
+        if not math.isfinite(tpot_sla_ms) or tpot_sla_ms <= 0:
+            raise ValueError(
+                f"tpot_sla_ms must be a finite positive number, got {tpot_sla_ms}"
+            )
+
         self.users = users
         self.max_session_turns = max_session_turns
         self.think_time_ms = think_time_ms
@@ -397,6 +411,8 @@ class RequestGenerator:
         self.delay_fraction = delay_fraction
         self.delay_min_ms = delay_min_ms
         self.delay_max_ms = delay_max_ms
+        self.ttft_sla_ms = ttft_sla_ms
+        self.tpot_sla_ms = tpot_sla_ms
 
         # One active session per user.  A user is "active" while it has any request
         # in flight; otherwise it is "idle".  Session ids are monotonic per user.
@@ -468,6 +484,16 @@ class RequestGenerator:
         ):
             extra_ms = _rng.uniform(self.delay_min_ms, self.delay_max_ms)
             next_ready_ms += extra_ms
+
+        # Add the SLA-based expected service time for the request that just
+        # finished.  This makes the arrival schedule exogenous: the next request
+        # is emitted at SLA + think + optional user delay, regardless of when
+        # the previous request actually completed.  If the system cannot meet
+        # the SLA, the request will already be queued/backlogged at generation
+        # time and will trigger a latency exception when it finishes.
+        expected_service_ms = self.ttft_sla_ms + self.tpot_sla_ms * request.osl
+        next_ready_ms += expected_service_ms
+
         self._next_available_ms[user_id] = next_ready_ms
 
     def ready_users(self, now_ms: float) -> list[int]:

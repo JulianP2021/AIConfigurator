@@ -97,7 +97,7 @@ def run_your_simulator(
                 ),
             ),
         ),
-        sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
+        sla={"ttft_ms": 30000.0, "tpot_ms": 100.0},
     )
 
 

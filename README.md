@@ -270,9 +270,10 @@ USER_DELAY_MAX_MS=360000000
 # Reproducibility
 RANDOM_SEED=42
 
-# Per-request latency SLAs (inf = disabled)
-SLA_TTFT_MS=inf
-SLA_TPOT_MS=inf
+# Per-request latency SLAs. Must be finite positive numbers because the
+# request generator builds a deterministic arrival schedule from them.
+SLA_TTFT_MS=30000
+SLA_TPOT_MS=100
 
 # Topology
 BATCH_SIZE=100
@@ -494,8 +495,8 @@ The following example matches the current `.env` defaults and sweeps over a few 
   "inter_node_network_up_gbps": 100.0,
   "inter_node_network_down_gbps": 100.0,
   "sla": {
-    "ttft_ms": "inf",
-    "tpot_ms": "inf"
+    "ttft_ms": 30000,
+    "tpot_ms": 100
   },
   "user_delay_fraction": 0.0,
   "user_delay_min_ms": 360000000.0,

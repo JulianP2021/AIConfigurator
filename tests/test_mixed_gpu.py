@@ -237,8 +237,13 @@ def test_node_uses_distinct_gpu_specs():
 
 
 def test_mixed_gpu_changes_latency():
-    mixed_result = simulate_run_distributed(_mixed_scenario(), should_print=False)
-    uniform_result = simulate_run_distributed(_uniform_scenario(), should_print=False)
+    sla = {"ttft_ms": 10000.0, "tpot_ms": 100.0}
+    mixed_result = simulate_run_distributed(
+        _mixed_scenario(), should_print=False, sla=sla
+    )
+    uniform_result = simulate_run_distributed(
+        _uniform_scenario(), should_print=False, sla=sla
+    )
 
     assert isinstance(mixed_result, SimulationResult)
     assert isinstance(uniform_result, SimulationResult)

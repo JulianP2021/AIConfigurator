@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 
 from src.utils.env_reader import EnvConfig
 
@@ -7,25 +8,37 @@ from src.utils.env_reader import EnvConfig
 def _parse_sla(value: str) -> dict[str, float]:
     """Parse a JSON SLA dict from a CLI string.
 
-    Accepts either a JSON object (e.g. '{"ttft_ms":100,"tpot_ms":50}') or the
-    literal ``inf`` / ``none`` / ``null`` to mean no SLA.  JSON ``inf`` values
-    are supported both as quoted strings and (in Python 3.9+) as bare ``Infinity``.
+    Accepts a JSON object (e.g. '{"ttft_ms":100,"tpot_ms":50}').  Both
+    ``ttft_ms`` and ``tpot_ms`` must be finite positive numbers because the
+    request generator builds a deterministic arrival schedule from them.
     """
     value = value.strip()
     if value.lower() in {"inf", "infinity", "none", "null"}:
-        return {"ttft_ms": float("inf"), "tpot_ms": float("inf")}
+        raise argparse.ArgumentTypeError(
+            "SLA values must be finite positive numbers; 'inf'/'none'/'null' are not allowed"
+        )
     parsed = json.loads(value)
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("SLA must be a JSON object")
     for key in ("ttft_ms", "tpot_ms"):
-        if key in parsed:
-            v = parsed[key]
-            if isinstance(v, str) and v.lower() in {"inf", "infinity", "+inf"}:
-                parsed[key] = float("inf")
-            elif isinstance(v, str) and v.lower() in {"-inf", "-infinity"}:
-                parsed[key] = float("-inf")
-            else:
-                parsed[key] = float(v)
+        if key not in parsed:
+            raise argparse.ArgumentTypeError(f"SLA must include '{key}'")
+        v = parsed[key]
+        if isinstance(v, str) and v.lower() in {
+            "inf",
+            "infinity",
+            "+inf",
+            "-inf",
+            "-infinity",
+        }:
+            raise argparse.ArgumentTypeError(
+                f"{key} must be a finite positive number, got {v!r}"
+            )
+        parsed[key] = float(v)
+        if not math.isfinite(parsed[key]) or parsed[key] <= 0:
+            raise argparse.ArgumentTypeError(
+                f"{key} must be a finite positive number, got {parsed[key]}"
+            )
     return parsed
 
 
@@ -186,10 +199,10 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Weight of prefill load in routing cost (default: {env.router_prefill_load_scale})",
     )
     parser.add_argument(
-        "--router--active-work-scale",
+        "--router-active-work-scale",
         type=float,
         default=env.router_active_work_scale,
-        help=f"Weight of prefill load in routing cost (default: {env.router_active_work_scale})",
+        help=f"Weight of active work in routing cost (default: {env.router_active_work_scale})",
     )
 
     parser.add_argument(

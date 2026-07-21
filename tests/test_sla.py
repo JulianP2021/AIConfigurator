@@ -134,9 +134,11 @@ def _separate_scenario(
     )
 
 
-def test_no_sla_does_not_raise():
+def test_default_sla_runs():
     scenario = _separate_scenario(isl=128, osl=4, sessions_per_user=1)
-    result = simulate_run_distributed(scenario, should_print=False)
+    result = simulate_run_distributed(
+        scenario, should_print=False, sla={"ttft_ms": 10000.0, "tpot_ms": 100.0}
+    )
     assert result is not None
     assert len(result.per_request_stats) == 10
     assert result.ram_cache_usage_bytes >= 0
@@ -144,17 +146,16 @@ def test_no_sla_does_not_raise():
     assert result.s3_cache_usage_bytes >= 0
 
 
-def test_inf_sla_does_not_raise():
+def test_inf_sla_rejected():
     scenario = _separate_scenario(isl=128, osl=4, sessions_per_user=1)
-    result = simulate_run_distributed(
-        scenario,
-        should_print=False,
-        sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
-    )
-    assert result is not None
-    assert len(result.per_request_stats) == 10
-    assert result.ram_cache_capacity_bytes > 0
-    assert result.ssd_cache_capacity_bytes > 0
+    with pytest.raises(
+        ValueError, match="ttft_ms must be a finite positive number, got inf"
+    ):
+        simulate_run_distributed(
+            scenario,
+            should_print=False,
+            sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
+        )
 
 
 def test_ttft_sla_violation_raises():
@@ -163,19 +164,19 @@ def test_ttft_sla_violation_raises():
         simulate_run_distributed(
             scenario,
             should_print=False,
-            sla={"ttft_ms": 0.1, "tpot_ms": float("inf")},
+            sla={"ttft_ms": 0.1, "tpot_ms": 100.0},
         )
     assert "TTFT SLA violated" in str(exc_info.value)
 
 
 def test_tpot_sla_violation_raises():
     # Use many output tokens so the tiny fake model's decode_time exceeds the
-    # extremely tight 0.001 ms per-token SLA.
+    # extremely tight 0.1 ms per-token SLA.
     scenario = _separate_scenario(isl=128, osl=500, sessions_per_user=1)
     with pytest.raises(DecodeLatencyError) as exc_info:
         simulate_run_distributed(
             scenario,
             should_print=False,
-            sla={"ttft_ms": float("inf"), "tpot_ms": 0.1},
+            sla={"ttft_ms": 10000.0, "tpot_ms": 0.1},
         )
     assert "TPOT SLA violated" in str(exc_info.value)

@@ -49,7 +49,7 @@ from src.hardware.scraper import (
 from src.utils.utils import parse_float_list, parse_int_list
 
 
-_GB = 1024**3
+_GB = 1000**3
 
 # GPUs known to expose NVLink/C2C-class die-to-die bandwidth. Used only for
 # warnings when the user supplies --nvlink-bw-gbps for a GPU outside this set.
@@ -69,10 +69,6 @@ def _gb_to_bytes(gb: float) -> int:
     return int(gb * _GB)
 
 
-def _gbps_to_bytes_per_s(gbps: float) -> int:
-    return int(gbps * 1e9 / 8.0)
-
-
 def _build_machine_config(settings: dict[str, Any]) -> dict:
     """Convert one combination of settings into a raw machine config dict."""
     inet_up_gbps = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
@@ -82,13 +78,13 @@ def _build_machine_config(settings: dict[str, Any]) -> dict:
         "name": settings["machine_name"],
         "gpu_name": settings["gpu_name"],
         "num_gpus": settings["num_gpus"],
-        "pcie_bw": _gbps_to_bytes_per_s(settings["pcie_bw_gbps"]),
-        "nvlink_bw": _gbps_to_bytes_per_s(settings["nvlink_bw_gbps"]),
+        "pcie_bw": _gb_to_bytes(settings["pcie_bw_gbps"]),
+        "nvlink_bw": _gb_to_bytes(settings["nvlink_bw_gbps"]),
         "cpu_ram": _gb_to_bytes(settings["ram_mem_gb"]),
         "nvme_mem": _gb_to_bytes(settings["ssd_mem_gb"]),
-        "nvme_bw": _gbps_to_bytes_per_s(settings["ssd_bw_gbps"]),
-        "network_inet_up": _gbps_to_bytes_per_s(inet_up_gbps),
-        "network_inet_down": _gbps_to_bytes_per_s(inet_down_gbps),
+        "nvme_bw": _gb_to_bytes(settings["ssd_bw_gbps"]),
+        "network_inet_up": _gb_to_bytes(inet_up_gbps),
+        "network_inet_down": _gb_to_bytes(inet_down_gbps),
         "network_inter_node_up": _resolve_inter_node_bw(
             str(settings["inter_node_up_gbps"])
         ),

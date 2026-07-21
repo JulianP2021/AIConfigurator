@@ -78,8 +78,9 @@ USER_DELAY_MIN_MS=0.0    # minimum extra user delay (ms)
 USER_DELAY_MAX_MS=0.0    # maximum extra user delay (ms)
 RANDOM_SEED=             # empty = non-deterministic; otherwise reproducible
 
-SLA_TTFT_MS=inf          # per-request TTFT SLA (inf = disabled)
-SLA_TPOT_MS=inf          # per-request TPOT SLA (inf = disabled)
+SLA_TTFT_MS=30000        # per-request TTFT SLA; must be finite because it
+                          # drives the deterministic request schedule.
+SLA_TPOT_MS=100          # per-request TPOT SLA; must be finite.
 
 BATCH_SIZE=10
 NUM_PREFILL_NODES=1

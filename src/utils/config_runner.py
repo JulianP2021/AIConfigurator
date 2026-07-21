@@ -229,6 +229,7 @@ def run_single_config(
     router_cost_config: RouterCostConfig,
 ) -> SimulationResult:
     scenario = build_scenario(common, cfg)
+    # set_log_mask(63)
     return simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,

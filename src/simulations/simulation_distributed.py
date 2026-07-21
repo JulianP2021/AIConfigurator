@@ -1,3 +1,5 @@
+import math
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -96,62 +98,72 @@ def _finish_request(
         if prev_generated_ms is not None and request.generated_ms is not None:
             inter_request_delay_ms = request.generated_ms - prev_generated_ms
 
-    if sla is not None:
-        ttft_sla = sla.get("ttft_ms")
-        if ttft_sla is not None and wait_inclusive_ttft_ms > ttft_sla:
-            delay_msg = (
-                f"inter-request delay: {inter_request_delay_ms:.2f} ms"
-                if inter_request_delay_ms is not None
-                else "inter-request delay: n/a"
-            )
+    if sla is None:
+        raise ValueError("SLA must be provided; ttft_ms and tpot_ms must be finite")
 
-            assert request.prefill_end_ms is not None
-            assert request.prefill_start_ms is not None
-            assert request.prefill_download_end_ms is not None
-            assert request.prefill_download_start_ms is not None
+    ttft_sla = sla.get("ttft_ms")
+    if ttft_sla is None or not math.isfinite(ttft_sla) or ttft_sla <= 0:
+        raise ValueError(
+            f"ttft_sla_ms must be a finite positive number, got {ttft_sla}"
+        )
+    if wait_inclusive_ttft_ms > ttft_sla:
+        delay_msg = (
+            f"inter-request delay: {inter_request_delay_ms:.2f} ms"
+            if inter_request_delay_ms is not None
+            else "inter-request delay: n/a"
+        )
 
-            assert request.prefill_upload_end_ms is not None
-            assert request.prefill_upload_start_ms is not None
+        assert request.prefill_end_ms is not None
+        assert request.prefill_start_ms is not None
+        assert request.prefill_download_end_ms is not None
+        assert request.prefill_download_start_ms is not None
 
-            assert request.prefill_upload_end_ms is not None
-            assert request.prefill_upload_start_ms is not None
+        assert request.prefill_upload_end_ms is not None
+        assert request.prefill_upload_start_ms is not None
 
-            assert request.decode_download_end_ms is not None
-            assert request.decode_download_start_ms is not None
+        assert request.prefill_upload_end_ms is not None
+        assert request.prefill_upload_start_ms is not None
 
-            prefill_only_ttft_ms = request.prefill_end_ms - request.prefill_start_ms
-            raise PrefillLatencyError(
-                f"Request {request.id} TTFT SLA violated: "
-                f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
-                f"SLA {ttft_sla:.2f} ms, request isl={request.isl}, osl={request.osl}, "
+        assert request.decode_download_end_ms is not None
+        assert request.decode_download_start_ms is not None
+
+        prefill_only_ttft_ms = request.prefill_end_ms - request.prefill_start_ms
+        raise PrefillLatencyError(
+            f"Request {request.id} TTFT SLA violated: "
+            f"wait-inclusive TTFT {wait_inclusive_ttft_ms:.2f} ms > "
+            f"SLA {ttft_sla:.2f} ms, request isl={request.isl}, osl={request.osl}, "
+            f"initial_prefilled_tokens={request.initial_prefilled_tokens}, "
+            f"prefilled_tokens={request.prefilled_tokens}, decoded_tokens={request.decoded_tokens}, "
+            f"prefill time: {request.prefill_time_ms:.2f} ms, "
+            f"prefill download active: {request.prefill_download_active_ms:.2f} ms, "
+            f"prefill upload active: {request.prefill_upload_active_ms:.2f} ms, "
+            f"decode kv download active: {request.decode_download_active_ms:.2f} ms, "
+            f"prefill download wait: {request.prefill_download_end_ms - request.prefill_download_start_ms - request.prefill_download_active_ms:.2f} ms, "
+            f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
+            f"prefill upload wait: {request.prefill_upload_end_ms - request.prefill_upload_start_ms - request.prefill_upload_active_ms:.2f} ms, "
+            f"decode download wait: {request.decode_download_end_ms - request.decode_download_start_ms - request.decode_download_active_ms:.2f} ms, "
+            f"{delay_msg}",
+            prefill_only_ttft_ms=prefill_only_ttft_ms,
+            ttft_sla_ms=ttft_sla,
+        )
+
+    tpot_sla = sla.get("tpot_ms")
+    if tpot_sla is None or not math.isfinite(tpot_sla) or tpot_sla <= 0:
+        raise ValueError(
+            f"tpot_sla_ms must be a finite positive number, got {tpot_sla}"
+        )
+    if request.osl > 1:
+        tpot_ms = request.decode_time_ms / (request.osl - 1)
+        if tpot_ms > tpot_sla:
+            raise DecodeLatencyError(
+                f"Request {request.id} TPOT SLA violated: "
+                f"TPOT {tpot_ms:.2f} ms > SLA {tpot_sla:.2f} ms, "
+                f"request isl={request.isl}, osl={request.osl}, "
                 f"initial_prefilled_tokens={request.initial_prefilled_tokens}, "
-                f"prefilled_tokens={request.prefilled_tokens}, decoded_tokens={request.decoded_tokens}, "
-                f"prefill time: {request.prefill_time_ms:.2f} ms, "
-                f"prefill download active: {request.prefill_download_active_ms:.2f} ms, "
-                f"prefill upload active: {request.prefill_upload_active_ms:.2f} ms, "
-                f"decode kv download active: {request.decode_download_active_ms:.2f} ms, "
-                f"prefill download wait: {request.prefill_download_end_ms - request.prefill_download_start_ms - request.prefill_download_active_ms:.2f} ms, "
-                f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
-                f"prefill upload wait: {request.prefill_upload_end_ms - request.prefill_upload_start_ms - request.prefill_upload_active_ms:.2f} ms, "
-                f"decode download wait: {request.decode_download_end_ms - request.decode_download_start_ms - request.decode_download_active_ms:.2f} ms, "
-                f"{delay_msg}",
-                prefill_only_ttft_ms=prefill_only_ttft_ms,
-                ttft_sla_ms=ttft_sla,
+                f"decoded_tokens={request.decoded_tokens}, "
+                f"decode_time: {request.decode_time_ms:.2f} ms, "
+                f"decode wait: {request.decode_wait_ms:.2f} ms"
             )
-
-        tpot_sla = sla.get("tpot_ms")
-        if tpot_sla is not None and request.osl > 1:
-            tpot_ms = request.decode_time_ms / (request.osl - 1)
-            if tpot_ms > tpot_sla:
-                raise DecodeLatencyError(
-                    f"Request {request.id} TPOT SLA violated: "
-                    f"TPOT {tpot_ms:.2f} ms > SLA {tpot_sla:.2f} ms, "
-                    f"request isl={request.isl}, osl={request.osl}, "
-                    f"initial_prefilled_tokens={request.initial_prefilled_tokens}, "
-                    f"decoded_tokens={request.decoded_tokens}, "
-                    f"decode_time: {request.decode_time_ms:.2f} ms, "
-                    f"decode wait: {request.decode_wait_ms:.2f} ms"
-                )
 
     finished_requests.append(request)
     if request_generator is not None:
@@ -245,6 +257,13 @@ def simulate_run_distributed(
 
     set_request_rng(random_seed)
 
+    if sla is None:
+        raise ValueError("SLA must be provided; ttft_ms and tpot_ms must be finite")
+    for key in ("ttft_ms", "tpot_ms"):
+        value = sla.get(key)
+        if value is None or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{key} must be a finite positive number, got {value}")
+
     request_generator = RequestGenerator(
         users=scenario.requests.users,
         max_session_turns=scenario.requests.max_session_turns,
@@ -253,6 +272,8 @@ def simulate_run_distributed(
         delay_fraction=user_delay_fraction,
         delay_min_ms=user_delay_min_ms,
         delay_max_ms=user_delay_max_ms,
+        ttft_sla_ms=float(sla["ttft_ms"]),
+        tpot_sla_ms=float(sla["tpot_ms"]),
     )
     finished_requests: list[Request] = []
     current_requests: list[Request] = []
@@ -548,6 +569,8 @@ def simulate_run_distributed(
             s3_cost_usd_per_hour=0.0,
             s3_storage_cost_usd_per_hour=0.0,
             total_cost_usd_per_hour=0.0,
+            ram_download_requests=0,
+            ssd_download_requests=0,
             s3_upload_requests=0,
             s3_download_requests=0,
             per_request_stats=per_request_stats,
@@ -799,6 +822,8 @@ def simulate_run_distributed(
         s3_cost_usd_per_hour=s3_cost_per_hour,
         s3_storage_cost_usd_per_hour=s3_storage_cost_per_hour,
         total_cost_usd_per_hour=total_price_per_hour,
+        ram_download_requests=cache.ram_download_requests,
+        ssd_download_requests=cache.ssd_download_requests,
         s3_upload_requests=cache.s3_upload_requests,
         s3_download_requests=cache.s3_download_requests,
         per_request_stats=per_request_stats,
@@ -894,6 +919,11 @@ def simulate_run_distributed(
     )
     print(f"  S3 cache usage:       {result.s3_cache_usage_bytes:,.0f} bytes")
     print(f"  S3 peak cache usage: {result.s3_peak_cache_usage_bytes:,.0f} bytes")
+    print(f"{'-' * 60}")
+    print(f"  RAM download requests:  {result.ram_download_requests}")
+    print(f"  SSD download requests:  {result.ssd_download_requests}")
+    print(f"  S3 upload requests:    {result.s3_upload_requests}")
+    print(f"  S3 download requests:  {result.s3_download_requests}")
     print(f"{'-' * 60}")
     print(f"  Compute price/hour:  ${result.compute_price_usd_per_hour:.4f}")
     print(f"  S3 cost/hour:        ${result.s3_cost_usd_per_hour:.4f}")

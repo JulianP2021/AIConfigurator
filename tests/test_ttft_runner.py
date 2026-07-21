@@ -45,8 +45,8 @@ class TestTTFTExpansion:
             user_delay_min_ms=0.0,
             user_delay_max_ms=0.0,
             random_seed=42,
-            sla_ttft_ms=float("inf"),
-            sla_tpot_ms=float("inf"),
+            sla_ttft_ms=30000.0,
+            sla_tpot_ms=100.0,
         )
         monkeypatch.setattr("configs.execute_ttft_config.load_env", lambda: fake_env)
 
@@ -77,7 +77,7 @@ class TestTTFTExpansion:
         common, runs = _expand_run_specs(config, [25.0, 50.0], [0.0, 10.0], 0.25)
 
         assert common["sla"]["ttft_ms"] == 25.0
-        assert common["sla"]["tpot_ms"] == float("inf")
+        assert common["sla"]["tpot_ms"] == 100.0
         assert len(runs) == 4
         assert {run["ttft_ms"] for run in runs} == {25.0, 50.0}
         assert {run["user_delay_ms"] for run in runs} == {0.0, 10.0}
@@ -85,7 +85,7 @@ class TestTTFTExpansion:
             assert run["common"]["user_delay_fraction"] == 0.25
             assert run["common"]["user_delay_min_ms"] == run["user_delay_ms"]
             assert run["common"]["user_delay_max_ms"] == run["user_delay_ms"]
-            assert run["common"]["sla"]["tpot_ms"] == float("inf")
+            assert run["common"]["sla"]["tpot_ms"] == 100.0
             assert "TTFT=" in run["cfg"]["label"]
             assert "delay=" in run["cfg"]["label"]
 

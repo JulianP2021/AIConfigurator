@@ -241,9 +241,11 @@ def main():
 
     # Diagnostic counters are only logged here in the CLI, never in the
     # webserver or execute_config.py output.
-    print("\n--- S3 counters ---")
-    print(f"  S3 upload requests:   {result.s3_upload_requests}")
-    print(f"  S3 download requests: {result.s3_download_requests}")
+    print("\n--- KV cache read counters ---")
+    print(f"  RAM download requests:  {result.ram_download_requests}")
+    print(f"  SSD download requests:  {result.ssd_download_requests}")
+    print(f"  S3 upload requests:     {result.s3_upload_requests}")
+    print(f"  S3 download requests:   {result.s3_download_requests}")
 
     # Print compact JSON for piping (full result is still exported via files / webserver)
     print("\n--- JSON ---")

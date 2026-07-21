@@ -61,6 +61,7 @@ import argparse
 import concurrent.futures
 import copy
 import json
+import math
 import os
 import sys
 
@@ -1273,7 +1274,6 @@ def main() -> None:
 
     if config.get("sla"):
         sla = config.get("sla")
-        print(sla)
         sla = {"ttft_ms": float(sla["ttft_ms"]), "tpot_ms": float(sla["tpot_ms"])}
     else:
         sla = {
@@ -1281,7 +1281,11 @@ def main() -> None:
             "tpot_ms": float(env.sla_tpot_ms),
         }
 
-    assert sla, "SLA not working"
+    for key, value in sla.items():
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(
+                f"{key} must be a finite positive number for scheduled arrivals, got {value}"
+            )
 
     common = {
         "model": config.get("model", env.model),

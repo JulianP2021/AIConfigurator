@@ -160,6 +160,10 @@ class Cache:
 
     cost_usd: float = 0.0
 
+    # KV download diagnostics (number of cache reads, not bytes).
+    ram_download_requests: int = 0
+    ssd_download_requests: int = 0
+
     # S3 transfer diagnostics (number of API operations, not bytes).
     s3_upload_requests: int = 0
     s3_download_requests: int = 0
@@ -192,6 +196,8 @@ class Cache:
         self.ssd_usage_bytes = dict.fromkeys(node_hardware, 0)
         self.s3_usage_bytes = 0
         self.s3_peak_usage_bytes = 0
+        self.ram_download_requests = 0
+        self.ssd_download_requests = 0
         self.s3_upload_requests = 0
         self.s3_download_requests = 0
         self._access_tick = 0
@@ -1203,6 +1209,10 @@ class Cache:
         if eviction_legs:
             tracks.append(eviction_legs)
         for start, end, source_node_id, source_layer_name in segments:
+            if source_layer_name == "RAM":
+                self.ram_download_requests += 1
+            elif source_layer_name == "SSD":
+                self.ssd_download_requests += 1
             if source_node_id == node_id and source_layer_name == "RAM":
                 # Already in destination host RAM; still need a local RAM leg
                 # to model moving the KV into GPU memory for compute.

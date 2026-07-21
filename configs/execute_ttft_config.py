@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import re
 import sys
 
@@ -57,7 +58,7 @@ from src.utils.config_runner import (
     run_single_config,
     validate_colocated_configs,
 )
-from src.utils.env_reader import load_env
+from src.utils.env_reader import EnvConfig, load_env
 from src.utils.utils import add_result_metadata, parse_float_list
 
 
@@ -79,6 +80,23 @@ def _slugify(value: object) -> str:
 
 def _run_focus(cfg: dict[str, Any]) -> tuple[str, Any]:
     return get_focus(cfg["label"], cfg["gpu"])
+
+
+def _resolve_tpot_ms(config: dict[str, Any], env: EnvConfig) -> float:
+    """Return a finite TPOT SLA to use for the benchmark sweep.
+
+    The benchmark focuses on TTFT, so TPOT is taken from the config file or
+    environment defaults and must be a finite positive number.
+    """
+    raw = config.get("sla", {}).get("tpot_ms")
+    if raw is None:
+        raw = env.sla_tpot_ms
+    value = float(raw)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            f"tpot_ms must be a finite positive number for scheduled arrivals, got {value}"
+        )
+    return value
 
 
 def _build_run_config(
@@ -105,10 +123,11 @@ def _expand_run_specs(
     user_delay_fraction: float,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     env = load_env()
+    tpot_ms = _resolve_tpot_ms(config, env)
     common = build_common_config(
         config,
         env,
-        sla_override={"ttft_ms": float(ttft_values[0]), "tpot_ms": float("inf")},
+        sla_override={"ttft_ms": float(ttft_values[0]), "tpot_ms": tpot_ms},
         user_delay_fraction_override=user_delay_fraction,
         user_delay_min_ms_override=user_delay_values[0],
         user_delay_max_ms_override=user_delay_values[0],
@@ -125,7 +144,7 @@ def _expand_run_specs(
             for cfg in base_configs:
                 run_cfg = _build_run_config(cfg, ttft_ms, user_delay_ms)
                 run_common = dict(common)
-                run_common["sla"] = {"ttft_ms": ttft_ms, "tpot_ms": float("inf")}
+                run_common["sla"] = {"ttft_ms": ttft_ms, "tpot_ms": tpot_ms}
                 run_common["user_delay_fraction"] = user_delay_fraction
                 run_common["user_delay_min_ms"] = user_delay_ms
                 run_common["user_delay_max_ms"] = user_delay_ms
@@ -357,6 +376,12 @@ def main() -> None:
     args = parser.parse_args()
     args.ttft_values = [f * 1000 for f in args.ttft_values]
     args.user_delay_values = [f * 1000 * 60 for f in args.user_delay_values]
+
+    for ttft_ms in args.ttft_values:
+        if not math.isfinite(ttft_ms) or ttft_ms <= 0:
+            parser.error(
+                f"--ttft-values must be finite positive seconds, got {ttft_ms / 1000:g}s"
+            )
 
     if args.results_dir is None and args.output is None:
         parser.error("Provide --results-dir")

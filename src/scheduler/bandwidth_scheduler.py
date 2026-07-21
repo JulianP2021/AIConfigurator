@@ -51,6 +51,8 @@ class BandwidthScheduler:
                 LOG_BANDWIDTH,
                 f"Node {node.id} bandwidths: "
                 f"RAM {max(node.hardware.spec.pcie_bw, node.hardware.spec.nvlink_bw) / 1e6:.2f} MB/s, "
+                f"PCIe {node.hardware.spec.pcie_bw / 1e6:.2f} MB/s, "
+                f"NVLink {node.hardware.spec.nvlink_bw / 1e6:.2f} MB/s, "
                 f"SSD {node.hardware.spec.nvme_bw / 1e6:.2f} MB/s, "
                 f"Inter-node Up {node.hardware.spec.network_inter_node_up / 1e6:.2f} MB/s, "
                 f"Inter-node Down {node.hardware.spec.network_inter_node_down / 1e6:.2f} MB/s, "

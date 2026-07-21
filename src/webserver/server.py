@@ -5,6 +5,7 @@ import base64
 import concurrent.futures
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -196,6 +197,8 @@ def _run_single_config(
     user_delay_max_ms: float = 0.0,
     random_seed: int | None = None,
     colocated: bool = False,
+    ttft_sla_ms: float = 30000.0,
+    tpot_sla_ms: float = 100.0,
 ) -> SimulationResult | None:
     nodes = _build_nodes(
         prefill_hardware,
@@ -228,6 +231,11 @@ def _run_single_config(
     )
     print(f"Simulating scenario: {scenario}")
 
+    for key, value in (("ttft_sla_ms", ttft_sla_ms), ("tpot_sla_ms", tpot_sla_ms)):
+        if not math.isfinite(value) or value <= 0:
+            print(f"Error: {key} must be a finite positive number, got {value}")
+            return None
+
     s3_spec = S3Spec.from_gbps(
         enabled=s3_enabled,
         up_gbps=s3_up_bw_gbps,
@@ -254,7 +262,7 @@ def _run_single_config(
                 ssd_usage_fraction=ssd_usage_fraction,
                 s3_spec=s3_spec,
                 router_cost_config=router_cost_config,
-                sla={"ttft_ms": float("inf"), "tpot_ms": float("inf")},
+                sla={"ttft_ms": ttft_sla_ms, "tpot_ms": tpot_sla_ms},
                 user_delay_fraction=user_delay_fraction,
                 user_delay_min_ms=user_delay_min_ms,
                 user_delay_max_ms=user_delay_max_ms,
