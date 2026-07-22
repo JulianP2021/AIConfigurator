@@ -466,6 +466,9 @@ class RequestGenerator:
         not be generated until ``now_ms + think_time_ms`` has elapsed.  With
         probability ``delay_fraction`` an extra uniform delay in
         [``delay_min_ms``, ``delay_max_ms``] is added on top of the think time.
+
+        If the user has completed all allowed sessions, it is removed from the
+        idle pool permanently so the simulator does not wait for it.
         """
         user_id = request.user_id
         session_id = request.session_id
@@ -475,6 +478,20 @@ class RequestGenerator:
         # Keep the generation timestamp around so the SLA message can compute
         # the gap from the previous request in the same session.
         self._active_users.discard(user_id)
+
+        # Determine whether this was the user's final request.  A session is
+        # the last one if it equals ``sessions_per_user`` and it has just
+        # reached ``max_session_turns``.
+        turns_after_this = self._user_session_turns.get(user_id, 0)
+        is_final_session = session_id >= self.sessions_per_user
+        is_final_turn = turns_after_this >= self.max_session_turns
+        user_exhausted = is_final_session and is_final_turn
+
+        if user_exhausted:
+            self._idle_users.discard(user_id)
+            self._next_available_ms.pop(user_id, None)
+            return
+
         self._idle_users.add(user_id)
         next_ready_ms = now_ms + self.think_time_ms
         if (
@@ -497,14 +514,8 @@ class RequestGenerator:
         self._next_available_ms[user_id] = next_ready_ms
 
     def ready_users(self, now_ms: float) -> list[int]:
-        """Return idle users whose think time has elapsed, shuffled."""
-        ready = [
-            user_id
-            for user_id in self._idle_users
-            if now_ms >= self._next_available_ms.get(user_id, 0.0)
-        ]
-        _rng.shuffle(ready)
-        return ready
+        """Return idle users whose think time has elapsed and can still generate requests."""
+        return self._ready_users(now_ms)
 
     def get_last_request_generated_ms(
         self, user_id: int, session_id: int
@@ -521,6 +532,43 @@ class RequestGenerator:
                 min_time = available
         return min_time
 
+    def _current_session_id(self, user_id: int) -> int:
+        """Return the session id currently in progress for ``user_id``.
+
+        ``0`` means the user has not started any session yet; the first session
+        will be numbered 1.
+        """
+        return self._user_session_id.get(user_id, 0)
+
+    def _session_count(self, user_id: int) -> int:
+        """Return the number of sessions already started by ``user_id``."""
+        return self._current_session_id(user_id)
+
+    def _can_generate_requests(self, user_id: int) -> bool:
+        """Return True if ``user_id`` has not exhausted its request budget.
+
+        A user is done when it has started ``sessions_per_user`` sessions *and*
+        completed ``max_session_turns`` turns in the final session.
+        """
+        session_id = self._current_session_id(user_id)
+        turns = self._user_session_turns.get(user_id, 0)
+        if session_id < self.sessions_per_user:
+            return True
+        return bool(
+            session_id == self.sessions_per_user and turns < self.max_session_turns
+        )
+
+    def _ready_users(self, now_ms: float) -> list[int]:
+        """Return idle users past their think time who can still generate requests."""
+        ready = [
+            user_id
+            for user_id in self._idle_users
+            if now_ms >= self._next_available_ms.get(user_id, 0.0)
+            and self._can_generate_requests(user_id)
+        ]
+        _rng.shuffle(ready)
+        return ready
+
     def generate_request(
         self,
         request_scenario: RequestScenario,
@@ -528,17 +576,28 @@ class RequestGenerator:
     ) -> Request | None:
         """Generate the next request for a ready idle user, if any.
 
-        Returns ``None`` when every user is still active or within its think time.
+        Sessions are numbered starting at 1.  Each user can start at most
+        ``sessions_per_user`` sessions; once that cap is reached the user is
+        removed from the ready pool and will not generate further requests.
+
+        Returns ``None`` when every user is still active, within its think time,
+        or has exhausted its session budget.
         """
-        ready_users = self.ready_users(now_ms)
+        ready_users = self._ready_users(now_ms)
         if not ready_users:
             return None
 
         user_id = ready_users[0]
-        session_id = self._user_session_id.get(user_id, 0)
+        session_id = self._current_session_id(user_id)
 
         # If the user's current session is full, roll over to a new session.
         if self._user_session_turns.get(user_id, 0) >= self.max_session_turns:
+            if session_id + 1 > self.sessions_per_user:
+                # This user has exhausted all allowed sessions.  Remove them
+                # from the idle pool permanently.
+                self._idle_users.discard(user_id)
+                self._next_available_ms.pop(user_id, None)
+                return self.generate_request(request_scenario, now_ms)
             session_id += 1
             # Reset cached state for the new session so its first request has
             # no prior context (turn 1, no accumulated tokens).
@@ -546,6 +605,11 @@ class RequestGenerator:
             self._user_session_turns[user_id] = 0
             key = (user_id, session_id)
             self._last_total_tokens.pop(key, None)
+
+        # First request for a brand-new user starts session 1.
+        if session_id == 0:
+            session_id = 1
+            self._user_session_id[user_id] = 1
 
         key = (user_id, session_id)
         min_input_tokens = self._last_total_tokens.get(key, 0)

@@ -17,12 +17,14 @@ def _make_generator(
     delay_max_ms: float = 0.0,
     ttft_sla_ms: float = 100.0,
     tpot_sla_ms: float = 10.0,
+    sessions_per_user: int = 2,
+    think_time_ms: float = 10.0,
 ) -> RequestGenerator:
     return RequestGenerator(
         users=users,
         max_session_turns=1,
-        think_time_ms=10.0,
-        sessions_per_user=1,
+        think_time_ms=think_time_ms,
+        sessions_per_user=sessions_per_user,
         delay_fraction=delay_fraction,
         delay_min_ms=delay_min_ms,
         delay_max_ms=delay_max_ms,
@@ -103,6 +105,32 @@ class TestUserDelay:
             gen.finish_request(req, 0.0)
         for ready in gen._next_available_ms.values():
             assert ready == pytest.approx(220.0)
+
+    def test_think_time_blocks_second_request(self):
+        """A user cannot generate its next request before think_time_ms elapses."""
+        set_request_rng(5)
+        gen = _make_generator(users=1, sessions_per_user=2, think_time_ms=50.0)
+        scenario = RequestScenario(
+            token_distribution=TokenDistribution(8, 8, 1, 1),
+            sessions_per_user=2,
+            users=1,
+            max_session_turns=1,
+            think_time_ms=50.0,
+        )
+        # Wait past the random startup offset.
+        now_ms = 4_000.0
+        req1 = gen.generate_request(scenario, now_ms)
+        assert req1 is not None
+        assert req1.session_id == 1
+        gen.finish_request(req1, now_ms)
+        next_ready = gen._next_available_ms[req1.user_id]
+        # Immediately try to generate again: should be blocked.
+        req2 = gen.generate_request(scenario, now_ms + 10.0)
+        assert req2 is None
+        # After think_time_ms has passed: should generate session 2.
+        req2 = gen.generate_request(scenario, next_ready)
+        assert req2 is not None
+        assert req2.session_id == 2
 
 
 class TestRequestRNGSeed:
@@ -194,7 +222,7 @@ class TestSLADrivenSchedule:
             users=1,
             max_session_turns=1,
             think_time_ms=10.0,
-            sessions_per_user=1,
+            sessions_per_user=2,
             delay_fraction=0.0,
             delay_min_ms=0.0,
             delay_max_ms=0.0,
@@ -203,7 +231,7 @@ class TestSLADrivenSchedule:
         )
         scenario = RequestScenario(
             token_distribution=TokenDistribution(8, 8, 1, 3),
-            sessions_per_user=1,
+            sessions_per_user=2,
             users=1,
             max_session_turns=1,
             think_time_ms=10.0,
@@ -218,10 +246,10 @@ class TestSLADrivenSchedule:
 
     def test_schedule_is_exogenous_not_finish_driven(self):
         set_request_rng(0)
-        gen = _make_generator()
+        gen = _make_generator(sessions_per_user=2)
         scenario = RequestScenario(
             token_distribution=TokenDistribution(8, 8, 1, 1),
-            sessions_per_user=1,
+            sessions_per_user=2,
             users=1,
             max_session_turns=1,
             think_time_ms=10.0,
@@ -235,3 +263,70 @@ class TestSLADrivenSchedule:
         assert gen._next_available_ms[req.user_id] == pytest.approx(
             10_000.0 + 10.0 + expected_service
         )
+
+    def test_sessions_start_at_one(self):
+        set_request_rng(0)
+        gen = RequestGenerator(
+            users=2,
+            max_session_turns=1,
+            think_time_ms=10.0,
+            sessions_per_user=2,
+            delay_fraction=0.0,
+            delay_min_ms=0.0,
+            delay_max_ms=0.0,
+            ttft_sla_ms=50.0,
+            tpot_sla_ms=5.0,
+        )
+        scenario = RequestScenario(
+            token_distribution=TokenDistribution(8, 8, 1, 1),
+            sessions_per_user=2,
+            users=2,
+            max_session_turns=1,
+            think_time_ms=10.0,
+        )
+        seen: set[tuple[int, int]] = set()
+        now_ms = 1_000.0
+        while len(seen) < gen.total_requests:
+            req = gen.generate_request(scenario, now_ms)
+            if req is None:
+                now_ms = gen.next_ready_time_ms(now_ms)
+                continue
+            seen.add((req.user_id, req.session_id))
+            assert req.session_id >= 1, "session ids must start at 1"
+            gen.finish_request(req, req.generated_ms)
+
+    def test_sessions_per_user_is_hard_cap(self):
+        set_request_rng(0)
+        gen = RequestGenerator(
+            users=3,
+            max_session_turns=2,
+            think_time_ms=10.0,
+            sessions_per_user=2,
+            delay_fraction=0.0,
+            delay_min_ms=0.0,
+            delay_max_ms=0.0,
+            ttft_sla_ms=50.0,
+            tpot_sla_ms=5.0,
+        )
+        scenario = RequestScenario(
+            token_distribution=TokenDistribution(8, 8, 1, 1),
+            sessions_per_user=2,
+            users=3,
+            max_session_turns=2,
+            think_time_ms=10.0,
+        )
+        schedule: list[tuple[int, int]] = []
+        now_ms = 1_000.0
+        while len(schedule) < gen.total_requests:
+            req = gen.generate_request(scenario, now_ms)
+            if req is None:
+                now_ms = gen.next_ready_time_ms(now_ms)
+                continue
+            schedule.append((req.user_id, req.session_id))
+            gen.finish_request(req, req.generated_ms)
+
+        per_user = {}
+        for uid, sid in schedule:
+            per_user[uid] = max(per_user.get(uid, 0), sid)
+        assert all(count == 2 for count in per_user.values())
+        assert len(schedule) == 3 * 2 * 2
