@@ -15,8 +15,8 @@ class PrefillLatencyError(Exception):
     def __init__(
         self,
         message: str,
-        prefill_only_ttft_ms: float | None = None,
-        ttft_sla_ms: float | None = None,
+        prefill_only_ttft_ms: float,
+        ttft_sla_ms: float,
     ):
         super().__init__(message)
         self.prefill_only_ttft_ms = prefill_only_ttft_ms

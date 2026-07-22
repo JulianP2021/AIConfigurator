@@ -683,11 +683,7 @@ def _run_colocated_configs(
                         next_batch[i] = ("invalid", cfg)
                     if (
                         isinstance(exc, PrefillLatencyError)
-                        and (
-                            getattr(exc, "prefill_only_ttft_ms", None) is not None
-                            and getattr(exc, "ttft_sla_ms", None) is not None
-                            and exc.prefill_only_ttft_ms > exc.ttft_sla_ms
-                        )
+                        and exc.prefill_only_ttft_ms > exc.ttft_sla_ms
                         and (
                             int(cfg["prefill_nodes"])
                             < int(failed_config["prefill_nodes"])
@@ -828,6 +824,14 @@ def _run_separate_configs(
                                 LOG_CONFIG_EXECUTOR,
                                 f"Invalidated config {cfg['label']} in the next batch due to decode latency error in failed config {failed_config['label']}.",
                             )
+                        if isinstance(exc, PrefillLatencyError):
+                            if exc.prefill_only_ttft_ms > exc.ttft_sla_ms:
+                                raise exc
+                            if int(cfg["prefill_nodes"]) < int(
+                                failed_config["prefill_nodes"]
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                            continue
                         if isinstance(exc, (DecodeError, DecodeLatencyError)):
                             continue
                         raise exc
@@ -876,6 +880,9 @@ def _run_separate_configs(
                     f"Prefill error occurred for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
             elif isinstance(e, PrefillLatencyError):
+                assert e.prefill_only_ttft_ms > e.ttft_sla_ms, (
+                    "Should be a prefill only dependent error"
+                )
                 separate_batches = [
                     prefill_batch
                     for prefill_batch in separate_batches
@@ -1016,6 +1023,14 @@ def _run_mixed_configs(
                                 LOG_CONFIG_EXECUTOR,
                                 f"Invalidated config {cfg['label']} in the next batch due to failed config {failed_config['label']}.",
                             )
+                        if isinstance(exc, PrefillLatencyError):
+                            if exc.prefill_only_ttft_ms > exc.ttft_sla_ms:
+                                raise exc
+                            if int(cfg["prefill_nodes"]) < int(
+                                failed_config["prefill_nodes"]
+                            ):
+                                next_batch[i] = ("invalid", cfg)
+                            continue
                         if isinstance(exc, (DecodeError, DecodeLatencyError)):
                             continue
                         raise exc
@@ -1064,6 +1079,9 @@ def _run_mixed_configs(
                     f"Prefill error occurred for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
             elif isinstance(e, PrefillLatencyError):
+                assert e.prefill_only_ttft_ms > e.ttft_sla_ms, (
+                    "Should be a prefill only dependent error"
+                )
                 mixed_batches = [
                     prefill_batch
                     for prefill_batch in mixed_batches
