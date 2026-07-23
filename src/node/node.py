@@ -4,7 +4,13 @@ from src.instances.prefill import PrefillInstance
 from src.model.model import Model
 
 
-node_id_counter = 0
+node_id_counter: int = 0
+
+
+def reset_node_state() -> None:
+    """Reset the module-level node ID counter for a fresh simulation run."""
+    global node_id_counter
+    node_id_counter = 0
 
 
 class Node:

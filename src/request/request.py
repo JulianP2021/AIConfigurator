@@ -18,7 +18,18 @@ def set_request_rng(seed: int | None) -> None:
     _rng = random.Random(seed)
 
 
-request_id_counter = 0
+request_id_counter: int = 0
+
+
+def reset_request_state(seed: int | None = None) -> None:
+    """Reset module-level mutable state for a fresh simulation run.
+
+    Resets both the request ID counter and the global RNG so that repeated
+    simulations in the same process produce deterministic results.
+    """
+    global request_id_counter
+    request_id_counter = 0
+    set_request_rng(seed)
 
 
 class TransferLeg:
@@ -394,6 +405,7 @@ class RequestGenerator:
         delay_max_ms: float,
         ttft_sla_ms: float,
         tpot_sla_ms: float,
+        startup_arrival_mean_ms: float = 0.0,
     ) -> None:
         if not math.isfinite(ttft_sla_ms) or ttft_sla_ms <= 0:
             raise ValueError(
@@ -411,6 +423,7 @@ class RequestGenerator:
         self.delay_fraction = delay_fraction
         self.delay_min_ms = delay_min_ms
         self.delay_max_ms = delay_max_ms
+        self.startup_arrival_mean_ms = startup_arrival_mean_ms
         self.ttft_sla_ms = ttft_sla_ms
         self.tpot_sla_ms = tpot_sla_ms
 
@@ -429,18 +442,18 @@ class RequestGenerator:
     def _init_startup_offsets(self) -> None:
         """Initialize all users as idle with a random startup offset.
 
-        Users are spread uniformly across ``[0, max_startup_offset_ms]`` so the
-        first batch of requests does not all arrive at ``t=0``.
+        Offsets are drawn from an exponential distribution with mean
+        ``startup_arrival_mean_ms`` (or 0 if not set), seeded by the global RNG
+        so the same seed always produces the same schedule.
         """
         self._idle_users.update(range(self.users))
-        # Space initial arrivals over several think-time windows so the startup
-        # burst is not bunched within a single interval.  With ``think_time_ms``
-        # this keeps the long-term average rate intact while giving a much
-        # smoother initial arrival pattern.
-        startup_windows = 100
-        max_offset_ms = max(0.0, self.think_time_ms * startup_windows)
-        for user_id in range(self.users):
-            self._next_available_ms[user_id] = _rng.random() * max_offset_ms
+        if self.startup_arrival_mean_ms > 0.0:
+            for user_id in range(self.users):
+                self._next_available_ms[user_id] = _rng.expovariate(
+                    1.0 / self.startup_arrival_mean_ms
+                )
+        else:
+            self._next_available_ms.update((uid, 0.0) for uid in range(self.users))
 
     @property
     def total_requests(self) -> int:
@@ -462,10 +475,12 @@ class RequestGenerator:
     def finish_request(self, request: Request, now_ms: float) -> None:
         """Record that ``request`` has completed and is no longer in flight.
 
-        ``now_ms`` is the current simulation time; the user's next request will
-        not be generated until ``now_ms + think_time_ms`` has elapsed.  With
+        ``now_ms`` is the current simulation time; the user's next request is
+        generated after ``now_ms + think_time_ms`` has elapsed.  With
         probability ``delay_fraction`` an extra uniform delay in
         [``delay_min_ms``, ``delay_max_ms``] is added on top of the think time.
+        Unlike an earlier version, this no longer adds the SLA-based expected
+        service time, so the request schedule follows the actual finish time.
 
         If the user has completed all allowed sessions, it is removed from the
         idle pool permanently so the simulator does not wait for it.
@@ -501,15 +516,6 @@ class RequestGenerator:
         ):
             extra_ms = _rng.uniform(self.delay_min_ms, self.delay_max_ms)
             next_ready_ms += extra_ms
-
-        # Add the SLA-based expected service time for the request that just
-        # finished.  This makes the arrival schedule exogenous: the next request
-        # is emitted at SLA + think + optional user delay, regardless of when
-        # the previous request actually completed.  If the system cannot meet
-        # the SLA, the request will already be queued/backlogged at generation
-        # time and will trigger a latency exception when it finishes.
-        expected_service_ms = self.ttft_sla_ms + self.tpot_sla_ms * request.osl
-        next_ready_ms += expected_service_ms
 
         self._next_available_ms[user_id] = next_ready_ms
 

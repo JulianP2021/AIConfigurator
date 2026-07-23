@@ -109,6 +109,16 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Maximum extra user delay in ms (default: {env.user_delay_max_ms})",
     )
     parser.add_argument(
+        "--startup-arrival-mean-ms",
+        type=float,
+        default=env.startup_arrival_mean_ms,
+        help=(
+            "Mean startup arrival offset per user, drawn from an exponential "
+            "distribution. 0 means all users start at t=0 "
+            f"(default: {env.startup_arrival_mean_ms})"
+        ),
+    )
+    parser.add_argument(
         "--random-seed",
         type=int,
         default=env.random_seed,

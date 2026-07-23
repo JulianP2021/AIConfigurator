@@ -195,6 +195,7 @@ def _run_single_config(
     user_delay_fraction: float = 0.0,
     user_delay_min_ms: float = 0.0,
     user_delay_max_ms: float = 0.0,
+    startup_arrival_mean_ms: float = 0.0,
     random_seed: int | None = None,
     colocated: bool = False,
     ttft_sla_ms: float = 30000.0,
@@ -266,6 +267,7 @@ def _run_single_config(
                 user_delay_fraction=user_delay_fraction,
                 user_delay_min_ms=user_delay_min_ms,
                 user_delay_max_ms=user_delay_max_ms,
+                startup_arrival_mean_ms=startup_arrival_mean_ms,
                 random_seed=random_seed,
             )
         except Exception as exc:
@@ -289,10 +291,11 @@ def _build_results_page(
     error: str | None = None,
     show_debug_tables: bool = False,
     plot_title: str = "Cost-Latency Plots",
+    show_users_section: bool = True,
 ) -> str:
     """Build the results HTML page (for /simulate full page) or just the inner content."""
     inner = _results_inner_html(
-        results, plot_urls, error, show_debug_tables, plot_title
+        results, plot_urls, error, show_debug_tables, plot_title, show_users_section
     )
     return (
         """<!DOCTYPE html>
@@ -444,6 +447,7 @@ def _results_inner_html(
     error: str | None = None,
     _show_debug_tables: bool = False,
     plot_title: str = "Cost-Latency Plots",
+    show_users_section: bool = True,
 ) -> str:
     """Inner HTML for results (used when injecting via JS)."""
     html = ""
@@ -464,11 +468,15 @@ def _results_inner_html(
             f"${best['total_cost_usd_per_hour']:.2f}", "Total cost / hour"
         )
         html += _metric_card(f"${best['s3_cost_usd_per_hour']:.2f}", "S3 cost / hour")
+        if "users" in best:
+            html += _metric_card(f"{best['users']:,}", "Max users")
+        if "price_per_user" in best:
+            html += _metric_card(f"${best['price_per_user']:.4f}", "Price / user / h")
         html += _metric_card(f"{best['max_request_latency']:.2f}", "max Latency (ms)")
         html += "</div></div>\n"
 
-        # ---- Users-based ordered legend (only when results have users) ----
-        if any("users" in row for row in results):
+        # ---- Users-based ordered legend (only when results have users and section enabled) ----
+        if show_users_section and any("users" in row for row in results):
             html += '<div class="card"><h2>Configurations by Users</h2>'
             html += '<div class="user-list"><h3>Mode colors</h3><ul>'
             for mode, color in MODE_COLORS.items():
@@ -497,9 +505,11 @@ def _results_inner_html(
                     )
                     for row in mode_rows[:5]:
                         color = row.get("color", MODE_COLORS.get(mode, "#58a6ff"))
+                        users = row.get("users")
+                        users_str = f" ({users:,} users)" if users is not None else ""
                         html += (
                             f'<li><span class="legend-color" style="background:{color}"></span>'
-                            f"[{mode.capitalize()}] {row['label']} — ${row['total_cost_usd_per_hour']:.2f}/h"
+                            f"[{mode.capitalize()}] {row['label']}{users_str} — ${row['total_cost_usd_per_hour']:.2f}/h"
                             f"</li>"
                         )
                         displayed += 1
@@ -517,19 +527,19 @@ def _results_inner_html(
 
         # ---- Comparison table (hidden by default) ----
         html += '<div class="card debug-section"><h2>Configuration Comparison</h2><table><thead><tr>'
-        html += "<th>Label</th><th>Prefill HW</th><th>Decode HW</th><th>Nodes (P/D)</th><th>Batch</th>"
+        html += "<th>Label</th><th>Prefill HW</th><th>Decode HW</th><th>Nodes (P/D)</th><th>Batch</th><th>Users</th>"
         html += "<th>TTFT</th><th>max TTFT</th><th>TPOT</th><th>max TPOT</th>"
         html += (
             "<th>Latency</th><th>max Latency</th><th>KV Upload</th><th>KV Download</th>"
         )
-        html += "<th>Compute $/h</th><th>S3 $/h</th><th>Total $/h</th>"
+        html += "<th>Compute $/h</th><th>S3 $/h</th><th>Total $/h</th><th>Price / user / h</th>"
         html += "</tr></thead><tbody>"
         for row in results:
             if row.get("has_error"):
                 html += (
-                    f'<tr style="opacity:0.7;">'
+                    f"<tr>"
                     f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
-                    f'<td colspan="15" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
+                    f'<td colspan="17" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
                     f"</tr>"
                 )
                 continue
@@ -540,6 +550,7 @@ def _results_inner_html(
                 f"<td>{row['decode_hardware']}</td>"
                 f"<td>{row['num_prefill_workers']} / {row['num_decode_workers']}</td>"
                 f"<td>{row['batch_size']}</td>"
+                f"<td>{row.get('users', '—')}</td>"
                 f"<td>{row['ttft']:.2f}</td>"
                 f"<td>{row['max_ttft']:.2f}</td>"
                 f"<td>{row['tpot']:.2f}</td>"
@@ -551,6 +562,7 @@ def _results_inner_html(
                 f"<td>${row['compute_price_usd_per_hour']:.2f}</td>"
                 f"<td>${row['s3_cost_usd_per_hour']:.2f}</td>"
                 f"<td>${row['total_cost_usd_per_hour']:.2f}</td>"
+                f"<td>${row.get('price_per_user', float('inf')):.4f}</td>"
                 f"</tr>"
             )
         html += "</tbody></table></div>\n"
@@ -663,12 +675,9 @@ def _extract_user_delay_ms(row: dict[str, Any]) -> float | None:
 
 def _build_ttft_cost_plots_by_delay(
     results: list[dict[str, float | int | str]],
+    price_per_user: bool = False,
 ) -> list[str]:
     valid_rows = [row for row in results if not row.get("has_error")]
-    color_map: dict[tuple[str, str], str] = {}
-    for row in valid_rows:
-        key = row["focus"]
-        color_map[key] = row["color"]
 
     by_delay: dict[float, list[dict[str, Any]]] = {}
     for row in valid_rows:
@@ -677,20 +686,38 @@ def _build_ttft_cost_plots_by_delay(
             continue
         by_delay.setdefault(round(delay_ms, 6), []).append(row)
 
+    y_key = "price_per_user" if price_per_user else "total_cost_usd_per_hour"
+    y_label = "Price per user ($/hour)" if price_per_user else "Total cost ($/hour)"
+    plot_title_prefix = (
+        "UP/DOWNLOAD vs Price / User" if price_per_user else "UP/DOWNLOAD vs Cost"
+    )
+    x_key = "users" if price_per_user else "kv_download_time"
+    x2_key = "users" if price_per_user else "kv_upload_time"
+    x_label = "Max users" if price_per_user else "UP/DOWNLOAD (ms)"
+
     plot_urls: list[str] = []
     for delay_ms in sorted(by_delay):
         rows = sorted(
             by_delay[delay_ms],
             key=lambda r: (
                 r.get("ttft", float("inf")),
-                r.get("total_cost_usd_per_hour", float("inf")),
+                r.get(y_key, float("inf")),
             ),
         )
         fig, ax = plt.subplots(figsize=(8, 6))
         for row in rows:
+            y_value = row.get(y_key)
+            if y_value is None or not isinstance(y_value, (int, float)):
+                continue
+            x_value = row.get(x_key)
+            x2_value = row.get(x2_key)
+            if x_value is None or not isinstance(x_value, (int, float)):
+                continue
+            if x2_value is None or not isinstance(x2_value, (int, float)):
+                x2_value = x_value
             ax.scatter(
-                row["kv_download_time"],
-                row["total_cost_usd_per_hour"],
+                x_value,
+                y_value,
                 s=120,
                 color=row["color"],
                 edgecolors="white",
@@ -699,7 +726,7 @@ def _build_ttft_cost_plots_by_delay(
             )
             ax.annotate(
                 "D" + (row["focus_value"] if row["focus_value"] else ""),
-                (row["kv_download_time"], row["total_cost_usd_per_hour"]),
+                (x_value, y_value),
                 textcoords="offset points",
                 xytext=(8, 4),
                 fontsize=9,
@@ -707,8 +734,8 @@ def _build_ttft_cost_plots_by_delay(
             )
 
             ax.scatter(
-                row["kv_upload_time"],
-                row["total_cost_usd_per_hour"],
+                x2_value,
+                y_value,
                 s=120,
                 color=row["color"],
                 edgecolors="white",
@@ -717,16 +744,16 @@ def _build_ttft_cost_plots_by_delay(
             )
             ax.annotate(
                 "U" + (row["focus_value"] if row["focus_value"] else ""),
-                (row["kv_upload_time"], row["total_cost_usd_per_hour"]),
+                (x2_value, y_value),
                 textcoords="offset points",
                 xytext=(8, 4),
                 fontsize=9,
                 color=row["color"],
             )
 
-        ax.set_xlabel("UP/DOWNLOAD (ms)")
-        ax.set_ylabel("Total cost ($/hour)")
-        ax.set_title(f"UP/DOWNLOAD vs Cost (user delay {delay_ms / 1000 / 60:g} min)")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title(f"{plot_title_prefix} (user delay {delay_ms / 1000 / 60:g} min)")
         # ax.set_ylim(bottom=0)
         # ax.set_xlim(left=0)
         ax.grid(True, alpha=0.3)
@@ -1028,6 +1055,7 @@ async def simulate(
     user_delay_fraction: float = Form(_env.user_delay_fraction),
     user_delay_min_ms: float = Form(_env.user_delay_min_ms),
     user_delay_max_ms: float = Form(_env.user_delay_max_ms),
+    startup_arrival_mean_ms: float = Form(_env.startup_arrival_mean_ms),
     random_seed: int | None = Form(_env.random_seed),
     xhr: str = Form("0"),
 ):
@@ -1080,6 +1108,7 @@ async def simulate(
             "user_delay_fraction": user_delay_fraction,
             "user_delay_min_ms": user_delay_min_ms,
             "user_delay_max_ms": user_delay_max_ms,
+            "startup_arrival_mean_ms": startup_arrival_mean_ms,
             "random_seed": random_seed,
         }
 
@@ -1262,28 +1291,43 @@ async def import_results(
 
         benchmark_mode = plot_mode.strip().lower()
         if benchmark_mode in {"ttft", "ttft_cost", "ttft_cost_by_delay"}:
-            plot_urls = _build_ttft_cost_plots_by_delay(results)
+            plot_urls = _build_ttft_cost_plots_by_delay(results, price_per_user=False)
             if not plot_urls:
                 raise ValueError(
                     "Imported results do not contain user_delay_ms metadata needed for TTFT plots"
                 )
+            plot_title = "TTFT vs Cost by User Delay"
+            show_users_section = True
+        elif benchmark_mode in {"price_per_user_by_delay", "price_per_user"}:
+            plot_urls = _build_ttft_cost_plots_by_delay(results, price_per_user=True)
+            if not plot_urls:
+                raise ValueError(
+                    "Imported results do not contain user_delay_ms metadata needed for price-per-user plots"
+                )
+            plot_title = "Price per User by Delay"
+            show_users_section = False
         elif from_directory:
             plot_url, selected = _build_users_cost_plot(results)
             plot_urls = [plot_url]
             results = selected
+            plot_title = "Cost vs Users"
+            show_users_section = True
         else:
             # For single JSON imports, color the points by mode as well so the
             # per-mode color legend stays consistent with directory imports.
             for row in results:
                 row["color"] = _color_for_row(row)
             plot_urls = _build_comparison_plots(results)
-        plot_title = (
-            "TTFT vs Cost by User Delay"
-            if benchmark_mode in {"ttft", "ttft_cost", "ttft_cost_by_delay"}
-            else "Cost-Latency Plots"
-        )
+            plot_title = "Cost-Latency Plots"
+            show_users_section = True
         return HTMLResponse(
-            content=_build_results_page(results, plot_urls, None, plot_title=plot_title)
+            content=_build_results_page(
+                results,
+                plot_urls,
+                None,
+                plot_title=plot_title,
+                show_users_section=show_users_section,
+            )
         )
     except Exception as exc:
         import traceback

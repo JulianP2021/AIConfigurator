@@ -215,6 +215,7 @@ def main():
         user_delay_fraction=args.user_delay_fraction,
         user_delay_min_ms=args.user_delay_min_ms,
         user_delay_max_ms=args.user_delay_max_ms,
+        startup_arrival_mean_ms=args.startup_arrival_mean_ms,
         random_seed=args.random_seed,
     )
 

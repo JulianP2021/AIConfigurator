@@ -44,6 +44,7 @@ class TestTTFTExpansion:
             user_delay_fraction=0.0,
             user_delay_min_ms=0.0,
             user_delay_max_ms=0.0,
+            startup_arrival_mean_ms=0.0,
             random_seed=42,
             sla_ttft_ms=30000.0,
             sla_tpot_ms=100.0,

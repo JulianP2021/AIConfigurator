@@ -37,6 +37,7 @@ import json
 import math
 import re
 import sys
+import time
 
 from collections import defaultdict
 from pathlib import Path
@@ -158,12 +159,178 @@ def _expand_run_specs(
     return common, expanded_runs
 
 
+def _run_single_config_for_users(
+    run_spec: dict[str, Any],
+    users: int,
+    config: dict[str, Any],
+    env: EnvConfig,
+    s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
+) -> SimulationResult | Exception:
+    """Run a single config with a specific user count, returning either the
+    result or the exception that terminated the run.
+    """
+    common = dict(run_spec["common"])
+    common["users"] = users
+    try:
+        result = run_single_config(
+            common,
+            run_spec["cfg"],
+            float(config.get("ram_usage_fraction", env.ram_usage_fraction)),
+            float(config.get("ssd_usage_fraction", env.ssd_usage_fraction)),
+            s3_spec,
+            router_cost_config,
+        )
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} users={users} OK "
+                f"max_ttft={result.max_ttft:.1f} max_tpot={result.max_tpot:.2f}",
+            )
+        return result
+    except Exception as exc:
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} users={users} FAIL {type(exc).__name__}: {str(exc)[:80]}",
+            )
+        return exc
+
+
+def _find_max_users(
+    run_spec: dict[str, Any],
+    config: dict[str, Any],
+    env: EnvConfig,
+    s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
+    timeout_s: float,
+) -> tuple[int, SimulationResult | None]:
+    """Exponential + binary search for the largest user count that succeeds.
+
+    A "success" means ``run_single_config`` returns a ``SimulationResult``
+    without raising an exception.  The search starts at ``users=1`` and doubles
+    until the first failure (or an internal ceiling), then binary-searches
+    between the last known success and the first known failure.
+
+    Returns ``(max_users, result_at_max_users)``; ``result_at_max_users`` is
+    ``None`` if even ``users=1`` fails.
+    """
+
+    def _is_valid(value: SimulationResult | Exception) -> bool:
+        return isinstance(value, SimulationResult)
+
+    start_time = time.monotonic()
+
+    def _remaining_timeout() -> float:
+        return max(0.0, timeout_s - (time.monotonic() - start_time))
+
+    lo_result = _run_single_config_for_users(
+        run_spec, 1, config, env, s3_spec, router_cost_config
+    )
+    if not _is_valid(lo_result):
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"Config '{run_spec['cfg']['label']}' failed even with users=1: {lo_result}",
+            )
+        return 0, None
+
+    # Exponential search: find an upper bound where the config fails.
+    lo = 1
+    hi = 2
+    hi_result: SimulationResult | Exception | None = None
+    while True:
+        remaining = _remaining_timeout()
+        if remaining <= 0.0:
+            if should_log(LOG_CONFIG_EXECUTOR):
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Config '{run_spec['cfg']['label']}' timed out during exponential search",
+                )
+            return lo, lo_result  # type: ignore[return-value]
+
+        hi_result = _run_single_config_for_users(
+            run_spec, hi, config, env, s3_spec, router_cost_config
+        )
+        if not _is_valid(hi_result):
+            break
+        lo = hi
+        lo_result = hi_result
+        hi *= 2
+        # Hard ceiling so we do not run forever on extremely large counts.
+        if hi > 1_000_000_000:
+            if should_log(LOG_CONFIG_EXECUTOR):
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Config '{run_spec['cfg']['label']}' succeeded up to hard ceiling {hi}",
+                )
+            return hi, hi_result  # type: ignore[return-value]
+
+    # Binary search between lo (known valid) and hi (known invalid).
+    while hi - lo > 1:
+        remaining = _remaining_timeout()
+        if remaining <= 0.0:
+            if should_log(LOG_CONFIG_EXECUTOR):
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"Config '{run_spec['cfg']['label']}' timed out during binary search; returning lo={lo}",
+                )
+            break
+        mid = lo + (hi - lo) // 2
+        mid_result = _run_single_config_for_users(
+            run_spec, mid, config, env, s3_spec, router_cost_config
+        )
+        if _is_valid(mid_result):
+            lo = mid
+            lo_result = mid_result
+        else:
+            hi = mid
+
+    return lo, lo_result  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Worker entry point for the process pool.
+# ---------------------------------------------------------------------------
+
+
+def _run_spec_worker(
+    run_spec: dict[str, Any],
+    config: dict[str, Any],
+    env: EnvConfig,
+    s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
+    timeout_s: float,
+    find_max_users: bool,
+) -> tuple[dict[str, Any], SimulationResult | Exception | None]:
+    """Run one expanded spec, optionally searching for the max user count.
+
+    This function is submitted to the process pool so each worker performs
+    the (possibly multi-step) search in isolation.
+    """
+    if find_max_users:
+        max_users, result = _find_max_users(
+            run_spec, config, env, s3_spec, router_cost_config, timeout_s
+        )
+        return {"max_users": max_users, "run_spec": run_spec}, result
+    result = _run_single_config_for_users(
+        run_spec,
+        int(run_spec["common"].get("users", 1)),
+        config,
+        env,
+        s3_spec,
+        router_cost_config,
+    )
+    return {"run_spec": run_spec}, result
+
+
 def _run_sweep(
     config: dict[str, Any],
     ttft_values: list[float],
     user_delay_values: list[float],
     user_delay_fraction: float,
     timeout_s: float,
+    find_max_users: bool = False,
 ) -> list[dict[str, Any]]:
     env = load_env()
     _common, expanded_runs = _expand_run_specs(
@@ -173,7 +340,10 @@ def _run_sweep(
         user_delay_fraction,
     )
 
-    print(f"Running {len(expanded_runs)} specs at most")
+    if find_max_users:
+        print(f"Finding max users for {len(expanded_runs)} specs")
+    else:
+        print(f"Running {len(expanded_runs)} specs at most")
 
     s3_spec = S3Spec.from_gbps(
         enabled=bool(config.get("s3_enabled", env.s3_enabled)),
@@ -224,13 +394,14 @@ def _run_sweep(
     with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
         futures = {
             executor.submit(
-                run_single_config,
-                run_spec["common"],
-                run_spec["cfg"],
-                float(config.get("ram_usage_fraction", env.ram_usage_fraction)),
-                float(config.get("ssd_usage_fraction", env.ssd_usage_fraction)),
+                _run_spec_worker,
+                run_spec,
+                config,
+                env,
                 s3_spec,
                 router_cost_config,
+                timeout_s,
+                find_max_users,
             ): (i, run_spec)
             for i, run_spec in enumerate(expanded_runs)
         }
@@ -238,9 +409,10 @@ def _run_sweep(
         successful: dict[int, tuple[dict[str, Any], SimulationResult]] = {}
         failed: dict[int, Exception] = {}
         pending = dict(futures)
-        import time
 
-        end_time = time.monotonic() + timeout_s
+        end_time = time.monotonic() + timeout_s * (
+            len(expanded_runs) if find_max_users else 1
+        )
         while pending:
             wait_s = max(0.0, min(end_time - time.monotonic(), 1.0))
             done, _ = concurrent.futures.wait(
@@ -262,7 +434,54 @@ def _run_sweep(
             for future in done:
                 i, run_spec = pending.pop(future)
                 try:
-                    successful[i] = (run_spec, future.result())
+                    worker_meta, result = future.result()
+                    if find_max_users:
+                        max_users = int(worker_meta.get("max_users", 0))
+                        if max_users <= 0 or not isinstance(result, SimulationResult):
+                            failed[i] = RuntimeError("failed during max-users search")
+                            if should_log(LOG_CONFIG_EXECUTOR):
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Config '{run_spec['cfg']['label']}' failed max-users search: {result}",
+                                )
+                            continue
+                        result = result  # type: ignore[unreachable]
+                        row = result.to_dict()
+                        focus, focus_value = _run_focus(run_spec["cfg"])
+                        color = palette[focus]
+                        total_cost = row.get("total_cost_usd_per_hour", 0.0)
+                        price_per_user = (
+                            total_cost / max_users if max_users > 0 else float("inf")
+                        )
+                        add_result_metadata(
+                            row,
+                            str(run_spec["cfg"]["label"]),
+                            run_spec["cfg"],
+                            color,
+                            users=max_users,
+                            extra_fields={
+                                "benchmark_mode": "ttft_cost_by_delay",
+                                "ttft_sla_ms": run_spec["ttft_ms"],
+                                "tpot_sla_ms": float("inf"),
+                                "user_delay_ms": run_spec["user_delay_ms"],
+                                "user_delay_fraction": user_delay_fraction,
+                                "focus": focus,
+                                "focus_value": focus_value,
+                                "max_users": max_users,
+                                "price_per_user": round(price_per_user, 6),
+                            },
+                        )
+                        results.append(row)
+                    else:
+                        if isinstance(result, Exception):
+                            failed[i] = result
+                            if should_log(LOG_CONFIG_EXECUTOR):
+                                log(
+                                    LOG_CONFIG_EXECUTOR,
+                                    f"Config '{run_spec['cfg']['label']}' failed: {result}",
+                                )
+                            continue
+                        successful[i] = (run_spec, result)
                 except Exception as exc:
                     failed[i] = exc
                     if should_log(LOG_CONFIG_EXECUTOR):
@@ -369,6 +588,12 @@ def main() -> None:
         default=240.0,
         help="Per-config timeout in seconds (default: 240.0)",
     )
+    parser.add_argument(
+        "--find-max-users",
+        action="store_true",
+        default=False,
+        help="Use exponential + binary search to find the largest user count each config can serve while meeting SLAs",
+    )
     args = parser.parse_args()
     args.ttft_values = [f * 1000 for f in args.ttft_values]
     args.user_delay_values = [f * 1000 * 60 for f in args.user_delay_values]
@@ -391,6 +616,7 @@ def main() -> None:
         args.user_delay_values,
         args.user_delay_fraction,
         args.timeout,
+        find_max_users=args.find_max_users,
     )
 
     payload = {

@@ -73,10 +73,11 @@ USERS=10
 MAX_SESSION_TURNS=5
 THINK_TIME_MS=0
 
-USER_DELAY_FRACTION=0.0  # fraction of users that get an extra random delay
-USER_DELAY_MIN_MS=0.0    # minimum extra user delay (ms)
-USER_DELAY_MAX_MS=0.0    # maximum extra user delay (ms)
-RANDOM_SEED=             # empty = non-deterministic; otherwise reproducible
+USER_DELAY_FRACTION=0.0       # fraction of users that get an extra random delay
+USER_DELAY_MIN_MS=0.0         # minimum extra user delay (ms)
+USER_DELAY_MAX_MS=0.0         # maximum extra user delay (ms)
+STARTUP_ARRIVAL_MEAN_MS=0.0   # mean startup arrival offset per user (exponential)
+RANDOM_SEED=                  # empty = non-deterministic; otherwise reproducible
 
 SLA_TTFT_MS=30000        # per-request TTFT SLA; must be finite because it
                           # drives the deterministic request schedule.
@@ -103,11 +104,12 @@ INTER_NODE_NETWORK_UP_GBPS=100.0    # datacenter NIC for node-to-node KV transfe
 INTER_NODE_NETWORK_DOWN_GBPS=100.0
 
 ROUTER_PREFILL_LOAD_SCALE=1.0
-ROUTER_DEVICE_CREDIT=1.0
-ROUTER_REMOTE_RAM_CREDIT=0.5
-ROUTER_SSD_CREDIT=0.3
-ROUTER_S3_CREDIT=0.1
-ROUTER_BUSY_THRESHOLD_TOKENS=1000000.0
+ROUTER_ACTIVE_WORK_SCALE=0.05
+ROUTER_DEVICE_CREDIT=0.6
+ROUTER_REMOTE_RAM_CREDIT=0.0
+ROUTER_REMOTE_SSD_CREDIT=0.0
+ROUTER_S3_CREDIT=0.0
+ROUTER_BUSY_THRESHOLD_TOKENS=2000000.0
 
 LOG_MASK=0
 DEBUG=false
@@ -204,7 +206,7 @@ A pytest suite lives in `tests/`.
 Covered areas:
 - `tests/test_logger.py` — bitmask logging behavior.
 - `tests/test_bandwidth_scheduler.py` — equal-share scheduling for RAM/SSD/NETWORK bottlenecks.
-- `tests/test_cache.py` — two-tier cache, LRU eviction, capacity validation, and transfer-leg generation.
+- `tests/cache/` — split cache test suite covering validation, CacheLayer internals, insertion, download, S3, merge, LRU, byte counters, upload, prefix queries, and download-segment resolution.
 - `tests/test_request.py` — `TransferLeg`, `DownloadRequest`, `UploadRequest`, and `Request` basics.
 - `tests/test_decode.py` — frozen one-token decode batches and instance-level partial progress.
 - `tests/test_analytics.py` — phase-level timing analytics.
@@ -212,6 +214,7 @@ Covered areas:
 - `tests/test_router.py` — routing and cost scoring.
 - `tests/test_execute_config.py` / `tests/test_scraper.py` — config-execution utilities.
 - `configs/create_ttft_config.py` / `configs/execute_ttft_config.py` — fixed-topology TTFT benchmark generation and execution.
+  - `execute_ttft_config.py --find-max-users` runs an exponential + binary search in parallel (8 workers) to find the largest user count each colocated config can serve while meeting SLAs. The result rows include `users` and `price_per_user`.
 
 ## Batch runner (`configs/execute_config.py`)
 
@@ -242,7 +245,7 @@ This list captures the optimizations already applied and the remaining candidate
 - Added `_contiguous_prefix_from_sorted()` and `find_cache(node_id=...)` to exploit the per-session sorted order and avoid re-sorting for node-local prefix queries.
 - Replaced the remote/S3 item scan in `_find_download_segments()` with a `SortedDict` covering-index so each gap is resolved in O(log N) instead of O(all_items).
 - Fixed a covering-index key-collision bug where remote/S3 items sharing the same `token_start` overwrote each other; the index now keys on `(token_start, token_end)`.
-- Added a regression test for the shared-start collision (`tests/test_cache.py::test_download_uses_remote_item_with_shared_start`).
+- Added a regression test for the shared-start collision (`tests/cache/test_cache_download.py::test_download_uses_remote_item_with_shared_start`).
 - Added `sortedcontainers` to `pyproject.toml` project dependencies.
 - Added `__slots__` to hot objects (`Request`, `CacheItem`, `TransferLeg`, `_MultiTrackTransfer`, `UploadRequest`, `DownloadRequest`).
 - Cached `Model.dtype_size` and `_calculate_memory()` to reduce repeated FLOPs/memory model computation.

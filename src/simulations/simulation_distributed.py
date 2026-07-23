@@ -210,6 +210,7 @@ def simulate_run_distributed(
     user_delay_fraction: float = 0.0,
     user_delay_min_ms: float = 0.0,
     user_delay_max_ms: float = 0.0,
+    startup_arrival_mean_ms: float = 0.0,
     random_seed: int | None = None,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
@@ -253,9 +254,11 @@ def simulate_run_distributed(
         cost_config=router_cost_config,
     )
 
-    from src.request.request import set_request_rng
+    from src.node.node import reset_node_state
+    from src.request.request import reset_request_state
 
-    set_request_rng(random_seed)
+    reset_request_state(random_seed)
+    reset_node_state()
 
     if sla is None:
         raise ValueError("SLA must be provided; ttft_ms and tpot_ms must be finite")
@@ -274,6 +277,7 @@ def simulate_run_distributed(
         delay_max_ms=user_delay_max_ms,
         ttft_sla_ms=float(sla["ttft_ms"]),
         tpot_sla_ms=float(sla["tpot_ms"]),
+        startup_arrival_mean_ms=startup_arrival_mean_ms,
     )
     finished_requests: list[Request] = []
     current_requests: list[Request] = []

@@ -32,6 +32,7 @@ def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, A
         "ram_usage_fraction": args.ram_usage_fraction,
         "ssd_usage_fraction": args.ssd_usage_fraction,
         "router_prefill_load_scale": args.router_prefill_load_scale,
+        "router_active_work_scale": args.router_active_work_scale,
         "router_device_credit": args.router_device_credit,
         "router_remote_ram_credit": args.router_remote_ram_credit,
         "router_remote_ssd_credit": args.router_remote_ssd_credit,
@@ -45,11 +46,12 @@ def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, A
         "inter_node_network_down_gbps": args.inter_node_network_down_gbps,
         "sla": {
             "ttft_ms": f"{args.sla['ttft_ms']}",
-            "tpot_ms": f"{args.sla['ttft_ms']}",
+            "tpot_ms": f"{args.sla['tpot_ms']}",
         },
         "user_delay_fraction": args.user_delay_fraction,
         "user_delay_min_ms": args.user_delay_min_ms,
         "user_delay_max_ms": args.user_delay_max_ms,
+        "startup_arrival_mean_ms": args.startup_arrival_mean_ms,
         "random_seed": args.random_seed,
         "config_type": config_type,
     }

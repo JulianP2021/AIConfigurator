@@ -19,17 +19,27 @@ from src.logger import LOG_ROUTER, log, should_log
 from src.request.request import Request
 
 
-@dataclass
 class RouterCostConfig:
     """Tunable knobs for the Dynamo-style routing cost function."""
 
-    prefill_load_scale: float = 1.0
-    active_work_scale: float = 0.0001
-    device_credit: float = 1.0
-    remote_ram_credit: float = 0.5
-    remote_ssd_credit: float = 0.3
-    s3_credit: float = 0.1
-    busy_threshold_tokens: float = 1_000_000.0
+    def __init__(
+        self,
+        prefill_load_scale: float = 1.0,
+        active_work_scale: float = 0.0001,
+        device_credit: float = 1.0,
+        remote_ram_credit: float = 0.5,
+        remote_ssd_credit: float = 0.3,
+        s3_credit: float = 0.1,
+        busy_threshold_tokens: float = 1_000_000.0,
+    ) -> None:
+
+        self.prefill_load_scale = prefill_load_scale
+        self.active_work_scale = active_work_scale
+        self.device_credit = device_credit
+        self.remote_ram_credit = remote_ram_credit
+        self.remote_ssd_credit = remote_ssd_credit
+        self.s3_credit = s3_credit
+        self.busy_threshold_tokens = busy_threshold_tokens
 
 
 @dataclass
@@ -159,7 +169,7 @@ class Router:
         else:
             local_output_credit = 0.0
 
-        items = self.cache.find_cache(session_id, node_id=node_id)
+        items = self.cache.find_cache(session_id)
         if not items:
             return local_output_credit
 
@@ -201,20 +211,30 @@ class Router:
     ) -> float:
         cfg = self.cost_config
         assert cfg is not None, "Router cost config must be set"
-        overlap = self._overlap_credit(req, node_id)
-        adjusted_prefill = max(0.0, req.isl - overlap)
+        # Ignore cached-prefix overlap when routing prefills.  The prefill has
+        # to run somewhere and the produced KV will be cached on that node, so
+        # giving credit for existing cache entries encourages unhealthy stacking
+        # on nodes that happen to hold prior context.  Load-balancing across
+        # prefill workers dominates TTFT.
         return cfg.prefill_load_scale * (
-            active_prefill.get(node_id, 0.0) * 0.0001 + adjusted_prefill
+            active_prefill.get(node_id, 0.0) * cfg.active_work_scale + req.isl
         )
 
     def _decode_cost(
-        self, req: Request, node_id: int, active_decode: dict[int, float]
+        self,
+        req: Request,
+        node_id: int,
+        active_decode: dict[int, float],
     ) -> float:
         cfg = self.cost_config
         assert cfg is not None, "Router cost config must be set"
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
-        return active_decode.get(node_id, 0.0) * 0.0001 + adjusted_prefill + req.osl
+        return (
+            active_decode.get(node_id, 0.0) * cfg.active_work_scale
+            + adjusted_prefill
+            + req.osl
+        )
 
     def _total_cost(
         self,
@@ -227,10 +247,11 @@ class Router:
         decode_cost = self._decode_cost(req, node_id, active_decode)
         if is_prefill:
             prefill_cost = self._prefill_cost(req, node_id, active_prefill)
-            # When prefill routing, only charge the decode stage lightly so
+            # Charge the full decode-stage cost when prefill routing so that
             # colocated workers that will later decode the same request are
-            # preferred, but the dominant term remains prefill locality.
-            return prefill_cost + 0.1 * decode_cost
+            # strongly preferred.  This prevents fast local bandwidth from
+            # steering prefills away from the nodes that will consume the KV.
+            return prefill_cost + decode_cost
         # Decode routing: only decode-stage costs (load + cache-adjusted work).
         return decode_cost
 
@@ -276,7 +297,7 @@ class Router:
                     f"Prefill cost for request {req.id} on node {node_id}: {cost:.1f} "
                     f"(active_prefill={active_prefill.get(node_id, 0.0):.0f}, "
                     f"active_decode={active_decode.get(node_id, 0.0):.0f}, "
-                    f"cached_prefix={self._cached_prefix(req, node_id)})"
+                    f"cached_prefix={self.cache.find_cache((req.user_id, req.session_id)) if self.cache else 'No cache set'})"
                     f"totoal cost {cost:.1f})",
                 )
             if cost < best_cost:

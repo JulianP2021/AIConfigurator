@@ -29,6 +29,10 @@ class EnvConfig:
     user_delay_min_ms: float = 0.0
     user_delay_max_ms: float = 0.0
 
+    # Mean startup arrival offset per user (exponential distribution).
+    # 0 means all users start at t=0.
+    startup_arrival_mean_ms: float = 0.0
+
     # Random seed for reproducible request timing (including user delays)
     random_seed: int | None = None
 
@@ -93,6 +97,7 @@ _DEFAULTS = {
     "USER_DELAY_FRACTION": "0.0",
     "USER_DELAY_MIN_MS": "0.0",
     "USER_DELAY_MAX_MS": "0.0",
+    "STARTUP_ARRIVAL_MEAN_MS": "0.0",
     "RANDOM_SEED": "",
     "SLA_TTFT_MS": "30000.0",
     "SLA_TPOT_MS": "100.0",
@@ -157,6 +162,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "USER_DELAY_FRACTION",
         "USER_DELAY_MIN_MS",
         "USER_DELAY_MAX_MS",
+        "STARTUP_ARRIVAL_MEAN_MS",
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_ACTIVE_WORK_SCALE",
         "ROUTER_DEVICE_CREDIT",
@@ -231,6 +237,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         user_delay_fraction=float(merged["USER_DELAY_FRACTION"]),
         user_delay_min_ms=float(merged["USER_DELAY_MIN_MS"]),
         user_delay_max_ms=float(merged["USER_DELAY_MAX_MS"]),
+        startup_arrival_mean_ms=float(merged["STARTUP_ARRIVAL_MEAN_MS"]),
         random_seed=int(merged["RANDOM_SEED"], 0) if merged["RANDOM_SEED"] else None,
         sla_ttft_ms=float(merged["SLA_TTFT_MS"]),
         sla_tpot_ms=float(merged["SLA_TPOT_MS"]),

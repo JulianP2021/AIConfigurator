@@ -99,7 +99,7 @@ class CacheLayer:
         if not item_dict:
             del self.content[item.session_id]
         item.layer = None
-        item.node_id = -1
+        item.node_id = -2
 
     def _get_item(
         self, session_id: tuple[int, int], token_start: int, token_end: int
@@ -1086,6 +1086,26 @@ class Cache:
         """
         cache_key = (request.user_id, request.session_id)
         prior_cache = self.find_cache(cache_key, node_id=node_id)
+
+        # Capture layer names *before* insert_cache_item mutates or deletes the
+        # prior CacheItem objects via _merge_with_layer_items.  After merging, the
+        # old items have layer=None and a fallback scan no longer finds them,
+        # which previously printed "?" in the upload log.
+        prior_layers = (
+            [
+                (
+                    item.token_start,
+                    item.token_end,
+                    self.find_cache_layer(item).name
+                    if self.find_cache_layer(item)
+                    else "?",
+                )
+                for item in prior_cache
+            ]
+            if prior_cache
+            else []
+        )
+
         prior_cached_tokens = 0
         if prior_cache:
             cache_layer = self.find_cache_layer(prior_cache[-1])
@@ -1112,20 +1132,6 @@ class Cache:
         bytes_to_transfer = self.kv_size(self.model, new_tokens)
 
         if should_log(LOG_CACHE):
-            prior_layers = (
-                [
-                    (
-                        item.token_start,
-                        item.token_end,
-                        self.find_cache_layer(item).name
-                        if self.find_cache_layer(item)
-                        else "?",
-                    )
-                    for item in prior_cache
-                ]
-                if prior_cache
-                else []
-            )
             log(
                 LOG_CACHE,
                 f"Uploading KV for request {request.id} (user {request.user_id}, session {request.session_id}) to node {node_id}, "

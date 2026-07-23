@@ -5,6 +5,7 @@ import concurrent.futures
 import copy
 import json
 import sys
+import time
 
 from collections.abc import Callable
 from pathlib import Path
@@ -41,6 +42,7 @@ def build_common_config(
     user_delay_fraction_override: float | None = None,
     user_delay_min_ms_override: float | None = None,
     user_delay_max_ms_override: float | None = None,
+    startup_arrival_mean_ms_override: float | None = None,
 ) -> dict[str, Any]:
     raw_sla = config.get("sla")
     if sla_override is not None:
@@ -78,6 +80,11 @@ def build_common_config(
             user_delay_max_ms_override
             if user_delay_max_ms_override is not None
             else config.get("user_delay_max_ms", env.user_delay_max_ms)
+        ),
+        "startup_arrival_mean_ms": (
+            startup_arrival_mean_ms_override
+            if startup_arrival_mean_ms_override is not None
+            else config.get("startup_arrival_mean_ms", env.startup_arrival_mean_ms)
         ),
         "random_seed": config.get("random_seed", env.random_seed),
         "sla": sla,
@@ -229,7 +236,6 @@ def run_single_config(
     router_cost_config: RouterCostConfig,
 ) -> SimulationResult:
     scenario = build_scenario(common, cfg)
-    # set_log_mask(63)
     return simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
@@ -241,6 +247,7 @@ def run_single_config(
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
         user_delay_min_ms=float(common.get("user_delay_min_ms", 0.0)),
         user_delay_max_ms=float(common.get("user_delay_max_ms", 0.0)),
+        startup_arrival_mean_ms=float(common.get("startup_arrival_mean_ms", 0.0)),
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
@@ -254,7 +261,6 @@ def collect_future_results(
     list[tuple[int, dict[str, Any], SimulationResult]],
     list[tuple[int, dict[str, Any], Exception]],
 ]:
-    import time
 
     deadline = time.monotonic() + timeout_s
     remaining = dict(futures)

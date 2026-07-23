@@ -338,6 +338,7 @@ def _run_single_config(
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
         user_delay_min_ms=float(common.get("user_delay_min_ms", 0.0)),
         user_delay_max_ms=float(common.get("user_delay_max_ms", 0.0)),
+        startup_arrival_mean_ms=float(common.get("startup_arrival_mean_ms", 0.0)),
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
@@ -1318,6 +1319,9 @@ def main() -> None:
         ),
         "user_delay_min_ms": config.get("user_delay_min_ms", env.user_delay_min_ms),
         "user_delay_max_ms": config.get("user_delay_max_ms", env.user_delay_max_ms),
+        "startup_arrival_mean_ms": config.get(
+            "startup_arrival_mean_ms", env.startup_arrival_mean_ms
+        ),
         "random_seed": config.get("random_seed", env.random_seed),
         "sla": sla,
     }
