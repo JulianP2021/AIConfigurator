@@ -1,5 +1,7 @@
 """Tests for per-request latency SLAs in simulate_run_distributed."""
 
+import pickle
+
 import pytest
 
 from src.eroors.errors import DecodeLatencyError, PrefillLatencyError
@@ -180,3 +182,14 @@ def test_tpot_sla_violation_raises():
             sla={"ttft_ms": 10000.0, "tpot_ms": 0.1},
         )
     assert "TPOT SLA violated" in str(exc_info.value)
+
+
+def test_prefill_latency_error_is_picklable():
+    """PrefillLatencyError must round-trip through pickle for process pools."""
+    exc = PrefillLatencyError("TTFT SLA violated", 1234.5, 1000.0)
+    data = pickle.dumps(exc)
+    restored = pickle.loads(data)
+    assert isinstance(restored, PrefillLatencyError)
+    assert str(restored) == "TTFT SLA violated"
+    assert restored.prefill_only_ttft_ms == 1234.5
+    assert restored.ttft_sla_ms == 1000.0

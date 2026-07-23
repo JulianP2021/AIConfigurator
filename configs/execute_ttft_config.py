@@ -173,6 +173,8 @@ def _run_sweep(
         user_delay_fraction,
     )
 
+    print(f"Running {len(expanded_runs)} specs at most")
+
     s3_spec = S3Spec.from_gbps(
         enabled=bool(config.get("s3_enabled", env.s3_enabled)),
         up_gbps=float(config.get("s3_up_bw_gbps", env.s3_up_bw_gbps)),
@@ -344,12 +346,6 @@ def main() -> None:
         help="Directory where per-focus results_*.json files will be written",
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="Optional legacy single-file output path",
-    )
-    parser.add_argument(
         "--ttft-values",
         type=_parse_float_values,
         required=True,
@@ -383,7 +379,7 @@ def main() -> None:
                 f"--ttft-values must be finite positive seconds, got {ttft_ms / 1000:g}s"
             )
 
-    if args.results_dir is None and args.output is None:
+    if args.results_dir is None:
         parser.error("Provide --results-dir")
 
     config = load_config(args.config)
@@ -408,22 +404,21 @@ def main() -> None:
         "results": results,
     }
 
-    if args.results_dir is not None:
-        written = _write_results_dir(
-            args.results_dir,
-            payload["config"],
-            results,
-            args.ttft_values,
-            args.user_delay_values,
-            args.user_delay_fraction,
-        )
-        summary = {
-            "benchmark": payload["benchmark"],
-            "results_dir": str(args.results_dir),
-            "files": [str(path) for path in written],
-            "result_count": len(results),
-        }
-        print(summary)
+    written = _write_results_dir(
+        args.results_dir,
+        payload["config"],
+        results,
+        args.ttft_values,
+        args.user_delay_values,
+        args.user_delay_fraction,
+    )
+    summary = {
+        "benchmark": payload["benchmark"],
+        "results_dir": str(args.results_dir),
+        "files": [str(path) for path in written],
+        "result_count": len(results),
+    }
+    print(summary)
 
 
 if __name__ == "__main__":

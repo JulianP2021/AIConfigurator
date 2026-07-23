@@ -22,6 +22,12 @@ class PrefillLatencyError(Exception):
         self.prefill_only_ttft_ms = prefill_only_ttft_ms
         self.ttft_sla_ms = ttft_sla_ms
 
+    def __reduce__(self):
+        return (
+            type(self),
+            (self.args[0], self.prefill_only_ttft_ms, self.ttft_sla_ms),
+        )
+
 
 class DecodeError(Exception):
     """Exception raised for too large decode queue."""
