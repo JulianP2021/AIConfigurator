@@ -4,8 +4,6 @@ import argparse
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.logger import LOG_ALL, LOG_CONFIG_EXECUTOR, LOG_ROUTER, get_log_mask, is_debug
 from src.utils.parser import _add_logging_args, apply_logging_args
 

@@ -22,7 +22,9 @@ def _make_prefill_instance(node_id: int) -> PrefillInstance:
     inst.hardware = Hardware(
         name="test",
         spec=HardwareSpec(
-            gpu_hardware=GPUHardwareSpec(flops=1e15, gpu_mem=1_000_000_000, gpu_bw=1e12),
+            gpu_hardware=GPUHardwareSpec(
+                flops=1e15, gpu_mem=1_000_000_000, gpu_bw=1e12
+            ),
             num_gpus=1,
             nvme_mem=1_000_000_000,
             nvme_bw=1_000_000_000.0,
@@ -112,7 +114,9 @@ def _make_decode_instance(node_id: int) -> DecodeInstance:
     inst.hardware = Hardware(
         name="test",
         spec=HardwareSpec(
-            gpu_hardware=GPUHardwareSpec(flops=1e15, gpu_mem=1_000_000_000, gpu_bw=1e12),
+            gpu_hardware=GPUHardwareSpec(
+                flops=1e15, gpu_mem=1_000_000_000, gpu_bw=1e12
+            ),
             num_gpus=1,
             nvme_mem=1_000_000_000,
             nvme_bw=1_000_000_000.0,
@@ -444,7 +448,8 @@ class TestRouterCostFunction:
 class TestRouterTieBreaking:
     def test_prefill_tie_breaking_deterministic_with_seed(self):
         """When two prefill nodes have identical cost, the chosen node is a
-        deterministic function of the supplied seed."""
+        deterministic function of the supplied seed.
+        """
         prefill_0 = _make_prefill_instance(0)
         prefill_1 = _make_prefill_instance(1)
         decode_0 = _make_decode_instance(0)
@@ -462,7 +467,9 @@ class TestRouterTieBreaking:
             active_decode = {0: 100.0, 1: 100.0}
             req = Request(isl=1000, osl=100)
             return [
-                router._choose_prefill_instance(req, active_prefill, active_decode).node_id
+                router._choose_prefill_instance(
+                    req, active_prefill, active_decode
+                ).node_id
                 for _ in range(20)
             ]
 
@@ -473,7 +480,8 @@ class TestRouterTieBreaking:
 
     def test_decode_tie_breaking_deterministic_with_seed(self):
         """When two decode nodes have identical cost, the chosen node is a
-        deterministic function of the supplied seed."""
+        deterministic function of the supplied seed.
+        """
         prefill_0 = _make_prefill_instance(0)
         prefill_1 = _make_prefill_instance(1)
         decode_0 = _make_decode_instance(0)
@@ -492,7 +500,9 @@ class TestRouterTieBreaking:
             req = Request(isl=1000, osl=100)
             req.prefilled_tokens = 1000
             return [
-                router._choose_decode_instance(req, active_prefill, active_decode).node_id
+                router._choose_decode_instance(
+                    req, active_prefill, active_decode
+                ).node_id
                 for _ in range(20)
             ]
 
@@ -501,7 +511,8 @@ class TestRouterTieBreaking:
 
     def test_route_requests_prefill_tie_breaking_is_seeded(self):
         """At the public route_requests level, prefill tie-breaking follows
-        the configured seed."""
+        the configured seed.
+        """
 
         def sequence(seed: int) -> list[int]:
             prefill_0 = _make_prefill_instance(0)
@@ -537,7 +548,8 @@ class TestRouterTieBreaking:
 
     def test_route_requests_decode_tie_breaking_is_seeded(self):
         """At the public route_requests level, decode tie-breaking follows
-        the configured seed."""
+        the configured seed.
+        """
 
         def sequence(seed: int) -> list[int]:
             prefill_0 = _make_prefill_instance(0)
@@ -581,7 +593,8 @@ class TestRouterTieBreaking:
 class TestRouterRamTieBreaking:
     def test_tie_break_prefers_node_with_more_free_ram(self):
         """When two nodes have identical routing cost, the one with the lower
-        RAM fill factor is chosen."""
+        RAM fill factor is chosen.
+        """
         cache = _make_cache()
         # Fill node 0 RAM to 50% and leave node 1 RAM empty.
         cache.ram_usage_bytes[0] = cache.ram_capacity_bytes[0] // 2
@@ -604,17 +617,22 @@ class TestRouterRamTieBreaking:
         active_prefill = {0: 100.0, 1: 100.0}
         active_decode = {0: 100.0, 1: 100.0}
         req = Request(isl=1000, osl=100)
-        chosen_prefill = router._choose_prefill_instance(req, active_prefill, active_decode)
+        chosen_prefill = router._choose_prefill_instance(
+            req, active_prefill, active_decode
+        )
         assert chosen_prefill.node_id == 1
 
         decode_req = Request(isl=1000, osl=100)
         decode_req.prefilled_tokens = 1000
-        chosen_decode = router._choose_decode_instance(decode_req, active_prefill, active_decode)
+        chosen_decode = router._choose_decode_instance(
+            decode_req, active_prefill, active_decode
+        )
         assert chosen_decode.node_id == 1
 
     def test_ram_tie_break_falls_back_to_random_when_fill_equal(self):
         """When RAM fill is also tied, the router falls back to the seeded
-        random choice."""
+        random choice.
+        """
         cache = _make_cache()
         cache.ram_usage_bytes[0] = cache.ram_capacity_bytes[0] // 4
         cache.ram_usage_bytes[1] = cache.ram_capacity_bytes[1] // 4
@@ -636,7 +654,9 @@ class TestRouterRamTieBreaking:
             active_decode = {0: 100.0, 1: 100.0}
             req = Request(isl=1000, osl=100)
             return [
-                router._choose_prefill_instance(req, active_prefill, active_decode).node_id
+                router._choose_prefill_instance(
+                    req, active_prefill, active_decode
+                ).node_id
                 for _ in range(20)
             ]
 
@@ -660,7 +680,11 @@ class TestRouterRamTieBreaking:
         active_prefill = {0: 100.0, 1: 100.0}
         active_decode = {0: 100.0, 1: 100.0}
         req = Request(isl=1000, osl=100)
-        first = router._choose_prefill_instance(req, active_prefill, active_decode).node_id
-        second = router._choose_prefill_instance(req, active_prefill, active_decode).node_id
+        first = router._choose_prefill_instance(
+            req, active_prefill, active_decode
+        ).node_id
+        second = router._choose_prefill_instance(
+            req, active_prefill, active_decode
+        ).node_id
         # Same seed and same state -> random tie-breaker is deterministic.
         assert first == second

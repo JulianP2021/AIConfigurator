@@ -738,7 +738,9 @@ class Cache:
         elif bottleneck == "NETWORK":
             total_bw = spec.network_inter_node_up
         else:
-            return latency_ms + (bytes_to_transfer / max(1, float(spec.pcie_bw))) * 1000.0
+            return (
+                latency_ms + (bytes_to_transfer / max(1, float(spec.pcie_bw))) * 1000.0
+            )
 
         return latency_ms + (bytes_to_transfer / max(1, total_bw)) * 1000.0
 

@@ -195,7 +195,6 @@ def main():
         eviction_time_ms=args.s3_eviction_time_ms,
     )
 
-
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=args.ram_usage_fraction,

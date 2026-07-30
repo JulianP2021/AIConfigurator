@@ -1,6 +1,5 @@
 """Tests for the dynamic router tuner."""
 
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +15,9 @@ from src.utils.router_tuner import (
 )
 
 
-def _make_result(seq_per_second: float = 1.0, ttft: float = 100.0, latency: float = 200.0) -> SimulationResult:
+def _make_result(
+    seq_per_second: float = 1.0, ttft: float = 100.0, latency: float = 200.0
+) -> SimulationResult:
     """Return a minimal SimulationResult for scoring."""
     return SimulationResult(
         scenario_name="test",
@@ -166,7 +167,7 @@ def test_tune_router_refines_around_best():
 
     # The best refinement point has device_credit = 1.0 * sqrt(2) ~ 1.414,
     # which yields a higher seq_per_second in the fake runner.
-    assert chosen.device_credit == pytest.approx(1.0 * (2 ** 0.5))
+    assert chosen.device_credit == pytest.approx(1.0 * (2**0.5))
     # Refinement candidates run at the highest successful budget (8).
     assert 8 in calls
 
@@ -197,19 +198,22 @@ def test_tune_router_falls_back_when_all_fail():
 
 
 def test_evaluate_candidates_empty():
-    assert _evaluate_candidates(
-        [],
-        {"users": 1},
-        {},
-        0.1,
-        0.1,
-        S3Spec.from_gbps(False, 0.0, 0.0),
-        RouterCostConfig(),
-        1,
-        10.0,
-        1,
-        lambda **_kw: _make_result(),
-    ) == []
+    assert (
+        _evaluate_candidates(
+            [],
+            {"users": 1},
+            {},
+            0.1,
+            0.1,
+            S3Spec.from_gbps(False, 0.0, 0.0),
+            RouterCostConfig(),
+            1,
+            10.0,
+            1,
+            lambda **_kw: _make_result(),
+        )
+        == []
+    )
 
 
 def test_tune_router_uses_budgets_parameter():

@@ -723,7 +723,9 @@ def _build_results_page_hardware_economics(
         if cost_urls:
             body += '<div class="card plot-card"><h2>Cost vs Focus</h2><div class="plot-grid">\n'
             for url in cost_urls:
-                body += f'<div><img src="{url}" class="plot-img" alt="Cost Plot"></div>\n'
+                body += (
+                    f'<div><img src="{url}" class="plot-img" alt="Cost Plot"></div>\n'
+                )
             body += "</div></div>\n"
         if price_urls:
             body += '<div class="card plot-card"><h2>Price per User / Max Users vs Focus</h2><div class="plot-grid">\n'
@@ -735,12 +737,15 @@ def _build_results_page_hardware_economics(
 
     # Comparison table (always shown, hidden by default would need a toggle; keep simple).
     body += '<div class="card"><h2>Result Rows</h2><table><thead><tr>'
-    body += '<th></th><th>Label</th><th>TTFT SLA</th><th>User delay (min)</th><th>Max users</th><th>Price / user / h</th><th>Total $/h</th>'
+    body += "<th></th><th>Label</th><th>TTFT SLA</th><th>User delay (min)</th><th>Max users</th><th>Price / user / h</th><th>Total $/h</th>"
     body += "</tr></thead><tbody>"
     for row in results:
         if row.get("has_error"):
             continue
-        ttft = row.get("ttft_sla_ms", row.get("benchmark_ttft_ms", row.get("ttft", 0))) / 1000
+        ttft = (
+            row.get("ttft_sla_ms", row.get("benchmark_ttft_ms", row.get("ttft", 0)))
+            / 1000
+        )
         delay = _extract_user_delay_ms(row)
         delay_min = f"{delay / 1000 / 60:g}" if delay is not None else "—"
         users = row.get("users", "—")
@@ -865,9 +870,7 @@ def _build_ttft_cost_plots_by_delay(
 
     y_key = "price_per_user" if price_per_user else "total_cost_usd_per_hour"
     y_label = "Price per user ($/hour)" if price_per_user else "Total cost ($/hour)"
-    plot_title_prefix = (
-        "Price / User vs Focus" if price_per_user else "Cost vs Focus"
-    )
+    plot_title_prefix = "Price / User vs Focus" if price_per_user else "Cost vs Focus"
     x_key = "users" if price_per_user else "kv_download_time"
     x2_key = "users" if price_per_user else "kv_upload_time"
     x_label = "Max users" if price_per_user else "KV download / upload (ms)"
@@ -1502,7 +1505,11 @@ async def import_results(
                     f"Directory '{results_dir}' has results_*.json files, but none contain valid result rows."
                 )
             results.extend(rows)
-            benchmark_mode = plot_mode.strip().lower() if plot_mode.strip().lower() != "auto" else dir_benchmark
+            benchmark_mode = (
+                plot_mode.strip().lower()
+                if plot_mode.strip().lower() != "auto"
+                else dir_benchmark
+            )
         elif results_json:
             payload = json.loads(results_json)
             if isinstance(payload, list):
@@ -1513,7 +1520,11 @@ async def import_results(
                     raise ValueError("Payload 'results' must be a list")
             else:
                 raise ValueError("Payload must be a list or {'results': [...]}")
-            benchmark_mode = plot_mode.strip().lower() if plot_mode.strip().lower() != "auto" else _detect_benchmark(payload)
+            benchmark_mode = (
+                plot_mode.strip().lower()
+                if plot_mode.strip().lower() != "auto"
+                else _detect_benchmark(payload)
+            )
         else:
             raise ValueError("Provide either results_json or results_dir")
 
@@ -1542,9 +1553,11 @@ async def import_results(
                     results, cost_plots, price_plots
                 )
             )
-        elif benchmark_mode == "user_sweep":
+        if benchmark_mode == "user_sweep":
             if not from_directory:
-                raise ValueError("user_sweep mode requires a results directory (results_users_*.json).")
+                raise ValueError(
+                    "user_sweep mode requires a results directory (results_users_*.json)."
+                )
             plot_url, selected = _build_users_cost_plot(results)
             plot_urls = [plot_url]
             results = selected

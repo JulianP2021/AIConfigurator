@@ -21,11 +21,12 @@ same seed produce identical routing decisions.
 """
 
 import random
+
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from src.cache.cache import S3_NODE_ID, Cache
-from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec
+from src.hardware.hardware import Hardware, HardwareSpec
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.logger import LOG_ROUTER, log, should_log
@@ -157,10 +158,13 @@ class Router:
         batch = [(req, 0.0)]
         flops = calculate_flops(model, batch, "prefill")
         memory = calculate_memory(model, batch, "prefill")
-        return max(
-            float(flops) / spec.gpu_hardware.flops,
-            float(memory) / spec.gpu_hardware.gpu_bw,
-        ) * 1000.0
+        return (
+            max(
+                float(flops) / spec.gpu_hardware.flops,
+                float(memory) / spec.gpu_hardware.gpu_bw,
+            )
+            * 1000.0
+        )
 
     def _decode_token_compute_time_ms(
         self, req: Request, node_id: int, batch_size: int = 1
@@ -183,10 +187,13 @@ class Router:
         batch = [(dummy, 0.0)] * batch_size
         flops = calculate_flops(model, batch, "decode")
         memory = calculate_memory(model, batch, "decode")
-        return max(
-            float(flops) / spec.gpu_hardware.flops,
-            float(memory) / spec.gpu_hardware.gpu_bw,
-        ) * 1000.0
+        return (
+            max(
+                float(flops) / spec.gpu_hardware.flops,
+                float(memory) / spec.gpu_hardware.gpu_bw,
+            )
+            * 1000.0
+        )
 
     def _download_time_ms(self, req: Request, node_id: int) -> float:
         """Estimate KV download time to ``node_id`` using full bandwidth."""
@@ -433,10 +440,9 @@ class Router:
             # Prefill routing needs to consider both the prefill phase and the
             # subsequent decode phase: placing a request on a node that cannot
             # decode it cheaply creates a future cross-node transfer.
-            return (
-                self._prefill_completion_time_ms(req, node_id, active_prefill)
-                + self._decode_completion_time_ms(req, node_id, active_decode)
-            )
+            return self._prefill_completion_time_ms(
+                req, node_id, active_prefill
+            ) + self._decode_completion_time_ms(req, node_id, active_decode)
         return self._decode_completion_time_ms(req, node_id, active_decode)
 
     def _choose_prefill_instance(

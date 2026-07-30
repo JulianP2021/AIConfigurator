@@ -16,8 +16,9 @@ from __future__ import annotations
 import concurrent.futures
 import math
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from src.hardware.hardware import S3Spec
 from src.logger import LOG_CONFIG_EXECUTOR, log, should_log
@@ -97,7 +98,7 @@ def _refinement_grid(
     by small factors (±sqrt(2) in log space) so that we explore the neighborhood
     without leaving the valid positive region.
     """
-    factors = [2 ** -0.5, 1.0, 2 ** 0.5]
+    factors = [2**-0.5, 1.0, 2**0.5]
     candidates: list[TunableRouterParams] = []
     for aws_factor in factors:
         for dc_factor in factors:
@@ -150,7 +151,9 @@ def _evaluate_candidates(
         except Exception as exc:
             return (params, exc, users)
 
-    results: list[tuple[TunableRouterParams, SimulationResult | Exception | None, int]] = []
+    results: list[
+        tuple[TunableRouterParams, SimulationResult | Exception | None, int]
+    ] = []
 
     # Run sequentially when only one worker is requested. This also supports
     # injected runners (e.g. in tests) that cannot be pickled into a subprocess.
@@ -280,9 +283,9 @@ def tune_router_for_config(
 
     # Optional local refinement around the best coarse point.
     if refine and evaluated and highest_successful_budget > 0:
-        best_coarse = max(
-            evaluated, key=lambda item: _result_score(item[1], item[2])
-        )[0]
+        best_coarse = max(evaluated, key=lambda item: _result_score(item[1], item[2]))[
+            0
+        ]
         refined = _refinement_grid(best_coarse)
         if refined:
             refined_results = _evaluate_candidates(
@@ -309,7 +312,9 @@ def tune_router_for_config(
         if score > best_score:
             best_score = score
             best_params = params
-            best_successful_budget = budget if isinstance(result, SimulationResult) else 0
+            best_successful_budget = (
+                budget if isinstance(result, SimulationResult) else 0
+            )
 
     if should_log(LOG_CONFIG_EXECUTOR):
         log(
