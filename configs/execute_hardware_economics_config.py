@@ -380,6 +380,7 @@ def _run_spec_worker(
     tune_refine: bool = True,
     tune_budget_fractions: list[float] | None = None,
     estimate_timeout_s: float = 60.0,
+    seed_override: int | None = None,
 ) -> tuple[dict[str, Any], SimulationResult | Exception | None]:
     """Run one expanded spec, searching for the max user count.
 
@@ -388,14 +389,23 @@ def _run_spec_worker(
     feasible user count, then evaluates a grid of router configs at a few
     fractions of that estimate. The best router config is reused for the
     full max-users search.
+
+    When ``seed_override`` is provided, it replaces the random seed in the
+    common payload so each per-seed run is deterministic and independent.
     """
+    import copy
+
+    # Work on a private copy so per-seed overrides do not leak back.
+    run_spec = copy.deepcopy(run_spec)
+    common = run_spec.setdefault("common", {})
+    if seed_override is not None:
+        common["random_seed"] = seed_override
+
     # set_log_mask(63)
     effective_router_config = router_cost_config
     # Preserve any router config that arrived as part of the common payload.
-    if isinstance(
-        run_spec.get("common", {}).get("router_cost_config"), RouterCostConfig
-    ):
-        effective_router_config = run_spec["common"]["router_cost_config"]
+    if isinstance(common.get("router_cost_config"), RouterCostConfig):
+        effective_router_config = common["router_cost_config"]
 
     if tune_router:
         ram_usage_fraction = float(
@@ -473,7 +483,10 @@ def _run_spec_worker(
         effective_router_config,
         timeout_s,
     )
-    return {"max_users": max_users, "run_spec": run_spec}, result
+    meta = {"max_users": max_users, "run_spec": run_spec}
+    if seed_override is not None:
+        meta["seed"] = seed_override
+    return meta, result
 
 
 def _run_sweep(
@@ -489,6 +502,7 @@ def _run_sweep(
     tune_refine: bool = True,
     tune_budget_fractions: list[float] | None = None,
     estimate_timeout_s: float = 60.0,
+    num_seeds: int = 1,
 ) -> list[dict[str, Any]]:
     env = load_env()
     s3_spec = S3Spec.from_gbps(
@@ -526,9 +540,19 @@ def _run_sweep(
         router_cost_config=router_cost_config,
     )
 
-    print(f"Finding max users for {len(expanded_runs)} specs")
+    base_seed = int(config.get("random_seed", env.random_seed or 0))
+    seeds = [base_seed + i for i in range(max(1, num_seeds))]
+    print(
+        f"Finding max users for {len(expanded_runs)} specs x {len(seeds)} seed(s) = "
+        f"{len(expanded_runs) * len(seeds)} jobs"
+    )
 
     results: list[dict[str, Any]] = []
+    # Per (run_spec, ttft, delay, focus) we keep all seed outcomes so the output
+    # row can expose raw max_users values for variance / tail plotting.
+    per_spec_seed_results: dict[
+        tuple[str, float, float, str, str], list[dict[str, Any]]
+    ] = defaultdict(list)
     """RAM|NVLink|SSD|SSD BW|INET BW"""
     palette = {
         "RAM": "#58a6ff",
@@ -561,15 +585,16 @@ def _run_sweep(
                 tune_refine,
                 tune_budget_fractions,
                 estimate_timeout_s,
-            ): (i, run_spec)
-            for i, run_spec in enumerate(expanded_runs)
+                seed,
+            ): (run_spec, seed)
+            for run_spec in expanded_runs
+            for seed in seeds
         }
-
-        successful: dict[int, tuple[dict[str, Any], SimulationResult]] = {}
-        failed: dict[int, Exception] = {}
+        successful: dict[tuple[int, int], tuple[dict[str, Any], SimulationResult]] = {}
+        failed: dict[tuple[int, int], Exception] = {}
         pending = dict(futures)
 
-        end_time = time.monotonic() + timeout_s * len(expanded_runs)
+        end_time = time.monotonic() + timeout_s * len(expanded_runs) * len(seeds)
         while pending:
             wait_s = max(0.0, min(end_time - time.monotonic(), 1.0))
             done, _ = concurrent.futures.wait(
@@ -578,27 +603,29 @@ def _run_sweep(
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
             if not done and time.monotonic() >= end_time:
-                for future, (_, run_spec) in pending.items():
+                for future, (run_spec, seed) in pending.items():
                     future.cancel()
-                    failed[len(successful) + len(failed)] = RuntimeError(
+                    failed[(len(successful) + len(failed), seed)] = RuntimeError(
                         f"timed out after {timeout_s}s"
                     )
                     print(
-                        f"Config '{run_spec['cfg']['label']}' timed out after {timeout_s}s",
+                        f"Config '{run_spec['cfg']['label']}' seed={seed} timed out after {timeout_s}s",
                         file=sys.stderr,
                     )
                 break
             for future in done:
-                i, run_spec = pending.pop(future)
+                run_spec, seed = pending.pop(future)
                 try:
                     worker_meta, result = future.result()
                     max_users = int(worker_meta.get("max_users", 0))
                     if max_users <= 0 or not isinstance(result, SimulationResult):
-                        failed[i] = RuntimeError("failed during max-users search")
+                        failed[(id(run_spec), seed)] = RuntimeError(
+                            "failed during max-users search"
+                        )
                         if should_log(LOG_CONFIG_EXECUTOR):
                             log(
                                 LOG_CONFIG_EXECUTOR,
-                                f"Config '{run_spec['cfg']['label']}' failed max-users search: {result}",
+                                f"Config '{run_spec['cfg']['label']}' seed={seed} failed max-users search: {result}",
                             )
                         continue
                     row = result.to_dict()
@@ -608,6 +635,22 @@ def _run_sweep(
                     price_per_user = (
                         total_cost / max_users if max_users > 0 else float("inf")
                     )
+                    seed_row = {
+                        "seed": seed,
+                        "max_users": max_users,
+                        "price_per_user": round(price_per_user, 6),
+                        "tokens_per_second": row.get("tokens_per_second"),
+                        "max_ttft": row.get("max_ttft"),
+                        "max_tpot": row.get("max_tpot"),
+                    }
+                    per_spec_key = (
+                        str(run_spec["cfg"]["label"]),
+                        float(run_spec["ttft_ms"]),
+                        float(run_spec["user_delay_ms"]),
+                        str(focus),
+                        str(focus_value),
+                    )
+                    per_spec_seed_results[per_spec_key].append(seed_row)
                     add_result_metadata(
                         row,
                         str(run_spec["cfg"]["label"]),
@@ -624,16 +667,31 @@ def _run_sweep(
                             "focus_value": focus_value,
                             "max_users": max_users,
                             "price_per_user": round(price_per_user, 6),
+                            "seed": seed,
                         },
                     )
                     results.append(row)
                 except Exception as exc:
-                    failed[i] = exc
+                    failed[(id(run_spec), seed)] = exc
                     if should_log(LOG_CONFIG_EXECUTOR):
                         log(
                             LOG_CONFIG_EXECUTOR,
-                            f"Config '{run_spec['cfg']['label']}' failed: {exc}",
+                            f"Config '{run_spec['cfg']['label']}' seed={seed} failed: {exc}",
                         )
+
+    # Attach the per-seed raw outcome arrays to each aggregated row so plots can
+    # show variance, tails, etc.  When only one seed was requested the array has
+    # length 1 and behaves like the legacy output.
+    if num_seeds > 1:
+        for row in results:
+            key = (
+                str(row.get("label", "")),
+                float(row.get("ttft_sla_ms", 0.0)),
+                float(row.get("user_delay_ms", 0.0)),
+                str(row.get("focus", "")),
+                str(row.get("focus_value", "")),
+            )
+            row["seed_results"] = per_spec_seed_results.get(key, [])
 
     return results
 
@@ -645,6 +703,7 @@ def _write_results_dir(
     ttft_values: list[float],
     user_delay_values: list[float],
     user_delay_fraction: float,
+    num_seeds: int = 1,
 ) -> list[Path]:
     results_dir.mkdir(parents=True, exist_ok=True)
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -662,6 +721,7 @@ def _write_results_dir(
                 "ttft_values": ttft_values,
                 "user_delay_values": user_delay_values,
                 "user_delay_fraction": user_delay_fraction,
+                "num_seeds": num_seeds,
                 "focus": focus,
                 "focus_value": focus_value,
             },
@@ -756,6 +816,15 @@ def main() -> None:
         default=True,
         help="Disable local refinement around the best coarse router point",
     )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        default=1,
+        help="Number of distinct random seeds to run per (config, ttft, delay) combination. "
+        "The first seed is the config's random_seed; each additional seed is offset by +i "
+        "so runs remain deterministic. When >1, every per-seed max_users result is "
+        "written to the output JSON for variance/tail analysis (default: 1).",
+    )
     args = parser.parse_args()
     args.ttft_values = [f * 1000 for f in args.ttft_values]
     args.user_delay_values = [f * 1000 * 60 for f in args.user_delay_values]
@@ -785,6 +854,7 @@ def main() -> None:
         tune_refine=args.tune_refine,
         tune_budget_fractions=args.tune_budget_fractions,
         estimate_timeout_s=args.estimate_timeout,
+        num_seeds=args.seeds,
     )
 
     payload = {
@@ -805,6 +875,7 @@ def main() -> None:
         args.ttft_values,
         args.user_delay_values,
         args.user_delay_fraction,
+        num_seeds=args.seeds,
     )
     summary = {
         "benchmark": payload["benchmark"],

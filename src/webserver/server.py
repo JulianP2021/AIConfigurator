@@ -11,6 +11,7 @@ import re
 import sys
 import uuid
 
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, redirect_stdout, suppress
 from pathlib import Path
@@ -619,8 +620,7 @@ def _results_inner_html(
 
 def _build_results_page_hardware_economics(
     results: list[dict[str, float | int | str]],
-    cost_plots: dict[str, list[str]],
-    price_plots: dict[str, list[str]],
+    economics_plots: dict[str, list[str]],
 ) -> str:
     """Build a results page for hardware-economics imports with a TTFT selector."""
     # Shared head style from _build_results_page.
@@ -708,7 +708,7 @@ def _build_results_page_hardware_economics(
         <p class="subtitle">Hardware Economics Results</p>
 """
 
-    ttft_keys = sorted(set(cost_plots.keys()) | set(price_plots.keys()))
+    ttft_keys = sorted(economics_plots.keys())
     selector = '<div class="card"><h2>Select TTFT</h2><select id="ttftSelector" onchange="showTTFT(this.value)">'
     for key in ttft_keys:
         selector += f'<option value="{key}">{key}</option>'
@@ -718,26 +718,18 @@ def _build_results_page_hardware_economics(
     body += '<div id="plotContainer">\n'
     for key in ttft_keys:
         body += f'<div class="plot-group" id="group-{key}" data-ttft="{key}">\n'
-        cost_urls = cost_plots.get(key, [])
-        price_urls = price_plots.get(key, [])
-        if cost_urls:
-            body += '<div class="card plot-card"><h2>Cost vs Focus</h2><div class="plot-grid">\n'
-            for url in cost_urls:
-                body += (
-                    f'<div><img src="{url}" class="plot-img" alt="Cost Plot"></div>\n'
-                )
-            body += "</div></div>\n"
-        if price_urls:
-            body += '<div class="card plot-card"><h2>Price per User / Max Users vs Focus</h2><div class="plot-grid">\n'
-            for url in price_urls:
-                body += f'<div><img src="{url}" class="plot-img" alt="Price per User Plot"></div>\n'
+        plot_urls = economics_plots.get(key, [])
+        if plot_urls:
+            body += '<div class="card plot-card"><h2>Max Users and Price per User vs Focus</h2><div class="plot-grid">\n'
+            for url in plot_urls:
+                body += f'<div><img src="{url}" class="plot-img" alt="Economics Plot"></div>\n'
             body += "</div></div>\n"
         body += "</div>\n"
     body += "</div>\n"
 
     # Comparison table (always shown, hidden by default would need a toggle; keep simple).
     body += '<div class="card"><h2>Result Rows</h2><table><thead><tr>'
-    body += "<th></th><th>Label</th><th>TTFT SLA</th><th>User delay (min)</th><th>Max users</th><th>Price / user / h</th><th>Total $/h</th>"
+    body += "<th></th><th>Label</th><th>Focus</th><th>TTFT SLA</th><th>User delay (min)</th><th>Max users</th><th>Price / user / h</th><th>Total $/h</th>"
     body += "</tr></thead><tbody>"
     for row in results:
         if row.get("has_error"):
@@ -748,13 +740,24 @@ def _build_results_page_hardware_economics(
         )
         delay = _extract_user_delay_ms(row)
         delay_min = f"{delay / 1000 / 60:g}" if delay is not None else "—"
+        focus = row.get("focus_value", row.get("focus", "—"))
         users = row.get("users", "—")
         price = row.get("price_per_user", float("inf"))
         total = row.get("total_cost_usd_per_hour", 0.0)
         color = row.get("color", "#58a6ff")
+        seed_info = ""
+        seed_results = row.get("seed_results")
+        if isinstance(seed_results, list) and len(seed_results) > 1:
+            users_list = [int(r.get("max_users", 0)) for r in seed_results]
+            prices_list = [float(r.get("price_per_user", 0)) for r in seed_results]
+            seed_info = (
+                f"<br><span style='font-size:0.75rem;color:var(--text-secondary);'>"
+                f"seeds: users {users_list}, prices {[f'${p:.2f}' for p in prices_list]}"
+                f"</span>"
+            )
         body += (
             f'<tr><td><span class="legend-color" style="background:{color}"></span></td>'
-            f"<td>{row['label']}</td><td>{ttft:g}s</td><td>{delay_min}</td>"
+            f"<td>{row['label']}{seed_info}</td><td>{focus}</td><td>{ttft:g}s</td><td>{delay_min}</td>"
             f"<td>{users}</td><td>${price:.4f}</td><td>${total:.2f}</td></tr>"
         )
     body += "</tbody></table></div>\n"
@@ -848,114 +851,284 @@ def _extract_ttft_ms(row: dict[str, Any]) -> float | None:
     return None
 
 
-def _build_ttft_cost_plots_by_delay(
-    results: list[dict[str, float | int | str]],
-    price_per_user: bool = False,
-) -> dict[str, list[str]]:
-    """Generate one plot per TTFT value, grouped by user delay.
+def _aggregate_seed_results(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return mean/min/max/std of seed_results if multiple seeds are present."""
+    seed_results = row.get("seed_results")
+    if not isinstance(seed_results, list) or len(seed_results) < 2:
+        return None
+    users = [
+        int(r.get("max_users", 0))
+        for r in seed_results
+        if int(r.get("max_users", 0)) > 0
+    ]
+    prices = [
+        float(r.get("price_per_user", 0))
+        for r in seed_results
+        if r.get("price_per_user") is not None
+    ]
+    if not users:
+        return None
+    return {
+        "users_mean": sum(users) / len(users),
+        "users_min": min(users),
+        "users_max": max(users),
+        "users_std": math.sqrt(
+            sum((u - sum(users) / len(users)) ** 2 for u in users) / len(users)
+        ),
+        "price_mean": sum(prices) / len(prices) if prices else 0.0,
+        "price_min": min(prices) if prices else 0.0,
+        "price_max": max(prices) if prices else 0.0,
+        "n": len(users),
+    }
 
+
+def _build_ttft_economics_plots_by_delay(
+    results: list[dict[str, float | int | str]],
+) -> dict[str, list[str]]:
+    """Generate dual-y-axis plots per (TTFT, user_delay, focus) bucket.
+
+    For every focus value on the x-axis the plot shows:
+      * a bar for the mean max_users across seeds, with vertical error bars
+        spanning [min, max] when multiple seeds are present;
+      * a diamond point on the right y-axis for the mean price_per_user;
+      * a line connecting the price points to highlight the cost trend;
+      * numeric labels for both the mean max users and the mean price.
+
+    Each focus category (e.g., NVLink, SSD, RAM) gets its own plot so the
+    x-axis stays readable and comparisons within a category are meaningful.
     Returns a mapping from TTFT key (e.g. "TTFT=10s") to a list of plot URLs,
-    one URL per user-delay bucket.
+    one URL per (user-delay, focus) combination.
     """
     valid_rows = [row for row in results if not row.get("has_error")]
 
-    by_ttft: dict[str, dict[float, list[dict[str, Any]]]] = {}
+    # Group by (ttft_key, delay_ms, focus, focus_value).  When multiple seeds
+    # were requested, the runner emits one row per seed, but every row carries
+    # the full ``seed_results`` aggregate.  We therefore deduplicate on
+    # focus_value and keep only the first representative row per value.
+    seen: dict[tuple[str, float, str, str], dict[str, Any]] = {}
     for row in valid_rows:
         ttft_ms = _extract_ttft_ms(row)
         delay_ms = _extract_user_delay_ms(row)
+        focus = str(row.get("focus") or "default")
+        focus_value = str(row.get("focus_value") or "")
         if ttft_ms is None or delay_ms is None:
             continue
         ttft_key = f"TTFT={ttft_ms / 1000:g}s"
-        by_ttft.setdefault(ttft_key, {}).setdefault(round(delay_ms, 6), []).append(row)
+        key = (ttft_key, round(delay_ms, 6), focus, focus_value)
+        if key not in seen:
+            seen[key] = row
 
-    y_key = "price_per_user" if price_per_user else "total_cost_usd_per_hour"
-    y_label = "Price per user ($/hour)" if price_per_user else "Total cost ($/hour)"
-    plot_title_prefix = "Price / User vs Focus" if price_per_user else "Cost vs Focus"
-    x_key = "users" if price_per_user else "kv_download_time"
-    x2_key = "users" if price_per_user else "kv_upload_time"
-    x_label = "Max users" if price_per_user else "KV download / upload (ms)"
-    tag_prefix = ("", "") if price_per_user else ("D", "U")
+    buckets: dict[tuple[str, float, str], list[dict[str, Any]]] = defaultdict(list)
+    for (ttft_key, delay_ms, focus, _focus_value), row in seen.items():
+        buckets[(ttft_key, delay_ms, focus)].append(row)
 
-    plots_by_ttft: dict[str, list[str]] = {}
-    for ttft_key, by_delay in by_ttft.items():
-        plot_urls: list[str] = []
-        for delay_ms in sorted(by_delay):
-            rows = sorted(
-                by_delay[delay_ms],
-                key=lambda r: (
-                    r.get("ttft", float("inf")),
-                    r.get(y_key, float("inf")),
-                ),
+    def _sort_key(row: dict[str, Any]) -> tuple[float, str, str]:
+        focus_value = str(row.get("focus_value") or "")
+        try:
+            numeric = float(focus_value)
+        except ValueError:
+            numeric = float("inf")
+        label = str(row.get("label", ""))
+        return (numeric, focus_value, label)
+
+    plots_by_ttft: dict[str, list[str]] = defaultdict(list)
+    for (ttft_key, delay_ms, focus), rows in sorted(buckets.items()):
+        rows = sorted(rows, key=_sort_key)
+
+        focus_labels: list[str] = []
+        users_means: list[float] = []
+        users_mins: list[float] = []
+        users_maxs: list[float] = []
+        price_means: list[float] = []
+        price_mins: list[float] = []
+        price_maxs: list[float] = []
+        seed_users: list[list[int]] = []
+        has_multi_seed = False
+
+        for row in rows:
+            stats = _aggregate_seed_results(row)
+            multi_seed = stats is not None
+            if multi_seed:
+                has_multi_seed = True
+                assert stats is not None
+                users_means.append(stats["users_mean"])
+                users_mins.append(stats["users_min"])
+                users_maxs.append(stats["users_max"])
+                price_means.append(stats["price_mean"])
+                price_mins.append(stats["price_min"])
+                price_maxs.append(stats["price_max"])
+                seed_users.append([int(r["max_users"]) for r in row["seed_results"]])
+            else:
+                users_means.append(float(row.get("users", 0)))
+                users_mins.append(float(row.get("users", 0)))
+                users_maxs.append(float(row.get("users", 0)))
+                price_means.append(float(row.get("price_per_user", 0)))
+                price_mins.append(float(row.get("price_per_user", 0)))
+                price_maxs.append(float(row.get("price_per_user", 0)))
+                seed_users.append([int(row.get("users", 0))])
+
+            focus_value = str(row.get("focus_value") or "")
+            focus_labels.append(focus_value if focus_value else focus)
+
+        x = list(range(len(rows)))
+
+        fig, ax_users = plt.subplots(figsize=(8, 5))
+        ax_price = ax_users.twinx()
+
+        users_color = "#58a6ff"
+        price_color = "#f0883e"
+        seed_color = "#1f2328"
+
+        # Mean max users as errorbar points with [min, max] caps.
+        users_lower = [
+            max(0, mean - min_val)
+            for mean, min_val in zip(users_means, users_mins, strict=False)
+        ]
+        users_upper = [
+            max_val - mean
+            for mean, max_val in zip(users_means, users_maxs, strict=False)
+        ]
+        ax_users.errorbar(
+            x,
+            users_means,
+            yerr=[users_lower, users_upper],
+            fmt="o",
+            color=users_color,
+            ecolor=users_color,
+            elinewidth=2,
+            capsize=5,
+            capthick=1.5,
+            markersize=10,
+            markeredgecolor="white",
+            markeredgewidth=0.5,
+            label="Max users (mean)",
+            zorder=4,
+        )
+
+        # Individual seed dots for users.
+        if has_multi_seed:
+            for i, dot_users in enumerate(seed_users):
+                for seed_idx, du in enumerate(dot_users):
+                    offset = (seed_idx - len(dot_users) / 2) * 0.05
+                    ax_users.scatter(
+                        i + offset,
+                        du,
+                        s=25,
+                        color=seed_color,
+                        edgecolors="none",
+                        alpha=0.6,
+                        zorder=3,
+                    )
+
+        # Mean price per user as a simple diamond point (no error bars).
+        ax_price.plot(
+            x,
+            price_means,
+            color=price_color,
+            linestyle="--",
+            linewidth=1.2,
+            alpha=0.6,
+            zorder=2,
+        )
+        ax_price.scatter(
+            x,
+            price_means,
+            s=120,
+            color=price_color,
+            marker="D",
+            edgecolors="white",
+            linewidths=0.5,
+            label="Price / user / h (mean)",
+            zorder=5,
+        )
+
+        # Numeric labels for mean values.
+        for i, (u_mean, p_mean) in enumerate(
+            zip(users_means, price_means, strict=False)
+        ):
+            ax_users.annotate(
+                f"{u_mean:.1f}",
+                (i, u_mean),
+                textcoords="offset points",
+                xytext=(0, 10),
+                ha="center",
+                fontsize=8,
+                color=users_color,
+                fontweight="bold",
+                zorder=6,
             )
-            fig, ax = plt.subplots(figsize=(8, 6))
-            for row in rows:
-                y_value = row.get(y_key)
-                if y_value is None or not isinstance(y_value, (int, float)):
-                    continue
-                x_value = row.get(x_key)
-                x2_value = row.get(x2_key)
-                if x_value is None or not isinstance(x_value, (int, float)):
-                    continue
-                if x2_value is None or not isinstance(x2_value, (int, float)):
-                    x2_value = x_value
-                focus_value = str(row.get("focus_value") or "")
-                focus = str(row.get("focus") or "")
-                label = focus_value if focus_value else focus
-
-                ax.scatter(
-                    x_value,
-                    y_value,
-                    s=120,
-                    color=row["color"],
-                    edgecolors="white",
-                    linewidths=0.5,
-                    zorder=3,
-                )
-                focus_label = f"{focus_value}" if focus_value else label
-                ax.annotate(
-                    f"{tag_prefix[0]} {focus_label}",
-                    (x_value, y_value),
-                    textcoords="offset points",
-                    xytext=(8, 4),
-                    fontsize=9,
-                    color=row["color"],
-                )
-
-                ax.scatter(
-                    x2_value,
-                    y_value,
-                    s=120,
-                    color=row["color"],
-                    edgecolors="white",
-                    linewidths=0.5,
-                    zorder=3,
-                )
-                ax.annotate(
-                    f"{tag_prefix[1]} {focus_label}",
-                    (x2_value, y_value),
-                    textcoords="offset points",
-                    xytext=(8, 4),
-                    fontsize=9,
-                    color=row["color"],
-                )
-
-            ax.set_xlabel(x_label)
-            ax.set_ylabel(y_label)
-            ax.set_title(
-                f"{plot_title_prefix} ({ttft_key}, delay {delay_ms / 1000 / 60:g} min)"
+            ax_price.annotate(
+                f"${p_mean:.2f}",
+                (i, p_mean),
+                textcoords="offset points",
+                xytext=(0, 10),
+                ha="center",
+                fontsize=8,
+                color=price_color,
+                zorder=6,
             )
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=150)
-            plt.close(fig)
-            buf.seek(0)
-            pid = str(uuid.uuid4())
-            _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-            plot_urls.append(f"/plot/{pid}")
-        plots_by_ttft[ttft_key] = plot_urls
 
-    return plots_by_ttft
+        ax_users.set_xlabel("Focus value")
+        ax_users.set_ylabel("Max users (mean)", color=users_color)
+        ax_price.set_ylabel("Price per user ($ / h)", color=price_color)
+        ax_users.set_xticks(x)
+        ax_users.set_xticklabels(focus_labels, rotation=45, ha="right")
+        ax_users.tick_params(axis="y", labelcolor=users_color)
+        ax_price.tick_params(axis="y", labelcolor=price_color)
+
+        title = f"{focus} — Max Users and Price / User ({ttft_key}, delay {delay_ms / 1000 / 60:g} min)"
+        if has_multi_seed:
+            title += " (mean ± range over seeds)"
+        ax_users.set_title(title)
+        ax_users.grid(True, alpha=0.3, axis="y")
+
+        # Combined legend.
+        legend_handles = [
+            plt.Line2D(
+                [],
+                [],
+                color=users_color,
+                marker="o",
+                linestyle="None",
+                markersize=8,
+                markeredgecolor="white",
+                label="Max users (mean)",
+            ),
+            plt.Line2D(
+                [],
+                [],
+                color=price_color,
+                marker="D",
+                linestyle="--",
+                markersize=8,
+                markeredgecolor="white",
+                label="Price / user / h (mean)",
+            ),
+        ]
+        if has_multi_seed:
+            legend_handles.append(
+                plt.Line2D(
+                    [],
+                    [],
+                    color=seed_color,
+                    marker="o",
+                    linestyle="None",
+                    markersize=5,
+                    label="Individual seed results",
+                )
+            )
+        ax_users.legend(handles=legend_handles, loc="upper left")
+
+        plt.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150)
+        plt.close(fig)
+        buf.seek(0)
+        pid = str(uuid.uuid4())
+        _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+        plots_by_ttft[ttft_key].append(f"/plot/{pid}")
+
+    return dict(plots_by_ttft)
 
 
 def _load_results_from_dir(results_dir: Path) -> tuple[list[dict[str, Any]], str]:
@@ -1540,18 +1713,15 @@ async def import_results(
             benchmark_mode = "hardware_economics"
 
         if benchmark_mode == "hardware_economics":
-            cost_plots = _build_ttft_cost_plots_by_delay(results, price_per_user=False)
-            price_plots = _build_ttft_cost_plots_by_delay(results, price_per_user=True)
-            if not cost_plots and not price_plots:
+            economics_plots = _build_ttft_economics_plots_by_delay(results)
+            if not economics_plots:
                 raise ValueError(
                     "Imported hardware-economics results do not contain ttft_sla_ms and user_delay_ms metadata."
                 )
-            plot_title = "Hardware Economics (cost and price per user by TTFT)"
+            plot_title = "Hardware Economics (max users and price per user by focus)"
             show_users_section = True
             return HTMLResponse(
-                content=_build_results_page_hardware_economics(
-                    results, cost_plots, price_plots
-                )
+                content=_build_results_page_hardware_economics(results, economics_plots)
             )
         if benchmark_mode == "user_sweep":
             if not from_directory:

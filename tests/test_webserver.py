@@ -118,11 +118,12 @@ class TestTTFTDelayPlots:
             },
         ]
 
-        plots_by_ttft = webserver_module._build_ttft_cost_plots_by_delay(rows)
+        plots_by_ttft = webserver_module._build_ttft_economics_plots_by_delay(rows)
 
         # With TTFT grouping the outer dict has one key per TTFT value.
         assert set(plots_by_ttft.keys()) == {"TTFT=0.025s", "TTFT=0.05s"}
         all_urls = [url for urls in plots_by_ttft.values() for url in urls]
+        # Two TTFTs, one plot per (ttft, delay, focus) bucket => 3 total.
         assert len(all_urls) == 3
         assert all(url.startswith("/plot/") for url in all_urls)
 
