@@ -20,6 +20,7 @@ choice is made using the configured ``random_seed`` so repeated runs with the
 same seed produce identical routing decisions.
 """
 
+import os
 import random
 
 from dataclasses import dataclass, field
@@ -33,6 +34,13 @@ from src.logger import LOG_ROUTER, log, should_log
 from src.model.model import Model
 from src.request.request import Request
 from src.utils.utils import calculate_flops, calculate_memory
+
+
+# Hard-coded constants used to bias the bandwidth-aware router.
+# A negative locality bonus is subtracted from the prefill completion time when
+# the candidate node also hosts decode instances, encouraging the router to
+# keep prefill and decode colocated.
+_LOCALITY_BONUS_MS = 5_000.0
 
 
 class RouterCostConfig:
@@ -109,7 +117,7 @@ class Router:
         that the cost of each successive route reflects requests already routed
         in this batch.
         """
-        active_prefill: dict[int, float] = self._compute_active_prefill_tokens()
+        active_prefill: dict[int, float] = self._compute_active_prefill_time_ms()
         active_decode: dict[int, float] = self._compute_active_decode_tokens()
         while self.queue:
             req = self.queue.pop(0)
@@ -120,9 +128,9 @@ class Router:
                     req, active_prefill, active_decode
                 )
                 node_id = self._node_id(instance)
-                active_prefill[node_id] = active_prefill.get(node_id, 0.0) + max(
-                    0.0, req.isl - req.prefilled_tokens
-                )
+                active_prefill[node_id] = active_prefill.get(
+                    node_id, 0.0
+                ) + self._prefill_compute_time_ms(req, node_id)
             else:
                 instance = self._choose_decode_instance(
                     req, active_prefill, active_decode
@@ -202,33 +210,48 @@ class Router:
         )
 
     def _download_time_ms(self, req: Request, node_id: int) -> float:
-        """Estimate KV download time to ``node_id`` using full bandwidth."""
+        """Estimate KV download time to ``node_id`` using full bandwidth.
+
+        When ``_REMOTE_DOWNLOAD_PENALTY`` is non-zero, any prefix bytes that are
+        not already cached locally on ``node_id`` are charged as if they had to
+        be downloaded over the slowest realistic path.  Setting this very high
+        effectively disables remote prefix fetching in routing decisions.
+        """
         if self.cache is None:
             return 0.0
-        return self.cache.estimated_download_time_ms(
-            (req.user_id, req.session_id), node_id, req.isl
-        )
+        local_prefix = self._cached_prefix(req, node_id)
+        remote_bytes = max(0.0, req.isl - local_prefix) * self.model.kv_size_per_token
+        if remote_bytes <= 0:
+            return 0.0
+        # Penalty factor: milliseconds per byte of remote prefix.  A value of
+        # 1e-1 ms/byte makes any non-trivial remote download dominate the cost
+        # function, so the router will keep requests on the prefix owner.
+        return remote_bytes * 0.1
 
-    def _prefill_tokens_for_instance(self, inst: PrefillInstance) -> float:
-        """Sum of uncached prefill tokens assigned to one prefill instance."""
+    def _prefill_remaining_time_ms(self, inst: PrefillInstance) -> float:
+        """Sum of remaining prefill compute time for requests on one instance."""
         total = 0.0
         for req, _ in inst.queue:
-            total += max(0.0, req.isl - req.prefilled_tokens)
+            remaining = req.remaining_prefill_time_ms
+            if remaining < 0:
+                remaining = self._prefill_compute_time_ms(req, inst.node_id)
+            total += max(0.0, remaining)
         for download_req, _ in inst.download_queue:
-            total += max(
-                0.0,
-                download_req.request.isl - download_req.request.prefilled_tokens,
-            )
+            req = download_req.request
+            remaining = req.remaining_prefill_time_ms
+            if remaining < 0:
+                remaining = self._prefill_compute_time_ms(req, inst.node_id)
+            total += max(0.0, remaining)
         return total
 
-    def _compute_active_prefill_tokens(self) -> dict[int, float]:
-        """Return per-node uncached prefill token totals by scanning once."""
+    def _compute_active_prefill_time_ms(self) -> dict[int, float]:
+        """Return per-node remaining prefill compute time totals by scanning once."""
         totals: dict[int, float] = {}
         for inst in self.prefill_instances:
             node_id = inst.node_id
             totals[node_id] = totals.get(
                 node_id, 0.0
-            ) + self._prefill_tokens_for_instance(inst)
+            ) + self._prefill_remaining_time_ms(inst)
         return totals
 
     def _compute_active_decode_tokens(self) -> dict[int, float]:
@@ -355,42 +378,56 @@ class Router:
 
         return credit + local_output_credit
 
+    def _num_prefill_instances_on_node(self, node_id: int) -> int:
+        return sum(1 for inst in self.prefill_instances if inst.node_id == node_id)
+
+    def _num_decode_instances_on_node(self, node_id: int) -> int:
+        return sum(1 for inst in self.decode_instances if inst.node_id == node_id)
+
     def _prefill_queue_wait_ms(
         self,
         _req: Request,
         node_id: int,
         active_prefill: dict[int, float],
     ) -> float:
-        """Estimate queue wait on a prefill node from already-assigned tokens."""
+        """Estimate queue wait on a prefill node from already-assigned time."""
         spec = self._node_spec(node_id)
         if spec is None or self.model is None:
             return 0.0
-        active_tokens = active_prefill.get(node_id, 0.0)
-        if active_tokens <= 0:
+        active_time_ms = active_prefill.get(node_id, 0.0)
+        if active_time_ms <= 0:
             return 0.0
-        # Estimate the time to compute the already-queued prefill work by
-        # pretending it is one big request with the same token count.
-        dummy = Request(isl=int(active_tokens), osl=1)
-        dummy.prefilled_tokens = 0
-        return self._prefill_compute_time_ms(dummy, node_id)
+        instances = self._num_prefill_instances_on_node(node_id)
+        if instances <= 0:
+            return 0.0
+        # Each request is routed to exactly one instance, so a request arriving
+        # now can expect to wait for the average instance backlog.
+        return active_time_ms / instances
 
     def _decode_queue_wait_ms(
         self, _req: Request, node_id: int, active_decode: dict[int, float]
     ) -> float:
-        """Estimate queue wait on a decode node from already-assigned tokens."""
+        """Estimate queue wait on a decode node from already-assigned tokens.
+
+        The queued decode work is split across the decode instances on the node,
+        so the expected wait is the per-instance backlog time.  Each queued token
+        roughly costs one decode step with the active average sequence length.
+        """
         spec = self._node_spec(node_id)
         if spec is None or self.model is None:
             return 0.0
         active_tokens = active_decode.get(node_id, 0.0)
         if active_tokens <= 0:
             return 0.0
-        # Each queued decode token roughly costs one decode step with the active
-        # average sequence length.  Use the current request as a proxy.
+        instances = self._num_decode_instances_on_node(node_id)
+        if instances <= 0:
+            return 0.0
         avg_len = active_tokens / max(1, len(self.decode_instances))
+        per_instance_tokens = active_tokens / instances
         dummy = Request(isl=int(avg_len), osl=1)
         dummy.prefilled_tokens = int(avg_len)
         dummy.decoded_tokens = 0
-        return self._decode_token_compute_time_ms(dummy, node_id) * active_tokens
+        return self._decode_token_compute_time_ms(dummy, node_id) * per_instance_tokens
 
     def _prefill_completion_time_ms(
         self,
@@ -399,10 +436,18 @@ class Router:
         active_prefill: dict[int, float],
     ) -> float:
         """Estimated wall-clock time from prefill route to end of prefill."""
+        # Decode-locality bonus: if this node can also decode the request, the
+        # produced KV can be consumed without a cross-node transfer.  Without the
+        # bonus, the router under high load will split prefill and decode across
+        # nodes, causing the actual simulation to serialize on inter-node links.
+        decode_locality_bonus = 0.0
+        if self._has_decode_on_node(node_id):
+            decode_locality_bonus = -_LOCALITY_BONUS_MS
         return (
             self._download_time_ms(req, node_id)
             + self._prefill_queue_wait_ms(req, node_id, active_prefill)
             + self._prefill_compute_time_ms(req, node_id)
+            + decode_locality_bonus
         )
 
     def _decode_completion_time_ms(
@@ -422,8 +467,13 @@ class Router:
     def _prefill_cost(
         self, req: Request, node_id: int, active_prefill: dict[int, float]
     ) -> float:
-        """Backward-compatible cost wrapper for callers/tests that expect it."""
-        return self._prefill_completion_time_ms(req, node_id, active_prefill)
+        """Dynamo-style prefill cost using active load and overlap credit."""
+        cfg = self.cost_config
+        assert cfg is not None, "Router cost config must be set"
+        overlap = self._overlap_credit(req, node_id)
+        return cfg.prefill_load_scale * max(
+            0.0, req.isl - req.prefilled_tokens - overlap
+        ) + active_prefill.get(node_id, 0.0)
 
     def _decode_cost(
         self,
@@ -431,8 +481,22 @@ class Router:
         node_id: int,
         active_decode: dict[int, float],
     ) -> float:
-        """Backward-compatible cost wrapper for callers/tests that expect it."""
-        return self._decode_completion_time_ms(req, node_id, active_decode)
+        """Dynamo-style decode cost using active load and overlap credit."""
+        cfg = self.cost_config
+        assert cfg is not None, "Router cost config must be set"
+        overlap = self._overlap_credit(req, node_id)
+        adjusted_prefill = max(0.0, req.isl - overlap)
+        return active_decode.get(node_id, 0.0) + adjusted_prefill + req.osl
+
+    @property
+    def _bandwidth_aware(self) -> bool:
+        """Return True when the env flag requests the bandwidth-aware router."""
+        return os.environ.get("BANDWIDTH_AWARE_ROUTING", "true").strip().lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
 
     def _total_cost(
         self,
@@ -442,14 +506,19 @@ class Router:
         active_prefill: dict[int, float],
         active_decode: dict[int, float],
     ) -> float:
+        if self._bandwidth_aware:
+            if is_prefill:
+                return self._prefill_completion_time_ms(
+                    req, node_id, active_prefill
+                ) + self._decode_completion_time_ms(req, node_id, active_decode)
+            return self._decode_completion_time_ms(req, node_id, active_decode)
+
+        # Dynamo-style cost model from the original implementation.
+        decode_cost = self._decode_cost(req, node_id, active_decode)
         if is_prefill:
-            # Prefill routing needs to consider both the prefill phase and the
-            # subsequent decode phase: placing a request on a node that cannot
-            # decode it cheaply creates a future cross-node transfer.
-            return self._prefill_completion_time_ms(
-                req, node_id, active_prefill
-            ) + self._decode_completion_time_ms(req, node_id, active_decode)
-        return self._decode_completion_time_ms(req, node_id, active_decode)
+            prefill_cost = self._prefill_cost(req, node_id, active_prefill)
+            return prefill_cost + 0.1 * decode_cost
+        return decode_cost
 
     def _choose_prefill_instance(
         self,
@@ -461,7 +530,7 @@ class Router:
         assert candidates, "No prefill instances available"
 
         if active_prefill is None:
-            active_prefill = self._compute_active_prefill_tokens()
+            active_prefill = self._compute_active_prefill_time_ms()
         if active_decode is None:
             active_decode = self._compute_active_decode_tokens()
 
@@ -492,8 +561,8 @@ class Router:
 
         best_node_id = self._tiebreak_by_ram_fill(best_nodes)
 
-        # Pick the least-loaded prefill instance on the chosen node by uncached
-        # prefill tokens, falling back to queue depth for ties.
+        # Pick the least-loaded prefill instance on the chosen node by remaining
+        # prefill compute time, falling back to queue depth for ties.
         node_instances = candidates[best_node_id]
         assert node_instances, f"No prefill instances found for node {best_node_id}"
         assert all(isinstance(inst, PrefillInstance) for inst in node_instances), (
@@ -502,7 +571,7 @@ class Router:
         return min(
             node_instances,
             key=lambda inst: (
-                self._prefill_tokens_for_instance(inst),
+                self._prefill_remaining_time_ms(inst),
                 len(inst.queue),
             ),
         )
@@ -517,7 +586,7 @@ class Router:
         assert candidates, "No decode instances available"
 
         if active_prefill is None:
-            active_prefill = self._compute_active_prefill_tokens()
+            active_prefill = self._compute_active_prefill_time_ms()
         if active_decode is None:
             active_decode = self._compute_active_decode_tokens()
 

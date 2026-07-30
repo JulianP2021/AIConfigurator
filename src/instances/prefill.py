@@ -92,6 +92,11 @@ class PrefillInstance:
                 request.initial_prefilled_tokens = request.prefilled_tokens
             if not self.queue:
                 request.prefill_start_ms = now
+            # Eagerly compute the remaining prefill time so the router can sum
+            # accurate remaining times for queued requests rather than merging
+            # them into one approximate mega-request.
+            if request.remaining_prefill_time_ms == -1:
+                request.remaining_prefill_time_ms = self.calculate_prefill_time(request)
             self.queue.append((request, -1))
 
     def time_to_next_completion(self) -> float:

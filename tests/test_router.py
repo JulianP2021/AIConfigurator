@@ -83,6 +83,7 @@ def _make_test_model() -> Model:
         "num_hidden_layers": 32,
         "vocab_size": 32000,
         "dtype": "bfloat16",
+        "head_size": 128,
     }
     model.dtype_size = 2.0
     model.cost_constants = {
