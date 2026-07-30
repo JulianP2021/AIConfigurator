@@ -97,6 +97,7 @@ from src.simulations.simulation_distributed import (
 )
 from src.utils.env_reader import load_env
 from src.utils.output_filter import compact_json
+from src.utils.router_tuner import TunableRouterParams, tune_router_for_config
 from src.utils.utils import add_result_metadata, parse_int_list
 
 
@@ -171,6 +172,7 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     mixed_gpu_donor = cfg.get("mixed_gpu_donor")
     mixed_gpu_count = cfg.get("mixed_gpu_count")
     mixed_gpu_count = int(mixed_gpu_count) if mixed_gpu_count is not None else None
+    gpu_compute_fraction = float(cfg.get("gpu_compute_fraction", 0.6))
 
     is_mixed = cfg.get("mixed", "").lower() in ["true", "1", "t", "y", "yes"]
 
@@ -196,6 +198,7 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
                 prefill_gpus,
                 donor_hw_name,
                 mixed_gpu_count,
+                compute_price_fraction=gpu_compute_fraction,
             )
             from src.hardware.scraper import lookup as lookup_gpu
             from src.hardware.scraper import lookup_machine
@@ -321,18 +324,41 @@ def _run_single_config(
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
+    tune_router: bool = False,
+    tune_grid: list[TunableRouterParams] | None = None,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 120.0,
 ) -> SimulationResult:
-    """Top-level worker function suitable for process-pool pickling."""
+    """Top-level worker function suitable for process-pool pickling.
+
+    When ``tune_router`` is True, a small parameter grid is searched in
+    parallel before the real run and the best ``RouterCostConfig`` is used.
+    The tuned parameters are stored on the returned ``SimulationResult`` so
+    the runner can emit them in the output JSON.
+    """
+    effective_router_config = router_cost_config
+    if tune_router:
+        effective_router_config = tune_router_for_config(
+            common,
+            cfg,
+            ram_usage_fraction,
+            ssd_usage_fraction,
+            s3_spec,
+            router_cost_config,
+            grid=tune_grid,
+            max_workers=tune_max_workers,
+            timeout_s=tune_timeout_s,
+        )
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
     # set_log_mask(63)
     # set_debug(True)
-    return simulate_run_distributed(
+    result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
-        router_cost_config=router_cost_config,
+        router_cost_config=effective_router_config,
         should_print=False,
         sla=sla,
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
@@ -343,6 +369,10 @@ def _run_single_config(
         if common.get("random_seed") is not None
         else None,
     )
+    result.router_active_work_scale = effective_router_config.active_work_scale
+    result.router_device_credit = effective_router_config.device_credit
+    result.router_busy_threshold_tokens = effective_router_config.busy_threshold_tokens
+    return result
 
 
 def _collect_future_results(
@@ -628,6 +658,9 @@ def _run_colocated_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     while config_batches:
@@ -652,6 +685,9 @@ def _run_colocated_configs(
                     ssd_usage_fraction,
                     s3_spec,
                     router_cost_config,
+                    tune_router=tune_router,
+                    tune_max_workers=tune_max_workers,
+                    tune_timeout_s=tune_timeout_s,
                 ): (i, cfg)
                 for (i, (status, cfg)) in enumerate(batch)
                 if status == "valid"
@@ -735,6 +771,9 @@ def _run_separate_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
 
@@ -770,6 +809,9 @@ def _run_separate_configs(
                             ssd_usage_fraction,
                             s3_spec,
                             router_cost_config,
+                            tune_router=tune_router,
+                            tune_max_workers=tune_max_workers,
+                            tune_timeout_s=tune_timeout_s,
                         ): (i, cfg)
                         for (i, (status, cfg)) in enumerate(batch)
                         if status == "valid"
@@ -923,6 +965,9 @@ def _run_mixed_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run mixed-GPU configs with the same smart invalidation as separate configs.
 
@@ -969,6 +1014,9 @@ def _run_mixed_configs(
                             ssd_usage_fraction,
                             s3_spec,
                             router_cost_config,
+                            tune_router=tune_router,
+                            tune_max_workers=tune_max_workers,
+                            tune_timeout_s=tune_timeout_s,
                         ): (i, cfg)
                         for (i, (status, cfg)) in enumerate(batch)
                         if status == "valid"
@@ -1122,6 +1170,9 @@ def run_all_colocated_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     for batch in config_batches:
@@ -1135,6 +1186,9 @@ def run_all_colocated_configs(
                     ssd_usage_fraction,
                     s3_spec,
                     router_cost_config,
+                    tune_router=tune_router,
+                    tune_max_workers=tune_max_workers,
+                    tune_timeout_s=tune_timeout_s,
                 ): (i, cfg)
                 for (i, (status, cfg)) in enumerate(batch)
                 if status == "valid"
@@ -1158,6 +1212,9 @@ def run_all_separate_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     results: list[tuple[str, str, SimulationResult]] = []
     while separate_batches:
@@ -1181,6 +1238,9 @@ def run_all_separate_configs(
                         ssd_usage_fraction,
                         s3_spec,
                         router_cost_config,
+                        tune_router=tune_router,
+                        tune_max_workers=tune_max_workers,
+                        tune_timeout_s=tune_timeout_s,
                     ): (i, cfg)
                     for (i, (status, cfg)) in enumerate(batch)
                     if status == "valid"
@@ -1204,6 +1264,9 @@ def run_all_mixed_configs(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float = 240.0,
+    tune_router: bool = False,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 60.0,
 ) -> list[tuple[str, str, SimulationResult]]:
     """Run all mixed-GPU configs without smart invalidation."""
     results: list[tuple[str, str, SimulationResult]] = []
@@ -1228,6 +1291,9 @@ def run_all_mixed_configs(
                         ssd_usage_fraction,
                         s3_spec,
                         router_cost_config,
+                        tune_router=tune_router,
+                        tune_max_workers=tune_max_workers,
+                        tune_timeout_s=tune_timeout_s,
                     ): (i, cfg)
                     for (i, (status, cfg)) in enumerate(batch)
                     if status == "valid"
@@ -1283,6 +1349,24 @@ def main() -> None:
         type=Path,
         default=None,
         help="If set, dump cProfile stats for this process to the given path",
+    )
+    parser.add_argument(
+        "--tune-router",
+        action="store_true",
+        default=False,
+        help="Run a small grid search to pick router knobs per config",
+    )
+    parser.add_argument(
+        "--tune-max-workers",
+        type=int,
+        default=4,
+        help="Parallel workers for the per-config router tuning grid (default: 4)",
+    )
+    parser.add_argument(
+        "--tune-timeout",
+        type=float,
+        default=60.0,
+        help="Per-candidate timeout for router tuning in seconds (default: 60.0)",
     )
     args = parser.parse_args()
 
@@ -1472,6 +1556,10 @@ def main() -> None:
         else float(config.get("timeout_s", 240.0))
     )
 
+    tune_router = bool(args.tune_router)
+    tune_max_workers = int(args.tune_max_workers)
+    tune_timeout_s = float(args.tune_timeout)
+
     def _run_all_configs(
         run_all: bool,
         users: int,
@@ -1499,6 +1587,9 @@ def main() -> None:
                     s3_spec,
                     router_cost_config,
                     timeout_s=timeout_s,
+                    tune_router=tune_router,
+                    tune_max_workers=tune_max_workers,
+                    tune_timeout_s=tune_timeout_s,
                 )
             )
             run_results.sort(key=lambda x: x[0])
@@ -1510,6 +1601,9 @@ def main() -> None:
                 s3_spec,
                 router_cost_config,
                 timeout_s=timeout_s,
+                tune_router=tune_router,
+                tune_max_workers=tune_max_workers,
+                tune_timeout_s=tune_timeout_s,
             )
             mixed_results.sort(key=lambda x: x[0])
             run_results.extend(mixed_results)
@@ -1521,6 +1615,9 @@ def main() -> None:
                 s3_spec,
                 router_cost_config,
                 timeout_s=timeout_s,
+                tune_router=tune_router,
+                tune_max_workers=tune_max_workers,
+                tune_timeout_s=tune_timeout_s,
             )
         else:
             run_results.extend(
@@ -1532,6 +1629,9 @@ def main() -> None:
                     s3_spec,
                     router_cost_config,
                     timeout_s=timeout_s,
+                    tune_router=tune_router,
+                    tune_max_workers=tune_max_workers,
+                    tune_timeout_s=tune_timeout_s,
                 )
             )
             run_results.sort(key=lambda x: x[0])
@@ -1543,6 +1643,9 @@ def main() -> None:
                 s3_spec,
                 router_cost_config,
                 timeout_s=timeout_s,
+                tune_router=tune_router,
+                tune_max_workers=tune_max_workers,
+                tune_timeout_s=tune_timeout_s,
             )
             mixed_results.sort(key=lambda x: x[0])
             run_results.extend(mixed_results)
@@ -1554,6 +1657,9 @@ def main() -> None:
                 s3_spec,
                 router_cost_config,
                 timeout_s=timeout_s,
+                tune_router=tune_router,
+                tune_max_workers=tune_max_workers,
+                tune_timeout_s=tune_timeout_s,
             )
         separate_results.sort(key=lambda x: x[0])
         run_results.extend(separate_results)

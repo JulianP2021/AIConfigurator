@@ -85,8 +85,9 @@ def load_aws_hardware_db(
 
     * ``machines``: mapping of hardware names to config dicts.  Each config
       must provide ``gpu_name`` so the GPU spec can be resolved from the cached
-      GPU database, plus a ``gpu_price_usd_per_hour`` for that specific machine.
-      Any remaining field is filled with safe defaults.
+      GPU database and so its hourly price can be derived from the matching
+      per-family pricing table.  Any remaining field is filled with safe
+      defaults.
 
     Any field absent in a machine config is filled with sensible defaults
     before being passed to :func:`fetch_machine_hardware`.
@@ -142,28 +143,177 @@ def load_aws_hardware_db(
     return pricing, normalized
 
 
-def _default_custom_hardware_path() -> Path:
-    """Return the default location for the custom hardware file."""
-    return _AWS_HARDWARE_PATH
-
-
 # Per-byte / per-second constants used for unit-price cost derivation.
 _GB = 1024**3
 _HOUR_S = 3600.0
 
 
-def _derive_custom_price(
+def _all_in_per_gpu_price(
+    gpu_name: str,
+    pricing: dict[str, Any],
+    db: dict[str, dict[str, Any]] | None = None,
+) -> float:
+    """Return the all-in per-GPU price for a GPU family using the current table.
+
+    Uses the largest AWS instance of the family as the reference.  This is the
+    price a reference node would have if every component (GPU, RAM, SSD,
+    bandwidth) were priced at the per-family unit prices stored in the table.
+    """
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name, {})
+    if db is None:
+        db = load_combined_machine_db()
+
+    aws_instances = [
+        cfg
+        for cfg in db.values()
+        if cfg.get("gpu_name") == gpu_name
+        and str(cfg.get("name", "")).startswith("AWS")
+    ]
+    if not aws_instances:
+        # No AWS reference; fall back to the table's compute price as the
+        # dominant component.
+        return float(family.get("compute_usd_per_gpu_hour", 0.0)) / 0.6
+
+    ref = max(aws_instances, key=lambda cfg: int(cfg.get("num_gpus", 1)))
+    return _derive_custom_price_raw(ref, pricing) / int(ref["num_gpus"])
+
+
+def _compute_fraction_from_table(gpu_name: str, pricing: dict[str, Any]) -> float:
+    """Return the compute fraction encoded in the pricing table.
+
+    First checks the top-level ``gpu_compute_fraction`` metadata, then the
+    per-family ``gpu_compute_fraction`` field, and finally falls back to
+    inferring it from the largest AWS instance of the family.
+    """
+    top_level = pricing.get("gpu_compute_fraction")
+    if top_level is not None:
+        return float(top_level)
+
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name, {})
+    family_fraction = family.get("gpu_compute_fraction")
+    if family_fraction is not None:
+        return float(family_fraction)
+
+    db = load_combined_machine_db()
+    aws_instances = [
+        cfg
+        for cfg in db.values()
+        if cfg.get("gpu_name") == gpu_name
+        and str(cfg.get("name", "")).startswith("AWS")
+    ]
+    if not aws_instances:
+        return 0.6
+
+    ref = max(aws_instances, key=lambda cfg: int(cfg.get("num_gpus", 1)))
+    all_in = _derive_custom_price_raw(ref, pricing)
+    compute_cost = int(ref["num_gpus"]) * float(
+        family.get("compute_usd_per_gpu_hour", 0.0)
+    )
+    ram_cost = (ref["cpu_ram"] / _GB) * float(
+        family.get("cpu_ram_usd_per_gb_hour", 0.0089)
+    )
+    ssd_cost = (ref["nvme_mem"] / _GB) * float(
+        family.get("ssd_usd_per_gb_hour", 0.00037)
+    )
+    adjusted = all_in - ram_cost - ssd_cost
+    if adjusted <= 0:
+        return 0.6
+    return compute_cost / adjusted
+
+
+def _derive_custom_price_raw(
     config: dict[str, Any],
     pricing: dict[str, Any],
 ) -> float:
-    """Derive an hourly price for a custom machine from unit prices.
+    """Derive a price using the stored table values without runtime re-split.
 
-    If the config specifies a ``gpu_name`` that exists in the per-family pricing
-    table, the per-family component prices are used (with global prices as
-    fallback for missing components).  Otherwise the legacy path is used:
+    This is the baseline calculation at the table's native 60/40 split and is
+    used internally to compute reference all-in prices.
+    """
 
-    * ``gpu_price_usd_per_hour`` (machine-specific)
-    * global CPU RAM, SSD, bandwidth, internet, inter-node and PCIe prices.
+    def bits_to_gbps(val: float) -> float:
+        return float(val) / 1e9
+
+    gpu_name = config.get("gpu_name", "")
+    if not gpu_name:
+        raise ValueError(
+            f"Machine config {config.get('name', '<unknown>')!r} must specify gpu_name"
+        )
+
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name)
+    if family is None:
+        raise ValueError(
+            f"No per-family pricing table for gpu_name {gpu_name!r}. "
+            f"Add an entry under _pricing.gpu_family_pricing."
+        )
+
+    def family_price(key: str) -> float:
+        if key not in family:
+            raise ValueError(
+                f"Per-family pricing for {gpu_name!r} is missing required key {key!r}"
+            )
+        if float(family[key]) == 0:
+            return float(pricing[key])
+        return float(family[key])
+
+    num_gpus = int(config.get("num_gpus", 1))
+    compute_price = family_price("compute_usd_per_gpu_hour")
+
+    cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
+    ssd_gb = float(config.get("nvme_mem", 0)) / _GB
+
+    price = num_gpus * compute_price
+    price += cpu_ram_gb * family_price("cpu_ram_usd_per_gb_hour")
+    price += ssd_gb * family_price("ssd_usd_per_gb_hour")
+    price += (float(config.get("nvme_bw", 0)) / _GB) * family_price(
+        "ssd_bw_usd_per_gb_s_hour"
+    )
+    price += bits_to_gbps(config.get("network_inet_up", 0)) * family_price(
+        "inet_up_usd_per_gbps_hour"
+    )
+    price += bits_to_gbps(config.get("network_inet_down", 0)) * family_price(
+        "inet_down_usd_per_gbps_hour"
+    )
+    inter_node_up_gbps = bits_to_gbps(
+        config.get("network_inter_node_up", _resolve_inter_node_bw(None))
+    )
+    inter_node_down_gbps = bits_to_gbps(
+        config.get("network_inter_node_down", _resolve_inter_node_bw(None))
+    )
+    price += inter_node_up_gbps * family_price("inter_node_up_usd_per_gbps_hour")
+    price += inter_node_down_gbps * family_price("inter_node_down_usd_per_gbps_hour")
+    price += (float(config.get("pcie_bw", 0)) / _GB) * family_price(
+        "pcie_bw_usd_per_gb_s_hour"
+    )
+
+    nvlink_bw_gb_s = float(config.get("nvlink_bw", 0)) / _GB
+    if nvlink_bw_gb_s > 0:
+        price += nvlink_bw_gb_s * num_gpus * family_price("nvlink_bw_usd_per_gb_s_hour")
+
+    return price
+
+
+def _derive_custom_price(
+    config: dict[str, Any],
+    pricing: dict[str, Any],
+    *,
+    compute_price_fraction: float | None = None,
+) -> float:
+    """Derive an hourly price for a custom machine from per-family unit prices.
+
+    The config must specify a ``gpu_name`` that exists in the per-family pricing
+    table.  Each GPU family has its own component prices (CPU RAM, SSD, PCIe,
+    NVLink, SSD bandwidth, internet, inter-node) plus a per-GPU compute price.
+    This lets prices scale with every hardware component exactly as observed in
+    AWS on-demand pricing for that family.
+
+    The pricing table itself encodes a fixed compute/bandwidth split.  If a
+    caller requests a ``compute_price_fraction`` that differs from the split
+    stored in the table, this function raises an error and asks the user to
+    regenerate the pricing table with the desired split.
 
     Parameters
     ----------
@@ -171,87 +321,50 @@ def _derive_custom_price(
         A machine config dict (already normalised/merged with defaults).
     pricing:
         The ``_pricing`` dict from the custom hardware file.
+    compute_price_fraction:
+        Optional fraction to validate against the table.  If provided and it
+        does not match the table's stored split, ``ValueError`` is raised.
 
     Returns:
     -------
     Hourly price in USD.
     """
-
-    def unit(key: str) -> float:
-        return float(pricing.get(key, 0.0))
-
-    def bytes_to_gb_h(val: float) -> float:
-        return float(val) / _GB * _HOUR_S
-
-    def bytes_to_gbps(val: float) -> float:
-        return float(val) * 8.0 / 1e9
-
     gpu_name = config.get("gpu_name", "")
-    family_pricing = pricing.get("gpu_family_pricing", {})
-    family = family_pricing.get(gpu_name, {}) if gpu_name else {}
-
-    def family_or_global(key: str) -> float:
-        """Return family price if positive, otherwise the global fallback.
-
-        Per-family component tables set values to 0.0 when a cost is bundled
-        into the per-GPU compute price. For custom machines we still want to
-        apply a global unit price when one is configured.
-        """
-        val = float(family.get(key, 0.0))
-        if val > 0:
-            return val
-        if float(pricing.get(key, 0.0)) > 0:
-            return float(pricing.get(key, 0.0))
-        raise RuntimeError(f"Pricing is 0 for {key}")
-
-    num_gpus = int(config.get("num_gpus", 1))
-    cpu_ram_gb = float(config.get("cpu_ram", 0)) / _GB
-    ssd_gb = float(config.get("nvme_mem", 0)) / _GB
-
-    # Per-family GPU compute price, otherwise legacy machine-specific GPU price.
-    if "compute_usd_per_gpu_hour" in family:
-        price = num_gpus * family["compute_usd_per_gpu_hour"]
-    else:
-        price = float(config.get("gpu_price_usd_per_hour", 0.0))
-
-    price += cpu_ram_gb * family_or_global("cpu_ram_usd_per_gb_hour")
-    price += ssd_gb * family_or_global("ssd_usd_per_gb_hour")
-    price += (float(config.get("nvme_bw", 0)) / _GB) * family_or_global(
-        "ssd_bw_usd_per_gb_s_hour"
-    )
-    price += bytes_to_gbps(config.get("network_inet_up", 0)) * family_or_global(
-        "inet_up_usd_per_gbps_hour"
-    )
-    price += bytes_to_gbps(config.get("network_inet_down", 0)) * family_or_global(
-        "inet_down_usd_per_gbps_hour"
-    )
-    # Inter-node bandwidth is defined by environment/CLI defaults, not the
-    # machine config, but its unit price is still part of _pricing.  When the
-    # machine config does not provide explicit inter-node bandwidths, fall
-    # back to the same env default used at runtime.
-    inter_node_up_gbps = bytes_to_gbps(
-        config.get("network_inter_node_up", _resolve_inter_node_bw(None))
-    )
-    inter_node_down_gbps = bytes_to_gbps(
-        config.get("network_inter_node_down", _resolve_inter_node_bw(None))
-    )
-    price += inter_node_up_gbps * family_or_global("inter_node_up_usd_per_gbps_hour")
-    price += inter_node_down_gbps * family_or_global(
-        "inter_node_down_usd_per_gbps_hour"
-    )
-    price += (float(config.get("pcie_bw", 0)) / _GB) * family_or_global(
-        "pcie_bw_usd_per_gb_s_hour"
-    )
-
-    # NVLink/C2C bandwidth is priced per GPU per GB/s of bandwidth per hour.
-    # The config stores per-GPU bandwidth in bytes/sec.
-    nvlink_bw_gb_s = float(config.get("nvlink_bw", 0)) / _GB
-    if nvlink_bw_gb_s > 0:
-        price += (
-            nvlink_bw_gb_s * num_gpus * family_or_global("nvlink_bw_usd_per_gb_s_hour")
+    if not gpu_name:
+        raise ValueError(
+            f"Machine config {config.get('name', '<unknown>')!r} must specify gpu_name"
         )
 
-    return price
+    family_pricing = pricing.get("gpu_family_pricing", {})
+    family = family_pricing.get(gpu_name)
+    if family is None:
+        raise ValueError(
+            f"No per-family pricing table for gpu_name {gpu_name!r}. "
+            f"Add an entry under _pricing.gpu_family_pricing."
+        )
+
+    num_gpus = int(config.get("num_gpus", 1))
+
+    # If this family has no identifiable per-GPU compute price (the AWS data
+    # only contains single-GPU instances for it), prevent users from deriving
+    # prices for multi-GPU configs because the scaling is unvalidated.
+    if float(family.get("compute_usd_per_gpu_hour", 0.0)) == 0.0 and num_gpus > 1:
+        raise ValueError(
+            f"gpu_name {gpu_name!r} has no multi-GPU pricing data; "
+            f"cannot derive price for {num_gpus} GPUs"
+        )
+
+    if compute_price_fraction is not None:
+        table_fraction = _compute_fraction_from_table(gpu_name, pricing)
+        if abs(compute_price_fraction - table_fraction) > 1e-6:
+            raise ValueError(
+                f"Requested GPU compute fraction {compute_price_fraction} does not match "
+                f"the pricing table's split {table_fraction:.4f} for family {gpu_name!r}. "
+                f"Regenerate src/hardware/data/pricing.json with the desired split, e.g. "
+                f".venv/bin/python scripts/derive_family_pricing.py --gpu-compute-fraction {compute_price_fraction}"
+            )
+
+    return _derive_custom_price_raw(config, pricing)
 
 
 def load_machine_db() -> dict[str, dict[str, Any]]:
@@ -380,6 +493,8 @@ def lookup_machine(
 def _machine_config_with_defaults(
     config: dict[str, Any],
     pricing: dict[str, float] | None = None,
+    *,
+    compute_price_fraction: float | None = None,
 ) -> dict[str, Any]:
     """Fill missing machine-config fields with safe defaults.
 
@@ -447,7 +562,9 @@ def _machine_config_with_defaults(
 
     # Derive price for custom entries when pricing metadata is provided.
     if pricing and not merged.get("dph_base"):
-        merged["dph_base"] = _derive_custom_price(merged, pricing)
+        merged["dph_base"] = _derive_custom_price(
+            merged, pricing, compute_price_fraction=compute_price_fraction
+        )
 
     return merged
 
@@ -456,6 +573,8 @@ def fetch_machine_hardware(
     machine_name: str,
     machine_config_override: dict[str, Any] | None = None,
     custom_path: Path | str | None = None,
+    *,
+    compute_price_fraction: float | None = None,
 ) -> Hardware:
     """Build a :class:`~hardware.hardware.Hardware` instance from the machine cache.
 
@@ -476,10 +595,16 @@ def fetch_machine_hardware(
 
     pricing, _ = load_aws_hardware_db(custom_path)
     if machine_config_override is not None:
-        scraped = _machine_config_with_defaults(machine_config_override, pricing)
+        scraped = _machine_config_with_defaults(
+            machine_config_override,
+            pricing,
+            compute_price_fraction=compute_price_fraction,
+        )
     else:
         scraped = _machine_config_with_defaults(
-            lookup_machine(machine_name, custom_path), pricing
+            lookup_machine(machine_name, custom_path),
+            pricing,
+            compute_price_fraction=compute_price_fraction,
         )
     gpu = lookup(scraped["gpu_name"])
     if not gpu:

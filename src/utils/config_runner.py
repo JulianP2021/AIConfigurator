@@ -130,6 +130,7 @@ def build_scenario(
     mixed_gpu_donor = cfg.get("mixed_gpu_donor")
     mixed_gpu_count = cfg.get("mixed_gpu_count")
     mixed_gpu_count = int(mixed_gpu_count) if mixed_gpu_count is not None else None
+    gpu_compute_fraction = float(cfg.get("gpu_compute_fraction", 0.6))
 
     is_mixed = _parse_bool(cfg.get("mixed", False))
 
@@ -155,6 +156,7 @@ def build_scenario(
                 prefill_gpus,
                 donor_hw_name,
                 mixed_gpu_count,
+                compute_price_fraction=gpu_compute_fraction,
             )
             from src.hardware.scraper import lookup as lookup_gpu
             from src.hardware.scraper import lookup_machine

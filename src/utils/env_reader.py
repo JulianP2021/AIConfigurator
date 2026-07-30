@@ -52,6 +52,7 @@ class EnvConfig:
     mixed: bool = False
     mixed_gpu_donor: str = ""
     mixed_gpu_count: int = -1
+    gpu_compute_fraction: float = 0.6
 
     # Cache
     ram_usage_fraction: float = 0.8
@@ -109,6 +110,7 @@ _DEFAULTS = {
     "MIXED": "false",
     "MIXED_GPU_DONOR": "",
     "MIXED_GPU_COUNT": "-1",
+    "GPU_COMPUTE_FRACTION": "0.6",
     "RAM_USAGE_FRACTION": "0.8",
     "SSD_USAGE_FRACTION": "0.8",
     "S3_ENABLED": "true",
@@ -163,6 +165,7 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "USER_DELAY_MIN_MS",
         "USER_DELAY_MAX_MS",
         "STARTUP_ARRIVAL_MEAN_MS",
+        "GPU_COMPUTE_FRACTION",
         "ROUTER_PREFILL_LOAD_SCALE",
         "ROUTER_ACTIVE_WORK_SCALE",
         "ROUTER_DEVICE_CREDIT",
@@ -222,7 +225,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
     for key, default in _DEFAULTS.items():
         merged[key] = os.environ.get(key, file_values.get(key, default))
 
-    print(f"Loaded environment configuration from {path}:")
+    print(f"Environment defaults from {path} (CLI flags can override):")
     for key, value in merged.items():
         print(f"  {key} = {value}")
 
@@ -249,6 +252,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         mixed=_parse_bool(merged["MIXED"]),
         mixed_gpu_donor=str(merged["MIXED_GPU_DONOR"]),
         mixed_gpu_count=int(merged["MIXED_GPU_COUNT"]),
+        gpu_compute_fraction=float(merged["GPU_COMPUTE_FRACTION"]),
         ram_usage_fraction=float(merged["RAM_USAGE_FRACTION"]),
         ssd_usage_fraction=float(merged["SSD_USAGE_FRACTION"]),
         s3_enabled=_parse_bool(merged["S3_ENABLED"]),

@@ -62,9 +62,12 @@ def _generate_focused_entries(
     baseline: dict[str, Any],
     focus_dimensions: list[str],
     focus_values: dict[str, list[float]],
+    pricing_path: Path,
+    *,
+    gpu_compute_fraction: float = 0.6,
 ) -> dict[str, dict[str, Any]]:
     """Build machine entries, one sweep per focused dimension."""
-    pricing = _get_pricing(Path("src/hardware/custom_hardware.json"))
+    pricing = _get_pricing(pricing_path)
     keys = [
         "ssd_bw_usd_per_gb_s_hour",
         "pcie_bw_usd_per_gb_s_hour",
@@ -85,6 +88,16 @@ def _generate_focused_entries(
             file=sys.stderr,
         )
 
+    # Validate that the requested compute split matches the pricing table.
+    table_fraction = pricing.get("gpu_compute_fraction", 0.6)
+    if abs(gpu_compute_fraction - table_fraction) > 1e-6:
+        raise ValueError(
+            f"Requested GPU compute fraction {gpu_compute_fraction} does not match "
+            f"the pricing table's split {table_fraction}. "
+            f"Regenerate pricing with the desired split, e.g. "
+            f".venv/bin/python scripts/derive_family_pricing.py --gpu-compute-fraction {gpu_compute_fraction}"
+        )
+
     entries: dict[str, dict[str, Any]] = {}
 
     def _add_entry(settings: dict[str, Any]) -> None:
@@ -92,7 +105,9 @@ def _generate_focused_entries(
             settings.get("base_name", base_name), settings
         )
         raw_config = _build_machine_config(settings)
-        final_config = _machine_config_with_defaults(raw_config, pricing)
+        final_config = _machine_config_with_defaults(
+            raw_config, pricing, compute_price_fraction=gpu_compute_fraction
+        )
         entries[settings["machine_name"]] = final_config
 
     # Always include the baseline machine first.
@@ -264,6 +279,18 @@ def main() -> int:
         help="Path to the custom hardware JSON file (default: src/hardware/data/custom_hardware.json).",
     )
     parser.add_argument(
+        "--hardware-prices",
+        type=Path,
+        default=Path("src/hardware/data/pricing.json"),
+        help="Path to the custom hardware JSON file (default: src/hardware/data/pricing.json).",
+    )
+    parser.add_argument(
+        "--gpu-compute-fraction",
+        type=float,
+        default=None,
+        help="GPU compute fraction to validate against the pricing table (default: read from pricing.json).",
+    )
+    parser.add_argument(
         "--write",
         action="store_true",
         help="Actually write the entries to the custom hardware file. Without this flag the script runs in dry-run mode.",
@@ -321,12 +348,19 @@ def main() -> int:
         "inter_node_down_gbps": args.inter_node_bw_gbps,
     }
 
+    pricing = _get_pricing(args.hardware_prices)
+    gpu_compute_fraction = args.gpu_compute_fraction
+    if gpu_compute_fraction is None:
+        gpu_compute_fraction = float(pricing.get("gpu_compute_fraction", 0.6))
+
     entries = _generate_focused_entries(
         args.gpu_name,
         base_name,
         baseline,
         focus_dimensions,
         focus_values,
+        args.hardware_prices,
+        gpu_compute_fraction=gpu_compute_fraction,
     )
 
     if not entries:
@@ -341,10 +375,8 @@ def main() -> int:
         print("\nDry run; entries not written. Pass --write to persist them.")
         return 0
 
-    pricing = _get_pricing(args.custom_hardware)
-
     if args.clean:
-        output_data = {"_pricing": pricing, "machines": entries}
+        output_data = {"machines": entries}
         print(
             f"\nReplacing all existing machines in {args.custom_hardware} with {len(entries)} generated entries."
         )

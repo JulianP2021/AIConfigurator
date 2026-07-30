@@ -1,210 +1,158 @@
 #!/usr/bin/env python3
 """Derive per-GPU-family component prices from AWS instance configs.
 
-The script loads the AWS preset database and, for each GPU family, tries to
-interpolate component prices from pairs of instance configs where only one
-resource dimension differs.  If a component cannot be derived for a family, the
-global price from ``_pricing`` is used as a fallback.
+For each GPU family the script builds a linear system
+
+    price_i = sum_j (quantity_ij * unit_price_j)
+
+over all AWS instances of that family, then solves for the non-negative
+component unit prices using ``scipy.optimize.nnls``.  CPU RAM and SSD storage
+prices are anchored to fixed values (0.0089 USD/GB/h and 0.00037 USD/GB/h)
+and removed from the regression so the remaining components are bandwidth and
+per-GPU compute.
+
+The output is a ``_pricing.gpu_family_pricing`` table that reproduces real
+AWS on-demand prices for every instance in the input database.  Custom or
+``focused'' machines with the same ``gpu_name`` then scale component by
+component under the same family coefficients.
 
 Usage:
 
     .venv/bin/python scripts/derive_family_pricing.py
 
-This updates ``src/hardware/aws_hardware.json`` in place.
+This updates ``src/hardware/data/pricing.json`` in place.
 """
 
 import argparse
 import json
-import math
 import sys
 
 from pathlib import Path
 
 import numpy as np
 
+from scipy.optimize import nnls
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.hardware.scraper import load_gpu_db
+from src.hardware.scraper import load_aws_hardware_db
 
 
 _GB = 1024**3
-_HOUR_S = 3600.0
+_G = 1e9
 
+# Fixed storage prices considered ground truth.
+_RAM_PRICE = 0.0089
+_SSD_PRICE = 0.00037
 
+# Component price keys, in the same order as the design matrix columns.
 _COMPONENT_KEYS = [
-    "compute_usd_per_gpu_hour",
-    "cpu_ram_usd_per_gb_hour",
-    "ssd_usd_per_gb_hour",
     "ssd_bw_usd_per_gb_s_hour",
-    "inet_up_usd_per_gbps_hour",
-    "inet_down_usd_per_gbps_hour",
+    "nvlink_bw_usd_per_gb_s_hour",
+    "pcie_bw_usd_per_gb_s_hour",
     "inter_node_up_usd_per_gbps_hour",
     "inter_node_down_usd_per_gbps_hour",
-    "pcie_bw_usd_per_gb_s_hour",
-    "nvlink_bw_usd_per_gb_s_hour",
+    "inet_up_usd_per_gbps_hour",
+    "inet_down_usd_per_gbps_hour",
+    "compute_usd_per_gpu_hour",
+]
+
+# Component quantities for one AWS config row.
+_QUANTITY_EXTRACTORS = [
+    lambda cfg: cfg["nvme_bw"] / _GB,
+    lambda cfg: (cfg.get("nvlink_bw", 0) / _GB) * cfg["num_gpus"],
+    lambda cfg: cfg["pcie_bw"] / _GB,
+    lambda cfg: cfg.get("network_inter_node_up", 100 * _G) / _G,
+    lambda cfg: cfg.get("network_inter_node_down", 100 * _G) / _G,
+    lambda cfg: cfg["network_inet_up"] / _G,
+    lambda cfg: cfg["network_inet_down"] / _G,
+    lambda cfg: cfg["num_gpus"],
 ]
 
 
-def _bytes_to_gb_h(val: float) -> float:
-    return float(val) / _GB * _HOUR_S
-
-
-def _bytes_to_gbps(val: float) -> float:
-    return float(val) * 8.0 / 1e9
-
-
-def _extract_feature_vector(
-    cfg: dict,
-    gpu_mem_gb_per_gpu: float,
-) -> tuple[dict[str, float], float]:
-    """Return a normalized feature dict and the on-demand price for a config."""
-    num_gpus = int(cfg.get("num_gpus", 1))
-    features: dict[str, float] = {
-        "compute": float(num_gpus),
-        "cpu_ram_gb": float(cfg.get("cpu_ram", 0)) / _GB,
-        "ssd_gb": float(cfg.get("nvme_mem", 0)) / _GB,
-        "ssd_bw_gb_s": float(cfg.get("nvme_bw", 0)) / _GB,
-        "inet_up_gbps": _bytes_to_gbps(float(cfg.get("network_inet_up", 0))),
-        "inet_down_gbps": _bytes_to_gbps(float(cfg.get("network_inet_down", 0))),
-        "inter_up_gbps": _bytes_to_gbps(float(cfg.get("network_inter_node_up", 0))),
-        "inter_down_gbps": _bytes_to_gbps(float(cfg.get("network_inter_node_down", 0))),
-        "pcie_gb_s": float(cfg.get("pcie_bw", 0)) / _GB,
-        "nvlink_gb_s": float(cfg.get("nvlink_bw", 0)) / _GB,
-        "hbm_gb": gpu_mem_gb_per_gpu * num_gpus,
-    }
-    return features, float(cfg.get("dph_base", 0.0))
-
-
-def _derive_compute_per_gpu(rows: list[tuple[dict[str, float], float]]) -> float | None:
-    """Derive compute price per GPU from proportional configs.
-
-    Looks for two configs where every non-compute feature scales exactly with
-    the number of GPUs (i.e. per-GPU ratios are identical).  The price
-    difference divided by the GPU difference then gives the compute price.
-    """
-    best: float | None = None
-    for i in range(len(rows)):
-        fi, pi = rows[i]
-        for j in range(i + 1, len(rows)):
-            fj, pj = rows[j]
-            gpu_diff = fj["compute"] - fi["compute"]
-            if gpu_diff == 0:
-                continue
-            proportional = True
-            for key in fi:
-                if key == "compute":
-                    continue
-                if fj[key] * fi["compute"] != fi[key] * fj["compute"]:
-                    proportional = False
-                    break
-            if not proportional:
-                continue
-            value = (pj - pi) / gpu_diff
-            best = value if best is None else (best + value) / 2.0
-    return best
-
-
-def _derive_component_price(
-    rows: list[tuple[dict[str, float], float]],
-    feature_key: str,
-    ignore_keys: tuple[str, ...] = ("compute",),
-) -> float | None:
-    """Derive a unit price for ``feature_key`` from configs that differ only there.
-
-    Looks for pairs of configs where all other features are identical (or both
-    zero) except for ``feature_key``.  Averages the resulting price estimates.
-    """
-    estimates: list[float] = []
-    for i in range(len(rows)):
-        fi, pi = rows[i]
-        for j in range(i + 1, len(rows)):
-            fj, pj = rows[j]
-            diff = fj[feature_key] - fi[feature_key]
-            if diff == 0:
-                continue
-            other_equal = True
-            for key in fi:
-                if key == feature_key or key in ignore_keys:
-                    continue
-                if not math.isclose(fj[key], fi[key], rel_tol=1e-9, abs_tol=1e-12):
-                    other_equal = False
-                    break
-            if not other_equal:
-                continue
-            estimates.append((pj - pi) / diff)
-    if not estimates:
-        return None
-    # Use median to be robust against a single outlier pair.
-    estimates.sort()
-    return estimates[len(estimates) // 2]
-
-
 def _derive_family(
-    _family: str,
-    configs: list[dict],
-    gpu_mem_gb_per_gpu: float,
-    _global_prices: dict[str, float],
+    configs: list[dict], compute_fraction: float = 0.6
 ) -> dict[str, float]:
-    """Return the derived per-family component price table."""
-    rows = [_extract_feature_vector(c, gpu_mem_gb_per_gpu) for c in configs]
+    """Return the per-family component price table using non-negative LS.
 
-    result: dict[str, float] = {}
+    The per-GPU compute price is anchored to ``compute_fraction`` of the
+    average per-GPU AWS price for the family (after subtracting RAM and SSD
+    storage costs).  The remaining ``1 - compute_fraction`` is attributed to
+    bandwidth components, which are derived by solving a non-negative
+    least-squares problem against the residual prices.  This keeps compute
+    prices physically meaningful while still reproducing AWS on-demand prices.
 
-    # Map feature keys to component price keys.
-    feature_to_component = {
-        "cpu_ram_gb": "cpu_ram_usd_per_gb_hour",
-        "ssd_gb": "ssd_usd_per_gb_hour",
-        "ssd_bw_gb_s": "ssd_bw_usd_per_gb_s_hour",
-        "inet_up_gbps": "inet_up_usd_per_gbps_hour",
-        "inet_down_gbps": "inet_down_usd_per_gbps_hour",
-        "inter_up_gbps": "inter_node_up_usd_per_gbps_hour",
-        "inter_down_gbps": "inter_node_down_usd_per_gbps_hour",
-        "pcie_gb_s": "pcie_bw_usd_per_gb_s_hour",
-        "nvlink_gb_s": "nvlink_bw_usd_per_gb_s_hour",
+    ``compute_fraction`` is also stored in the table metadata so that focused
+    and mixed-GPU pricing can validate they are using the same split.
+    """
+    adjusted_per_gpu = [
+        (
+            c["dph_base"]
+            - (c["cpu_ram"] / _GB) * _RAM_PRICE
+            - (c["nvme_mem"] / _GB) * _SSD_PRICE
+        )
+        / c["num_gpus"]
+        for c in configs
+    ]
+    compute_anchor = compute_fraction * (sum(adjusted_per_gpu) / len(adjusted_per_gpu))
+
+    a: list[list[float]] = []
+    y: list[float] = []
+
+    for cfg in configs:
+        # All columns except the last (compute) one.
+        row = [extract(cfg) for extract in _QUANTITY_EXTRACTORS[:-1]]
+        residual = (
+            cfg["dph_base"]
+            - (cfg["cpu_ram"] / _GB) * _RAM_PRICE
+            - (cfg["nvme_mem"] / _GB) * _SSD_PRICE
+            - cfg["num_gpus"] * compute_anchor
+        )
+        a.append(row)
+        y.append(residual)
+
+    a_arr = np.array(a, dtype=float)
+    y_arr = np.array(y, dtype=float)
+    coeff, _ = nnls(a_arr, y_arr)
+
+    result: dict[str, float] = {
+        key: float(value)
+        for key, value in zip(_COMPONENT_KEYS[:-1], coeff, strict=True)
     }
-
-    # Step 1: derive non-GPU component prices from configs that differ only in
-    # one component (same GPU count, same other resources).  Components that
-    # cannot be interpolated for this family are left at zero; their bundled
-    # cost is folded into the per-GPU compute price below.
-    known_costs = np.zeros(len(rows))
-    for feature_key, component_key in feature_to_component.items():
-        derived = _derive_component_price(rows, feature_key)
-        if derived is not None and derived > 0:
-            result[component_key] = derived
-            known_costs += np.array([f[feature_key] for f, _ in rows]) * derived
-        else:
-            result[component_key] = 0.0
-
-    # Step 2: from the residual (price minus known non-GPU costs), derive the
-    # compute price per GPU using configs that scale proportionally.  This
-    # absorbs all undifferentiated bundled costs (RAM, SSD, NIC, etc.) into the
-    # GPU compute price.
-    residuals = np.array([p for _, p in rows]) - known_costs
-    compute_price = _derive_compute_per_gpu([
-        (f, r) for f, r in zip([f for f, _ in rows], residuals, strict=False)
-    ])
-    if compute_price is None:
-        # Fall back to average residual per GPU.
-        total_gpus = sum(f["compute"] for f, _ in rows)
-        compute_price = sum(residuals) / max(1, total_gpus)
-    result["compute_usd_per_gpu_hour"] = max(0.0, float(compute_price))
-
-    # Ensure all expected component keys exist and prices are non-negative.
-    for key in _COMPONENT_KEYS:
-        result.setdefault(key, 0.0)
-    for key, value in result.items():
-        result[key] = max(0.0, value)
-
+    result["compute_usd_per_gpu_hour"] = compute_anchor
+    result["cpu_ram_usd_per_gb_hour"] = _RAM_PRICE
+    result["ssd_usd_per_gb_hour"] = _SSD_PRICE
+    result["gpu_compute_fraction"] = compute_fraction
     return result
 
 
-def _derive_all_family_pricing(aws_data: dict) -> dict[str, dict[str, float]]:
-    machines = aws_data.get("machines", {})
-    global_prices = aws_data.get("_pricing", {})
-    gpu_db = load_gpu_db()
+def _predict(cfg: dict, pricing: dict[str, float]) -> float:
+    """Recompute an hourly price from a per-family pricing table."""
+    price = cfg["num_gpus"] * pricing["compute_usd_per_gpu_hour"]
+    price += (cfg["cpu_ram"] / _GB) * pricing["cpu_ram_usd_per_gb_hour"]
+    price += (cfg["nvme_mem"] / _GB) * pricing["ssd_usd_per_gb_hour"]
+    price += (cfg["nvme_bw"] / _GB) * pricing["ssd_bw_usd_per_gb_s_hour"]
+    price += (cfg.get("nvlink_bw", 0) / _GB * cfg["num_gpus"]) * pricing[
+        "nvlink_bw_usd_per_gb_s_hour"
+    ]
+    price += (cfg["pcie_bw"] / _GB) * pricing["pcie_bw_usd_per_gb_s_hour"]
+    price += (cfg.get("network_inter_node_up", 100 * _G) / _G) * pricing[
+        "inter_node_up_usd_per_gbps_hour"
+    ]
+    price += (cfg.get("network_inter_node_down", 100 * _G) / _G) * pricing[
+        "inter_node_down_usd_per_gbps_hour"
+    ]
+    price += (cfg["network_inet_up"] / _G) * pricing["inet_up_usd_per_gbps_hour"]
+    price += (cfg["network_inet_down"] / _G) * pricing["inet_down_usd_per_gbps_hour"]
+    return price
 
+
+def _derive_all_family_pricing(
+    machines: dict[str, dict],
+    compute_fraction: float = 0.6,
+) -> dict[str, dict[str, float]]:
+    """Group AWS instances by GPU family and solve for component prices."""
     families: dict[str, list[dict]] = {}
     for name, cfg in machines.items():
         if not name.startswith("AWS"):
@@ -216,33 +164,18 @@ def _derive_all_family_pricing(aws_data: dict) -> dict[str, dict[str, float]]:
 
     family_pricing: dict[str, dict[str, float]] = {}
     for family, configs in sorted(families.items()):
-        gpu_mem_gb = gpu_db.get(family, {}).get("gpu_mem", 0) / _GB
-        pricing = _derive_family(family, configs, gpu_mem_gb, global_prices)
+        pricing = _derive_family(configs, compute_fraction)
         family_pricing[family] = pricing
 
-        # Validate against actual prices.
-        mape_sum = 0.0
-        count = 0
+        max_abs_err = 0.0
         for cfg in configs:
-            f, actual = _extract_feature_vector(cfg, gpu_mem_gb)
-            predicted = (
-                f["compute"] * pricing["compute_usd_per_gpu_hour"]
-                + f["cpu_ram_gb"] * pricing["cpu_ram_usd_per_gb_hour"]
-                + f["ssd_gb"] * pricing["ssd_usd_per_gb_hour"]
-                + f["ssd_bw_gb_s"] * pricing["ssd_bw_usd_per_gb_s_hour"]
-                + f["inet_up_gbps"] * pricing["inet_up_usd_per_gbps_hour"]
-                + f["inet_down_gbps"] * pricing["inet_down_usd_per_gbps_hour"]
-                + f["inter_up_gbps"] * pricing["inter_node_up_usd_per_gbps_hour"]
-                + f["inter_down_gbps"] * pricing["inter_node_down_usd_per_gbps_hour"]
-                + f["pcie_gb_s"] * pricing["pcie_bw_usd_per_gb_s_hour"]
-                + f["nvlink_gb_s"] * pricing["nvlink_bw_usd_per_gb_s_hour"]
-            )
-            if actual > 0:
-                mape_sum += abs(predicted - actual) / actual
-                count += 1
-        mape = (mape_sum / count * 100.0) if count else 0.0
+            predicted = _predict(cfg, pricing)
+            err = abs(predicted - cfg["dph_base"])
+            max_abs_err = max(max_abs_err, err)
+
         print(
-            f"{family}: configs={len(configs)}, mape={mape:.2f}%, "
+            f"{family}: configs={len(configs)}, "
+            f"max_abs_err=${max_abs_err:.4f}/h, "
             f"compute=${pricing['compute_usd_per_gpu_hour']:.4f}/gpu/h"
         )
 
@@ -256,14 +189,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("src/hardware/aws_hardware.json"),
-        help="Path to aws_hardware.json (default: src/hardware/aws_hardware.json).",
+        default=Path("src/hardware/data/aws_hardware.json"),
+        help="Path to aws_hardware.json (default: src/hardware/data/aws_hardware.json).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=None,
-        help="Output path. Defaults to the input path (in-place update).",
+        default=Path("src/hardware/data/pricing.json"),
+        help="Output path (default: src/hardware/data/pricing.json).",
+    )
+    parser.add_argument(
+        "--gpu-compute-fraction",
+        type=float,
+        default=0.6,
+        help="Fraction of per-GPU AWS price attributed to GPU compute (default: 0.6).",
     )
     return parser.parse_args()
 
@@ -271,18 +210,42 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    aws_data = json.loads(args.input.read_text(encoding="utf-8"))
-    family_pricing = _derive_all_family_pricing(aws_data)
+    pricing, machines = load_aws_hardware_db(args.input)
+    if not machines:
+        raise RuntimeError(f"No AWS machines loaded from {args.input}")
 
-    aws_data["_pricing"]["gpu_family_pricing"] = family_pricing
-    # Global fallbacks for bandwidth components (USD per GB/s per GPU per hour).
-    aws_data["_pricing"].setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
-    aws_data["_pricing"].setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
-    aws_data["_pricing"].setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
+    family_pricing = _derive_all_family_pricing(
+        machines, compute_fraction=args.gpu_compute_fraction
+    )
 
-    output_path = args.output or args.input
-    output_path.write_text(json.dumps(aws_data, indent=2), encoding="utf-8")
-    print(f"\nWrote per-family pricing to {output_path}")
+    output = {
+        "_pricing": {
+            "cpu_ram_usd_per_gb_hour": _RAM_PRICE,
+            "ssd_usd_per_gb_hour": _SSD_PRICE,
+            "inter_node_up_usd_per_gbps_hour": pricing.get(
+                "inter_node_up_usd_per_gbps_hour", 0.0059
+            ),
+            "inter_node_down_usd_per_gbps_hour": pricing.get(
+                "inter_node_down_usd_per_gbps_hour", 0.0059
+            ),
+            "ssd_bw_usd_per_gb_s_hour": pricing.get("ssd_bw_usd_per_gb_s_hour", 0.001),
+            "pcie_bw_usd_per_gb_s_hour": pricing.get(
+                "pcie_bw_usd_per_gb_s_hour", 0.001
+            ),
+            "nvlink_bw_usd_per_gb_s_hour": pricing.get(
+                "nvlink_bw_usd_per_gb_s_hour", 0.002
+            ),
+            "inet_up_usd_per_gbps_hour": pricing.get("inet_up_usd_per_gbps_hour", 0.2),
+            "inet_down_usd_per_gbps_hour": pricing.get(
+                "inet_down_usd_per_gbps_hour", 0.2
+            ),
+            "gpu_family_pricing": family_pricing,
+            "gpu_compute_fraction": args.gpu_compute_fraction,
+        }
+    }
+
+    args.output.write_text(json.dumps(output, indent=2), encoding="utf-8")
+    print(f"\nWrote per-family pricing to {args.output}")
 
 
 if __name__ == "__main__":

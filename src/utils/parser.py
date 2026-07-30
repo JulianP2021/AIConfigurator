@@ -344,6 +344,17 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
             f"(default: {env.mixed_gpu_count})"
         ),
     )
+    parser.add_argument(
+        "--gpu-compute-fraction",
+        type=float,
+        default=env.gpu_compute_fraction,
+        help=(
+            "Fraction of a GPU slot's all-in cost attributed to GPU compute. "
+            "The remaining fraction is attributed to RAM, SSD, and bandwidth. "
+            "Used both for mixed-GPU swaps and for pricing custom/focused machines. "
+            f"(default: {env.gpu_compute_fraction})"
+        ),
+    )
     return parser
 
 

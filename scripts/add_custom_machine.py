@@ -93,9 +93,6 @@ def _build_machine_config(settings: dict[str, Any]) -> dict:
         ),
     }
 
-    if settings.get("compute_usd_per_gpu_hour") is not None:
-        config["gpu_price_usd_per_hour"] = settings["compute_usd_per_gpu_hour"]
-
     return config
 
 
@@ -114,7 +111,6 @@ def _variant_name(base: str, settings: dict[str, Any]) -> str:
     inter_node_up = settings.get("inter_node_up_gbps")
     inter_node_down = settings.get("inter_node_down_gbps")
 
-    print(settings)
     slug += f" in{inter_node_up:.1f}/{inter_node_down:.1f}"
 
     inet_up = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
@@ -216,16 +212,16 @@ def main() -> int:
         help="Datacenter NIC download bandwidth in Gbps. Comma-separated list accepted (default: 100).",
     )
     parser.add_argument(
-        "--compute-usd-per-gpu-hour",
-        type=str,
-        default=None,
-        help="Override the derived compute price per GPU per hour (USD). Comma-separated list accepted.",
-    )
-    parser.add_argument(
         "--custom-hardware",
         type=Path,
         default=Path("src/hardware/custom_hardware.json"),
         help="Path to the custom hardware JSON file (default: src/hardware/custom_hardware.json).",
+    )
+    parser.add_argument(
+        "--gpu-compute-fraction",
+        type=float,
+        default=None,
+        help="GPU compute fraction to validate against the pricing table (default: read from pricing.json).",
     )
     parser.add_argument(
         "--write",
@@ -263,20 +259,15 @@ def main() -> int:
             )
 
     pricing = _get_pricing(args.custom_hardware)
-    # Bandwidth components are priced in USD per GB/s per GPU per hour;
-    # network components are priced in USD per Gbps per GPU per hour.
-    pricing.setdefault("ssd_bw_usd_per_gb_s_hour", 1.1088)
-    pricing.setdefault("pcie_bw_usd_per_gb_s_hour", 0.0)
-    pricing.setdefault("nvlink_bw_usd_per_gb_s_hour", 0.001)
     family_pricing = pricing.get("gpu_family_pricing", {})
     missing_families = [g for g in gpu_names if g not in family_pricing]
     if missing_families:
         print(
-            f"Warning: no per-family pricing for {missing_families}. "
-            "Falling back to global prices for components and zero for compute. "
-            "Use --compute-usd-per-gpu-hour to set a compute price.",
+            f"Error: no per-family pricing for {missing_families}. "
+            "Add pricing entries under _pricing.gpu_family_pricing first.",
             file=sys.stderr,
         )
+        return 1
 
     # Build dimension lists.
     dimensions: dict[str, list[Any]] = {
@@ -296,10 +287,10 @@ def main() -> int:
         dimensions["inet_up_gbps"] = parse_float_list(args.inet_up_gbps)
     if args.inet_down_gbps is not None:
         dimensions["inet_down_gbps"] = parse_float_list(args.inet_down_gbps)
-    if args.compute_usd_per_gpu_hour is not None:
-        dimensions["compute_usd_per_gpu_hour"] = parse_float_list(
-            args.compute_usd_per_gpu_hour
-        )
+
+    gpu_compute_fraction = args.gpu_compute_fraction
+    if gpu_compute_fraction is None:
+        gpu_compute_fraction = float(pricing.get("gpu_compute_fraction", 0.6))
 
     keys = list(dimensions.keys())
     combinations = list(itertools.product(*(dimensions[k] for k in keys)))
@@ -312,7 +303,9 @@ def main() -> int:
         settings["machine_name"] = _variant_name(args.machine_name, settings)
 
         raw_config = _build_machine_config(settings)
-        final_config = _machine_config_with_defaults(raw_config, pricing)
+        final_config = _machine_config_with_defaults(
+            raw_config, pricing, compute_price_fraction=gpu_compute_fraction
+        )
         entries[settings["machine_name"]] = final_config
 
         printed.append({

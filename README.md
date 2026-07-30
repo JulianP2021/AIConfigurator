@@ -288,6 +288,9 @@ MIXED=false
 MIXED_GPU_DONOR=
 MIXED_GPU_COUNT=-1
 
+# GPU compute/bandwidth split; must match the split in pricing.json
+GPU_COMPUTE_FRACTION=0.6
+
 # Cache
 RAM_USAGE_FRACTION=0.1
 SSD_USAGE_FRACTION=0.1

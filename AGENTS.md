@@ -92,6 +92,7 @@ MACHINE_HARDWARE=B200 x8 #15825275
 MIXED=false              # mixed-GPU colocated node
 MIXED_GPU_DONOR=         # donor machine for decode GPUs
 MIXED_GPU_COUNT=-1       # -1 means use the decode-side GPU count
+GPU_COMPUTE_FRACTION=0.6 # compute/bandwidth split for GPU slot pricing; must match pricing.json
 
 RAM_USAGE_FRACTION=0.8
 SSD_USAGE_FRACTION=0.8

@@ -85,6 +85,9 @@ def main():
         f"Expected Hardware instance, got {type(hardware)}"
     )
     assert hardware is not None, f"Failed to fetch hardware for {args.machine_hardware}"
+    print(
+        f"Effective --machine-hardware: {hardware.name} (${hardware.spec.dph_base:.4f}/hour per node)"
+    )
 
     total_gpus = hardware.spec.num_gpus
     prefill_split_explicit = args.prefill_gpus_per_node >= 0
@@ -114,6 +117,7 @@ def main():
                 prefill_gpus_per_node,
                 donor_hw_name,
                 mixed_gpu_count,
+                compute_price_fraction=args.gpu_compute_fraction,
             )
             donor_gpu_name = load_combined_machine_db()[donor_hw_name]["gpu_name"]
             from src.hardware.scraper import lookup as lookup_gpu
