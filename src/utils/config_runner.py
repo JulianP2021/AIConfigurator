@@ -237,7 +237,7 @@ def run_single_config(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    router_cost_config: RouterCostConfig,
+    _router_cost_config: RouterCostConfig | None = None,
 ) -> SimulationResult:
     scenario = build_scenario(common, cfg)
     return simulate_run_distributed(
@@ -245,7 +245,6 @@ def run_single_config(
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
-        router_cost_config=router_cost_config,
         should_print=False,
         sla=common.get("sla"),
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),

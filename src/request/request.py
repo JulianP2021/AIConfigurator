@@ -472,7 +472,7 @@ class RequestGenerator:
         # that SLA violation messages can report inter-request delay.
         self._last_request_generated_ms[key] = request.generated_ms
 
-    def finish_request(self, request: Request, now_ms: float) -> None:
+    def finish_request(self, request: Request, _now_ms: float) -> None:
         """Record that ``request`` has completed and is no longer in flight.
 
         ``now_ms`` is ignored; the user's next request is generated after

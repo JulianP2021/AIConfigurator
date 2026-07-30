@@ -35,7 +35,7 @@ def _finish_request(
     finished_requests: list[Request],
     sla: dict[str, float] | None,
     request_generator: RequestGenerator | None = None,
-    now_ms: float = 0.0,
+    _now_ms: float = 0.0,
 ) -> None:
     """Append a completed request to finished_requests and enforce per-request SLAs.
 
@@ -250,6 +250,7 @@ def simulate_run_distributed(
         prefill_instances=prefill_instances,
         decode_instances=decode_instances,
         cache=cache,
+        cost_config=None,
         random_seed=random_seed,
         model=model,
     )

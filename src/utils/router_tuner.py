@@ -278,7 +278,7 @@ def tune_router_for_config(
             successes.sort(
                 key=lambda item: _result_score(item[1], item[2]), reverse=True
             )
-            keep = max(1, int(math.ceil(len(successes) * top_fraction)))
+            keep = max(1, math.ceil(len(successes) * top_fraction))
             survivors = [params for params, _result, _budget in successes[:keep]]
 
     # Optional local refinement around the best coarse point.

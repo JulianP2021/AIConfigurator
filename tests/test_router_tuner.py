@@ -1,6 +1,5 @@
 """Tests for the dynamic router tuner."""
 
-
 import pytest
 
 from src.hardware.hardware import S3Spec

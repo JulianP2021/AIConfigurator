@@ -49,7 +49,9 @@ class TestTTFTExpansion:
             sla_ttft_ms=30000.0,
             sla_tpot_ms=100.0,
         )
-        monkeypatch.setattr("configs.execute_hardware_economics_config.load_env", lambda: fake_env)
+        monkeypatch.setattr(
+            "configs.execute_hardware_economics_config.load_env", lambda: fake_env
+        )
 
         config = {
             "model": "Qwen/Qwen3-8B",

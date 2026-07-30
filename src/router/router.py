@@ -36,7 +36,13 @@ from src.utils.utils import calculate_flops, calculate_memory
 
 
 class RouterCostConfig:
-    """Tunable knobs for the Dynamo-style routing cost function."""
+    """Deprecated container kept for backward compatibility.
+
+    The bandwidth-aware router no longer uses these scalar credit weights; it
+    estimates per-node completion time from compute, queue wait, and full-bandwidth
+    KV transfer time.  The class remains so existing callers and serialized
+    configs can still construct a RouterCostConfig without crashing.
+    """
 
     def __init__(
         self,
@@ -351,7 +357,7 @@ class Router:
 
     def _prefill_queue_wait_ms(
         self,
-        req: Request,
+        _req: Request,
         node_id: int,
         active_prefill: dict[int, float],
     ) -> float:
@@ -369,7 +375,7 @@ class Router:
         return self._prefill_compute_time_ms(dummy, node_id)
 
     def _decode_queue_wait_ms(
-        self, req: Request, node_id: int, active_decode: dict[int, float]
+        self, _req: Request, node_id: int, active_decode: dict[int, float]
     ) -> float:
         """Estimate queue wait on a decode node from already-assigned tokens."""
         spec = self._node_spec(node_id)

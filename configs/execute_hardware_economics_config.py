@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from configs.utils.config_utils import get_focus
 from src.hardware.hardware import S3Spec
-from src.logger import LOG_CONFIG_EXECUTOR, log, should_log, set_log_mask, set_debug
+from src.logger import LOG_CONFIG_EXECUTOR, log, should_log
 from src.result import SimulationResult
 from src.router.router import RouterCostConfig
 from src.utils.config_runner import (
@@ -172,7 +172,8 @@ def _run_single_config_for_users(
     router_cost_config: RouterCostConfig,
 ) -> SimulationResult | Exception:
     """Run a single config with a specific user count, returning either the
-    result or the exception that terminated the run."""
+    result or the exception that terminated the run.
+    """
     common = dict(run_spec["common"])
     common["users"] = users
     # Prefer an explicit router config carried in the run spec (e.g. from
@@ -388,16 +389,21 @@ def _run_spec_worker(
     fractions of that estimate. The best router config is reused for the
     full max-users search.
     """
-
     # set_log_mask(63)
     effective_router_config = router_cost_config
     # Preserve any router config that arrived as part of the common payload.
-    if isinstance(run_spec.get("common", {}).get("router_cost_config"), RouterCostConfig):
+    if isinstance(
+        run_spec.get("common", {}).get("router_cost_config"), RouterCostConfig
+    ):
         effective_router_config = run_spec["common"]["router_cost_config"]
 
     if tune_router:
-        ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
-        ssd_usage_fraction = float(config.get("ssd_usage_fraction", env.ssd_usage_fraction))
+        ram_usage_fraction = float(
+            config.get("ram_usage_fraction", env.ram_usage_fraction)
+        )
+        ssd_usage_fraction = float(
+            config.get("ssd_usage_fraction", env.ssd_usage_fraction)
+        )
         if should_log(LOG_CONFIG_EXECUTOR):
             log(
                 LOG_CONFIG_EXECUTOR,
