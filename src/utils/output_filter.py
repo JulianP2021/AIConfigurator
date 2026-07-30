@@ -1,6 +1,6 @@
 """Output-field filtering helpers.
 
-Used by main.py and execute_config.py to keep printed JSON compact while
+Used by main.py and execute_user_sweep_config.py to keep printed JSON compact while
 preserving every field in the actual exported files.
 """
 
@@ -39,6 +39,8 @@ _VERBOSE_FIELDS: set[str] = {
     "max_clean_ttft_ms",
     "avg_clean_latency_ms",
     "max_clean_latency_ms",
+    "router_active_work_scale",
+    "router_device_credit",
 }
 
 
@@ -65,6 +67,8 @@ _DEFAULT_FIELDS: list[str] = [
     "s3_cost_usd_per_hour",
     "s3_storage_cost_usd_per_hour",
     "total_cost_usd_per_hour",
+    "router_active_work_scale",
+    "router_device_credit",
 ]
 
 

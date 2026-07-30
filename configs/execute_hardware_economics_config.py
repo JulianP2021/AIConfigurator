@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run colocated TTFT-vs-cost sweeps over user-delay values.
+"""Run hardware-economics sweeps over TTFT and user-delay values.
 
-The input config file follows the same schema as execute_config.py:
+The input config file follows the same schema as execute_user_sweep_config.py:
 
     {
         "model": "Qwen/Qwen3-8B",
@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from configs.utils.config_utils import get_focus
 from src.hardware.hardware import S3Spec
-from src.logger import LOG_CONFIG_EXECUTOR, log, set_log_mask, should_log
+from src.logger import LOG_CONFIG_EXECUTOR, log, should_log, set_log_mask, set_debug
 from src.result import SimulationResult
 from src.router.router import RouterCostConfig
 from src.utils.config_runner import (
@@ -60,6 +60,8 @@ from src.utils.config_runner import (
     validate_colocated_configs,
 )
 from src.utils.env_reader import EnvConfig, load_env
+from src.utils.parser import _add_logging_args, apply_logging_args
+from src.utils.router_tuner import TunableRouterParams, tune_router_for_config
 from src.utils.utils import add_result_metadata, parse_float_list
 
 
@@ -109,7 +111,7 @@ def _build_run_config(
     run_cfg["label"] = _build_run_label(str(cfg["label"]), ttft_ms, user_delay_ms)
     run_cfg["benchmark_ttft_ms"] = ttft_ms
     run_cfg["benchmark_user_delay_ms"] = user_delay_ms
-    run_cfg["benchmark_mode"] = "ttft_cost_by_delay"
+    run_cfg["benchmark_mode"] = "hardware_economics"
     focus, focus_value = _run_focus(cfg)
     run_cfg["focus"] = focus
     run_cfg["focus_value"] = focus_value
@@ -122,6 +124,7 @@ def _expand_run_specs(
     ttft_values: list[float],
     user_delay_values: list[float],
     user_delay_fraction: float,
+    router_cost_config: RouterCostConfig | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     env = load_env()
     tpot_ms = _resolve_tpot_ms(config, env)
@@ -132,6 +135,7 @@ def _expand_run_specs(
         user_delay_fraction_override=user_delay_fraction,
         user_delay_min_ms_override=user_delay_values[0],
         user_delay_max_ms_override=user_delay_values[0],
+        router_cost_config=router_cost_config,
     )
 
     base_configs = list(config.get("configs", []))
@@ -168,24 +172,35 @@ def _run_single_config_for_users(
     router_cost_config: RouterCostConfig,
 ) -> SimulationResult | Exception:
     """Run a single config with a specific user count, returning either the
-    result or the exception that terminated the run.
-    """
+    result or the exception that terminated the run."""
     common = dict(run_spec["common"])
     common["users"] = users
+    # Prefer an explicit router config carried in the run spec (e.g. from
+    # tuning or from the config file), otherwise use the worker's fallback.
+    effective_router_config = router_cost_config
+    common_router_cfg = run_spec.get("common", {}).get("router_cost_config")
+    if isinstance(common_router_cfg, RouterCostConfig):
+        effective_router_config = common_router_cfg
+    ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
+    ssd_usage_fraction = float(config.get("ssd_usage_fraction", env.ssd_usage_fraction))
     try:
         result = run_single_config(
             common,
             run_spec["cfg"],
-            float(config.get("ram_usage_fraction", env.ram_usage_fraction)),
-            float(config.get("ssd_usage_fraction", env.ssd_usage_fraction)),
+            ram_usage_fraction,
+            ssd_usage_fraction,
             s3_spec,
-            router_cost_config,
+            effective_router_config,
         )
+        result.router_active_work_scale = effective_router_config.active_work_scale
+        result.router_device_credit = effective_router_config.device_credit
         if should_log(LOG_CONFIG_EXECUTOR):
             log(
                 LOG_CONFIG_EXECUTOR,
                 f"{run_spec['cfg']['label']} users={users} OK "
-                f"max_ttft={result.max_ttft:.1f} max_tpot={result.max_tpot:.2f}",
+                f"max_ttft={result.max_ttft:.1f} max_tpot={result.max_tpot:.2f} "
+                f"router=(aws={effective_router_config.active_work_scale:.6f}, "
+                f"dc={effective_router_config.device_credit:.4f})",
             )
         return result
     except Exception as exc:
@@ -208,7 +223,7 @@ def _find_max_users(
     """Exponential + binary search for the largest user count that succeeds.
 
     A "success" means ``run_single_config`` returns a ``SimulationResult``
-    without raising an exception.  The search starts at ``users=1`` and doubles
+    without raising an exception. The search starts at ``users=1`` and doubles
     until the first failure (or an internal ceiling), then binary-searches
     between the last known success and the first known failure.
 
@@ -289,6 +304,62 @@ def _find_max_users(
     return lo, lo_result  # type: ignore[return-value]
 
 
+def _estimate_max_users(
+    run_spec: dict[str, Any],
+    config: dict[str, Any],
+    env: EnvConfig,
+    s3_spec: S3Spec,
+    router_cost_config: RouterCostConfig,
+    timeout_s: float,
+) -> int:
+    """Quickly estimate the feasible user count with a short timeout.
+
+    Doubles ``users`` until the config fails or the timeout expires, then
+    returns the last successful value. This is intentionally coarse: it is
+    used only to pick router-tuning budgets, not as the final max-users result.
+    """
+
+    def _is_valid(value: SimulationResult | Exception) -> bool:
+        return isinstance(value, SimulationResult)
+
+    start_time = time.monotonic()
+
+    def _remaining() -> float:
+        return max(0.0, timeout_s - (time.monotonic() - start_time))
+
+    lo_result = _run_single_config_for_users(
+        run_spec, 1, config, env, s3_spec, router_cost_config
+    )
+    if not _is_valid(lo_result):
+        return 0
+
+    lo = 1
+    hi = 2
+    while _remaining() > 0.0:
+        hi_result = _run_single_config_for_users(
+            run_spec, hi, config, env, s3_spec, router_cost_config
+        )
+        if not _is_valid(hi_result):
+            break
+        lo = hi
+        hi *= 2
+        if hi > 1_000_000:
+            return hi
+
+    # If we have an upper bound, do a quick binary search to tighten it.
+    while hi - lo > 1 and _remaining() > 0.0:
+        mid = lo + (hi - lo) // 2
+        mid_result = _run_single_config_for_users(
+            run_spec, mid, config, env, s3_spec, router_cost_config
+        )
+        if _is_valid(mid_result):
+            lo = mid
+        else:
+            hi = mid
+
+    return lo
+
+
 # ---------------------------------------------------------------------------
 # Worker entry point for the process pool.
 # ---------------------------------------------------------------------------
@@ -301,27 +372,102 @@ def _run_spec_worker(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float,
-    find_max_users: bool,
+    tune_router: bool = True,
+    tune_grid: list[TunableRouterParams] | None = None,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 120.0,
+    tune_refine: bool = True,
+    tune_budget_fractions: list[float] | None = None,
+    estimate_timeout_s: float = 60.0,
 ) -> tuple[dict[str, Any], SimulationResult | Exception | None]:
-    """Run one expanded spec, optionally searching for the max user count.
+    """Run one expanded spec, searching for the max user count.
 
     This function is submitted to the process pool so each worker performs
-    the (possibly multi-step) search in isolation.
+    the search in isolation. Router tuning, when enabled, first estimates the
+    feasible user count, then evaluates a grid of router configs at a few
+    fractions of that estimate. The best router config is reused for the
+    full max-users search.
     """
-    if find_max_users:
-        max_users, result = _find_max_users(
-            run_spec, config, env, s3_spec, router_cost_config, timeout_s
+
+    # set_log_mask(63)
+    effective_router_config = router_cost_config
+    # Preserve any router config that arrived as part of the common payload.
+    if isinstance(run_spec.get("common", {}).get("router_cost_config"), RouterCostConfig):
+        effective_router_config = run_spec["common"]["router_cost_config"]
+
+    if tune_router:
+        ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
+        ssd_usage_fraction = float(config.get("ssd_usage_fraction", env.ssd_usage_fraction))
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} tuning router: base="
+                f"(aws={router_cost_config.active_work_scale:.6f}, "
+                f"dc={router_cost_config.device_credit:.4f})",
+            )
+
+        estimated = _estimate_max_users(
+            run_spec,
+            config,
+            env,
+            s3_spec,
+            router_cost_config,
+            estimate_timeout_s,
         )
-        return {"max_users": max_users, "run_spec": run_spec}, result
-    result = _run_single_config_for_users(
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} estimated max users: {estimated}",
+            )
+
+        fractions = tune_budget_fractions or [0.25, 0.5, 1.0]
+        if estimated <= 0:
+            budgets = [1]
+        else:
+            budgets = sorted({max(2, int(estimated * f)) for f in fractions})
+
+        if should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} router tuning budgets: {budgets}",
+            )
+
+        effective_router_config = tune_router_for_config(
+            run_spec["common"],
+            run_spec["cfg"],
+            ram_usage_fraction,
+            ssd_usage_fraction,
+            s3_spec,
+            effective_router_config,
+            grid=tune_grid,
+            max_workers=tune_max_workers,
+            timeout_s=tune_timeout_s,
+            budgets=budgets,
+            refine=tune_refine,
+        )
+        if effective_router_config is router_cost_config:
+            if should_log(LOG_CONFIG_EXECUTOR):
+                log(
+                    LOG_CONFIG_EXECUTOR,
+                    f"{run_spec['cfg']['label']} router tuning fell back to base config",
+                )
+        elif should_log(LOG_CONFIG_EXECUTOR):
+            log(
+                LOG_CONFIG_EXECUTOR,
+                f"{run_spec['cfg']['label']} tuned router: "
+                f"(aws={effective_router_config.active_work_scale:.6f}, "
+                f"dc={effective_router_config.device_credit:.4f})",
+            )
+
+    max_users, result = _find_max_users(
         run_spec,
-        int(run_spec["common"].get("users", 1)),
         config,
         env,
         s3_spec,
-        router_cost_config,
+        effective_router_config,
+        timeout_s,
     )
-    return {"run_spec": run_spec}, result
+    return {"max_users": max_users, "run_spec": run_spec}, result
 
 
 def _run_sweep(
@@ -330,21 +476,15 @@ def _run_sweep(
     user_delay_values: list[float],
     user_delay_fraction: float,
     timeout_s: float,
-    find_max_users: bool = False,
+    tune_router: bool = True,
+    tune_grid: list[TunableRouterParams] | None = None,
+    tune_max_workers: int = 4,
+    tune_timeout_s: float = 120.0,
+    tune_refine: bool = True,
+    tune_budget_fractions: list[float] | None = None,
+    estimate_timeout_s: float = 60.0,
 ) -> list[dict[str, Any]]:
     env = load_env()
-    _common, expanded_runs = _expand_run_specs(
-        config,
-        ttft_values,
-        user_delay_values,
-        user_delay_fraction,
-    )
-
-    if find_max_users:
-        print(f"Finding max users for {len(expanded_runs)} specs")
-    else:
-        print(f"Running {len(expanded_runs)} specs at most")
-
     s3_spec = S3Spec.from_gbps(
         enabled=bool(config.get("s3_enabled", env.s3_enabled)),
         up_gbps=float(config.get("s3_up_bw_gbps", env.s3_up_bw_gbps)),
@@ -370,10 +510,17 @@ def _run_sweep(
             config.get("router_remote_ssd_credit", env.router_remote_ssd_credit)
         ),
         s3_credit=float(config.get("router_s3_credit", env.router_s3_credit)),
-        busy_threshold_tokens=float(
-            config.get("router_busy_threshold_tokens", env.router_busy_threshold_tokens)
-        ),
     )
+
+    _common, expanded_runs = _expand_run_specs(
+        config,
+        ttft_values,
+        user_delay_values,
+        user_delay_fraction,
+        router_cost_config=router_cost_config,
+    )
+
+    print(f"Finding max users for {len(expanded_runs)} specs")
 
     results: list[dict[str, Any]] = []
     """RAM|NVLink|SSD|SSD BW|INET BW"""
@@ -401,7 +548,13 @@ def _run_sweep(
                 s3_spec,
                 router_cost_config,
                 timeout_s,
-                find_max_users,
+                tune_router,
+                tune_grid,
+                tune_max_workers,
+                tune_timeout_s,
+                tune_refine,
+                tune_budget_fractions,
+                estimate_timeout_s,
             ): (i, run_spec)
             for i, run_spec in enumerate(expanded_runs)
         }
@@ -410,9 +563,7 @@ def _run_sweep(
         failed: dict[int, Exception] = {}
         pending = dict(futures)
 
-        end_time = time.monotonic() + timeout_s * (
-            len(expanded_runs) if find_max_users else 1
-        )
+        end_time = time.monotonic() + timeout_s * len(expanded_runs)
         while pending:
             wait_s = max(0.0, min(end_time - time.monotonic(), 1.0))
             done, _ = concurrent.futures.wait(
@@ -435,53 +586,41 @@ def _run_sweep(
                 i, run_spec = pending.pop(future)
                 try:
                     worker_meta, result = future.result()
-                    if find_max_users:
-                        max_users = int(worker_meta.get("max_users", 0))
-                        if max_users <= 0 or not isinstance(result, SimulationResult):
-                            failed[i] = RuntimeError("failed during max-users search")
-                            if should_log(LOG_CONFIG_EXECUTOR):
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Config '{run_spec['cfg']['label']}' failed max-users search: {result}",
-                                )
-                            continue
-                        result = result  # type: ignore[unreachable]
-                        row = result.to_dict()
-                        focus, focus_value = _run_focus(run_spec["cfg"])
-                        color = palette[focus]
-                        total_cost = row.get("total_cost_usd_per_hour", 0.0)
-                        price_per_user = (
-                            total_cost / max_users if max_users > 0 else float("inf")
-                        )
-                        add_result_metadata(
-                            row,
-                            str(run_spec["cfg"]["label"]),
-                            run_spec["cfg"],
-                            color,
-                            users=max_users,
-                            extra_fields={
-                                "benchmark_mode": "ttft_cost_by_delay",
-                                "ttft_sla_ms": run_spec["ttft_ms"],
-                                "tpot_sla_ms": float("inf"),
-                                "user_delay_ms": run_spec["user_delay_ms"],
-                                "user_delay_fraction": user_delay_fraction,
-                                "focus": focus,
-                                "focus_value": focus_value,
-                                "max_users": max_users,
-                                "price_per_user": round(price_per_user, 6),
-                            },
-                        )
-                        results.append(row)
-                    else:
-                        if isinstance(result, Exception):
-                            failed[i] = result
-                            if should_log(LOG_CONFIG_EXECUTOR):
-                                log(
-                                    LOG_CONFIG_EXECUTOR,
-                                    f"Config '{run_spec['cfg']['label']}' failed: {result}",
-                                )
-                            continue
-                        successful[i] = (run_spec, result)
+                    max_users = int(worker_meta.get("max_users", 0))
+                    if max_users <= 0 or not isinstance(result, SimulationResult):
+                        failed[i] = RuntimeError("failed during max-users search")
+                        if should_log(LOG_CONFIG_EXECUTOR):
+                            log(
+                                LOG_CONFIG_EXECUTOR,
+                                f"Config '{run_spec['cfg']['label']}' failed max-users search: {result}",
+                            )
+                        continue
+                    row = result.to_dict()
+                    focus, focus_value = _run_focus(run_spec["cfg"])
+                    color = palette[focus]
+                    total_cost = row.get("total_cost_usd_per_hour", 0.0)
+                    price_per_user = (
+                        total_cost / max_users if max_users > 0 else float("inf")
+                    )
+                    add_result_metadata(
+                        row,
+                        str(run_spec["cfg"]["label"]),
+                        run_spec["cfg"],
+                        color,
+                        users=max_users,
+                        extra_fields={
+                            "benchmark_mode": "hardware_economics",
+                            "ttft_sla_ms": run_spec["ttft_ms"],
+                            "tpot_sla_ms": float("inf"),
+                            "user_delay_ms": run_spec["user_delay_ms"],
+                            "user_delay_fraction": user_delay_fraction,
+                            "focus": focus,
+                            "focus_value": focus_value,
+                            "max_users": max_users,
+                            "price_per_user": round(price_per_user, 6),
+                        },
+                    )
+                    results.append(row)
                 except Exception as exc:
                     failed[i] = exc
                     if should_log(LOG_CONFIG_EXECUTOR):
@@ -489,27 +628,6 @@ def _run_sweep(
                             LOG_CONFIG_EXECUTOR,
                             f"Config '{run_spec['cfg']['label']}' failed: {exc}",
                         )
-
-    for run_spec, result in successful.values():
-        row = result.to_dict()
-        focus, focus_value = _run_focus(run_spec["cfg"])
-        color = palette[focus]
-        add_result_metadata(
-            row,
-            str(run_spec["cfg"]["label"]),
-            run_spec["cfg"],
-            color,
-            extra_fields={
-                "benchmark_mode": "ttft_cost_by_delay",
-                "ttft_sla_ms": run_spec["ttft_ms"],
-                "tpot_sla_ms": float("inf"),
-                "user_delay_ms": run_spec["user_delay_ms"],
-                "user_delay_fraction": user_delay_fraction,
-                "focus": focus,
-                "focus_value": focus_value,
-            },
-        )
-        results.append(row)
 
     return results
 
@@ -532,7 +650,7 @@ def _write_results_dir(
     written: list[Path] = []
     for (focus, focus_value), rows in sorted(grouped.items()):
         payload = {
-            "benchmark": "ttft_cost_by_delay",
+            "benchmark": "hardware_economics",
             "config": {
                 "source_config": str(config.get("source_config", "")),
                 "ttft_values": ttft_values,
@@ -554,7 +672,8 @@ def _write_results_dir(
 
 def main() -> None:
     env = load_env()
-    parser = argparse.ArgumentParser(description="Run TTFT-vs-cost colocated sweeps")
+    parser = argparse.ArgumentParser(description="Run hardware-economics sweeps")
+    _add_logging_args(parser, env)
     parser.add_argument(
         "--config", type=Path, required=True, help="Path to the base config JSON"
     )
@@ -589,10 +708,47 @@ def main() -> None:
         help="Per-config timeout in seconds (default: 240.0)",
     )
     parser.add_argument(
-        "--find-max-users",
+        "--tune-router",
         action="store_true",
-        default=False,
-        help="Use exponential + binary search to find the largest user count each config can serve while meeting SLAs",
+        default=True,
+        help="Run a small grid search to pick router knobs per config (default: True)",
+    )
+    parser.add_argument(
+        "--no-tune-router",
+        action="store_false",
+        dest="tune_router",
+        help="Disable per-config router tuning and use the env/config defaults",
+    )
+    parser.add_argument(
+        "--tune-max-workers",
+        type=int,
+        default=4,
+        help="Parallel workers for the per-config router tuning grid (default: 4)",
+    )
+    parser.add_argument(
+        "--tune-timeout",
+        type=float,
+        default=120.0,
+        help="Per-candidate timeout for router tuning in seconds (default: 120.0)",
+    )
+    parser.add_argument(
+        "--tune-budget-fractions",
+        type=_parse_float_values,
+        default=None,
+        help="Comma-separated fractions of estimated max users used as router tuning budgets (default: 0.25,0.5,1.0)",
+    )
+    parser.add_argument(
+        "--estimate-timeout",
+        type=float,
+        default=60.0,
+        help="Timeout in seconds for the quick max-users estimate used to set tuning budgets (default: 60.0)",
+    )
+    parser.add_argument(
+        "--tune-no-refine",
+        action="store_false",
+        dest="tune_refine",
+        default=True,
+        help="Disable local refinement around the best coarse router point",
     )
     args = parser.parse_args()
     args.ttft_values = [f * 1000 for f in args.ttft_values]
@@ -608,7 +764,7 @@ def main() -> None:
         parser.error("Provide --results-dir")
 
     config = load_config(args.config)
-    set_log_mask(LOG_CONFIG_EXECUTOR)
+    apply_logging_args(args)
 
     results = _run_sweep(
         config,
@@ -616,11 +772,17 @@ def main() -> None:
         args.user_delay_values,
         args.user_delay_fraction,
         args.timeout,
-        find_max_users=args.find_max_users,
+        tune_router=args.tune_router,
+        tune_grid=None,
+        tune_max_workers=args.tune_max_workers,
+        tune_timeout_s=args.tune_timeout,
+        tune_refine=args.tune_refine,
+        tune_budget_fractions=args.tune_budget_fractions,
+        estimate_timeout_s=args.estimate_timeout,
     )
 
     payload = {
-        "benchmark": "ttft_cost_by_delay",
+        "benchmark": "hardware_economics",
         "config": {
             "source_config": str(args.config),
             "ttft_values": args.ttft_values,

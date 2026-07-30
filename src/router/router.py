@@ -1,22 +1,37 @@
-"""Dynamo-style cost-based router for distributed LLM inference.
+"""Bandwidth-aware router for distributed LLM inference.
 
-The router scores candidate workers using a cost function that combines:
+The router estimates the wall-clock time a request needs to finish on each
+candidate node and picks the node with the lowest expected completion time.
+The estimate is composed of:
 
-* Active load on the worker (prefill + decode tokens already assigned).
-* KV cache locality: cached prefix tokens reduce the effective prefill load.
-* Tier-aware credits: device-local RAM is cheapest, then SSD, then S3, then
-  remote RAM.
+* Compute time for the remaining prefill/decode work.
+* Queue wait based on currently assigned active tokens.
+* KV download time from the cached prefix location to the destination node,
+  using full (unshared) bandwidth for each leg.
 
-The lowest-cost eligible worker is selected deterministically.
+This makes routing sensitive to the physical cost of moving KV across tiers and
+nodes, not just to token counts or static credit weights.
+
+When multiple nodes produce exactly the same estimated completion time, the tie
+is broken by RAM fill factor: the node with the most free RAM is preferred so
+that newly produced or fetched KV blocks are less likely to be forced to SSD or
+to trigger a cross-node transfer.  If the fill factor is also tied, a random
+choice is made using the configured ``random_seed`` so repeated runs with the
+same seed produce identical routing decisions.
 """
 
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from src.cache.cache import S3_NODE_ID, Cache
+from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec
 from src.instances.decode import DecodeInstance
 from src.instances.prefill import PrefillInstance
 from src.logger import LOG_ROUTER, log, should_log
+from src.model.model import Model
 from src.request.request import Request
+from src.utils.utils import calculate_flops, calculate_memory
 
 
 class RouterCostConfig:
@@ -30,7 +45,6 @@ class RouterCostConfig:
         remote_ram_credit: float = 0.5,
         remote_ssd_credit: float = 0.3,
         s3_credit: float = 0.1,
-        busy_threshold_tokens: float = 1_000_000.0,
     ) -> None:
 
         self.prefill_load_scale = prefill_load_scale
@@ -39,7 +53,6 @@ class RouterCostConfig:
         self.remote_ram_credit = remote_ram_credit
         self.remote_ssd_credit = remote_ssd_credit
         self.s3_credit = s3_credit
-        self.busy_threshold_tokens = busy_threshold_tokens
 
 
 @dataclass
@@ -49,10 +62,38 @@ class Router:
     decode_instances: list[DecodeInstance]
     cache: Cache | None = None
     cost_config: RouterCostConfig | None = None
+    random_seed: int | None = None
+    _rng: random.Random = field(init=False, repr=False)
+    model: Model | None = None
 
     def __post_init__(self):
         if self.cost_config is None:
             self.cost_config = RouterCostConfig()
+        self._rng = random.Random(self.random_seed)
+        if self.model is None:
+            self.model = self._infer_model()
+
+    def _infer_model(self) -> Model | None:
+        """Pick a representative model from the attached instances."""
+        for inst in list(self.prefill_instances) + list(self.decode_instances):
+            model = getattr(inst, "model", None)
+            if isinstance(model, Model):
+                return model
+        return None
+
+    @property
+    def _node_hardware(self) -> dict[int, Hardware]:
+        if self.cache is not None:
+            return self.cache.node_hardware
+        # Fall back to instance.hardware when no cache is present. If the
+        # instance itself only has a raw spec object, wrap it minimally.
+        result: dict[int, Hardware] = {}
+        for inst in list(self.prefill_instances) + list(self.decode_instances):
+            if isinstance(inst.hardware, Hardware):
+                result[inst.node_id] = inst.hardware
+            elif hasattr(inst.hardware, "spec"):
+                result[inst.node_id] = Hardware(name="test", spec=inst.hardware.spec)
+        return result
 
     def route_requests(self):
         """Route every request in ``self.queue`` to the lowest-cost worker.
@@ -95,6 +136,65 @@ class Router:
         for inst in instances:
             mapping.setdefault(inst.node_id, []).append(inst)
         return mapping
+
+    def _node_spec(self, node_id: int) -> HardwareSpec | None:
+        hw = self._node_hardware.get(node_id)
+        return hw.spec if hw is not None else None
+
+    def _model(self) -> Model | None:
+        """Return the explicitly supplied model, or infer one from instances."""
+        if self.model is not None:
+            return self.model
+        return self._infer_model()
+
+    def _prefill_compute_time_ms(self, req: Request, node_id: int) -> float:
+        """Estimate prefill compute time on a node (no queuing)."""
+        spec = self._node_spec(node_id)
+        model = self._model()
+        if spec is None or model is None:
+            return 0.0
+        # Use a batch of one; the router does not know future batching.
+        batch = [(req, 0.0)]
+        flops = calculate_flops(model, batch, "prefill")
+        memory = calculate_memory(model, batch, "prefill")
+        return max(
+            float(flops) / spec.gpu_hardware.flops,
+            float(memory) / spec.gpu_hardware.gpu_bw,
+        ) * 1000.0
+
+    def _decode_token_compute_time_ms(
+        self, req: Request, node_id: int, batch_size: int = 1
+    ) -> float:
+        """Estimate per-token decode compute time on a node (no queuing)."""
+        spec = self._node_spec(node_id)
+        model = self._model()
+        if spec is None or model is None:
+            return 0.0
+        # Model the request as running alone; batch_size is a guess.
+        dummy = SimpleNamespace(
+            prefilled_tokens=req.prefilled_tokens,
+            decoded_tokens=req.decoded_tokens,
+            cache_length=req.prefilled_tokens + req.decoded_tokens,
+            remaining_tokens_prefill=0,
+            remaining_tokens_decode=req.osl - req.decoded_tokens,
+            osl=req.osl,
+            isl=req.isl,
+        )
+        batch = [(dummy, 0.0)] * batch_size
+        flops = calculate_flops(model, batch, "decode")
+        memory = calculate_memory(model, batch, "decode")
+        return max(
+            float(flops) / spec.gpu_hardware.flops,
+            float(memory) / spec.gpu_hardware.gpu_bw,
+        ) * 1000.0
+
+    def _download_time_ms(self, req: Request, node_id: int) -> float:
+        """Estimate KV download time to ``node_id`` using full bandwidth."""
+        if self.cache is None:
+            return 0.0
+        return self.cache.estimated_download_time_ms(
+            (req.user_id, req.session_id), node_id, req.isl
+        )
 
     def _prefill_tokens_for_instance(self, inst: PrefillInstance) -> float:
         """Sum of uncached prefill tokens assigned to one prefill instance."""
@@ -148,9 +248,45 @@ class Router:
             return 0
         return self.cache.cached_prefix_on_node((req.user_id, req.session_id), node_id)
 
+    def _ram_fill_factor(self, node_id: int) -> float:
+        """Return the fraction of node RAM capacity currently in use.
+
+        Returns 0.0 when no cache is attached or the node has zero RAM capacity,
+        so the tie-breaker is neutral in those cases.
+        """
+        if self.cache is None:
+            return 0.0
+        capacity = self.cache.ram_capacity_bytes.get(node_id, 0)
+        if capacity <= 0:
+            return 0.0
+        return self.cache.ram_usage_bytes.get(node_id, 0) / capacity
+
     def _has_decode_on_node(self, node_id: int) -> bool:
         """Return True if ``node_id`` also hosts decode instances."""
         return any(inst.node_id == node_id for inst in self.decode_instances)
+
+    def _tiebreak_by_ram_fill(self, node_ids: list[int]) -> int:
+        """Return the node with the lowest RAM fill factor.
+
+        When several nodes have the same routing cost, prefer the one with the
+        most free RAM. This reduces the chance that a newly produced or fetched
+        KV block is forced to SSD or triggers an expensive cross-node transfer.
+        Falls back to the previous random tie-breaker if no cache is available
+        or all nodes have the same fill factor.
+        """
+        if not node_ids:
+            raise ValueError("Cannot tie-break an empty node list")
+        if len(node_ids) == 1:
+            return node_ids[0]
+        if self.cache is None:
+            return self._rng.choice(node_ids)
+        by_fill = sorted(node_ids, key=lambda nid: self._ram_fill_factor(nid))
+        lowest_fill = self._ram_fill_factor(by_fill[0])
+        # Include every node that shares the lowest fill factor.
+        tied = [nid for nid in by_fill if self._ram_fill_factor(nid) == lowest_fill]
+        if len(tied) == 1:
+            return tied[0]
+        return self._rng.choice(tied)
 
     def _overlap_credit(self, req: Request, node_id: int) -> float:
         """Return the weighted cache-overlap credit for routing ``req`` to ``node_id``."""
@@ -206,19 +342,75 @@ class Router:
 
         return credit + local_output_credit
 
+    def _prefill_queue_wait_ms(
+        self,
+        req: Request,
+        node_id: int,
+        active_prefill: dict[int, float],
+    ) -> float:
+        """Estimate queue wait on a prefill node from already-assigned tokens."""
+        spec = self._node_spec(node_id)
+        if spec is None or self.model is None:
+            return 0.0
+        active_tokens = active_prefill.get(node_id, 0.0)
+        if active_tokens <= 0:
+            return 0.0
+        # Estimate the time to compute the already-queued prefill work by
+        # pretending it is one big request with the same token count.
+        dummy = Request(isl=int(active_tokens), osl=1)
+        dummy.prefilled_tokens = 0
+        return self._prefill_compute_time_ms(dummy, node_id)
+
+    def _decode_queue_wait_ms(
+        self, req: Request, node_id: int, active_decode: dict[int, float]
+    ) -> float:
+        """Estimate queue wait on a decode node from already-assigned tokens."""
+        spec = self._node_spec(node_id)
+        if spec is None or self.model is None:
+            return 0.0
+        active_tokens = active_decode.get(node_id, 0.0)
+        if active_tokens <= 0:
+            return 0.0
+        # Each queued decode token roughly costs one decode step with the active
+        # average sequence length.  Use the current request as a proxy.
+        avg_len = active_tokens / max(1, len(self.decode_instances))
+        dummy = Request(isl=int(avg_len), osl=1)
+        dummy.prefilled_tokens = int(avg_len)
+        dummy.decoded_tokens = 0
+        return self._decode_token_compute_time_ms(dummy, node_id) * active_tokens
+
+    def _prefill_completion_time_ms(
+        self,
+        req: Request,
+        node_id: int,
+        active_prefill: dict[int, float],
+    ) -> float:
+        """Estimated wall-clock time from prefill route to end of prefill."""
+        return (
+            self._download_time_ms(req, node_id)
+            + self._prefill_queue_wait_ms(req, node_id, active_prefill)
+            + self._prefill_compute_time_ms(req, node_id)
+        )
+
+    def _decode_completion_time_ms(
+        self,
+        req: Request,
+        node_id: int,
+        active_decode: dict[int, float],
+    ) -> float:
+        """Estimated wall-clock time from decode route to end of decode."""
+        compute_per_token = self._decode_token_compute_time_ms(req, node_id)
+        return (
+            self._download_time_ms(req, node_id)
+            + self._decode_queue_wait_ms(req, node_id, active_decode)
+            + compute_per_token * req.remaining_tokens_decode
+        )
+
     def _prefill_cost(
         self, req: Request, node_id: int, active_prefill: dict[int, float]
     ) -> float:
-        cfg = self.cost_config
-        assert cfg is not None, "Router cost config must be set"
-        # Ignore cached-prefix overlap when routing prefills.  The prefill has
-        # to run somewhere and the produced KV will be cached on that node, so
-        # giving credit for existing cache entries encourages unhealthy stacking
-        # on nodes that happen to hold prior context.  Load-balancing across
-        # prefill workers dominates TTFT.
-        return cfg.prefill_load_scale * (
-            active_prefill.get(node_id, 0.0) * cfg.active_work_scale + req.isl
-        )
+        """Backward-compatible cost wrapper for callers/tests that expect it."""
+        return self._prefill_completion_time_ms(req, node_id, active_prefill)
 
     def _decode_cost(
         self,
@@ -226,15 +418,8 @@ class Router:
         node_id: int,
         active_decode: dict[int, float],
     ) -> float:
-        cfg = self.cost_config
-        assert cfg is not None, "Router cost config must be set"
-        overlap = self._overlap_credit(req, node_id)
-        adjusted_prefill = max(0.0, req.isl - overlap)
-        return (
-            active_decode.get(node_id, 0.0) * cfg.active_work_scale
-            + adjusted_prefill
-            + req.osl
-        )
+        """Backward-compatible cost wrapper for callers/tests that expect it."""
+        return self._decode_completion_time_ms(req, node_id, active_decode)
 
     def _total_cost(
         self,
@@ -244,16 +429,15 @@ class Router:
         active_prefill: dict[int, float],
         active_decode: dict[int, float],
     ) -> float:
-        decode_cost = self._decode_cost(req, node_id, active_decode)
         if is_prefill:
-            prefill_cost = self._prefill_cost(req, node_id, active_prefill)
-            # Charge the full decode-stage cost when prefill routing so that
-            # colocated workers that will later decode the same request are
-            # strongly preferred.  This prevents fast local bandwidth from
-            # steering prefills away from the nodes that will consume the KV.
-            return prefill_cost + decode_cost
-        # Decode routing: only decode-stage costs (load + cache-adjusted work).
-        return decode_cost
+            # Prefill routing needs to consider both the prefill phase and the
+            # subsequent decode phase: placing a request on a node that cannot
+            # decode it cheaply creates a future cross-node transfer.
+            return (
+                self._prefill_completion_time_ms(req, node_id, active_prefill)
+                + self._decode_completion_time_ms(req, node_id, active_decode)
+            )
+        return self._decode_completion_time_ms(req, node_id, active_decode)
 
     def _choose_prefill_instance(
         self,
@@ -261,8 +445,6 @@ class Router:
         active_prefill: dict[int, float] | None = None,
         active_decode: dict[int, float] | None = None,
     ) -> PrefillInstance:
-        cfg = self.cost_config
-        assert cfg is not None, "Router cost config must be set"
         candidates = self._instances_by_node(self.prefill_instances)
         assert candidates, "No prefill instances available"
 
@@ -271,19 +453,9 @@ class Router:
         if active_decode is None:
             active_decode = self._compute_active_decode_tokens()
 
-        best_node_id: int | None = None
         best_cost = float("inf")
+        best_nodes: list[int] = []
         for node_id in candidates:
-            if (
-                active_prefill.get(node_id, 0.0) + active_decode.get(node_id, 0.0)
-                > cfg.busy_threshold_tokens
-            ):
-                if should_log(LOG_ROUTER):
-                    log(
-                        LOG_ROUTER,
-                        f"Skipping node {node_id}: above busy threshold",
-                    )
-                continue
             cost = self._total_cost(
                 req,
                 node_id,
@@ -302,10 +474,11 @@ class Router:
                 )
             if cost < best_cost:
                 best_cost = cost
-                best_node_id = node_id
+                best_nodes = [node_id]
+            elif cost == best_cost:
+                best_nodes.append(node_id)
 
-        if best_node_id is None:
-            raise RuntimeError("Nodes too busy, extend busy threshhold")
+        best_node_id = self._tiebreak_by_ram_fill(best_nodes)
 
         # Pick the least-loaded prefill instance on the chosen node by uncached
         # prefill tokens, falling back to queue depth for ties.
@@ -328,7 +501,6 @@ class Router:
         active_prefill: dict[int, float] | None = None,
         active_decode: dict[int, float] | None = None,
     ) -> DecodeInstance:
-        cfg = self.cost_config
         candidates = self._instances_by_node(self.decode_instances)
         assert candidates, "No decode instances available"
 
@@ -337,19 +509,9 @@ class Router:
         if active_decode is None:
             active_decode = self._compute_active_decode_tokens()
 
-        best_node_id: int | None = None
         best_cost = float("inf")
+        best_nodes: list[int] = []
         for node_id in candidates:
-            if (
-                active_prefill.get(node_id, 0.0) + active_decode.get(node_id, 0.0)
-                > cfg.busy_threshold_tokens
-            ):
-                if should_log(LOG_ROUTER):
-                    log(
-                        LOG_ROUTER,
-                        f"Skipping node {node_id}: above busy threshold",
-                    )
-                continue
             cost = self._total_cost(
                 req,
                 node_id,
@@ -367,15 +529,11 @@ class Router:
                 )
             if cost < best_cost:
                 best_cost = cost
-                best_node_id = node_id
+                best_nodes = [node_id]
+            elif cost == best_cost:
+                best_nodes.append(node_id)
 
-        if best_node_id is None:
-            best_node_id = min(
-                candidates,
-                key=lambda nid: (
-                    active_prefill.get(nid, 0.0) + active_decode.get(nid, 0.0)
-                ),
-            )
+        best_node_id = self._tiebreak_by_ram_fill(best_nodes)
 
         node_instances = candidates[best_node_id]
         assert node_instances, f"No decode instances found for node {best_node_id}"

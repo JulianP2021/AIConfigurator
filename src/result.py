@@ -87,7 +87,6 @@ class SimulationResult:
     # Router tuning metadata (populated when the runner auto-tunes the router).
     router_active_work_scale: float = 0.0
     router_device_credit: float = 0.0
-    router_busy_threshold_tokens: float = 0.0
 
     # Rounding configuration for JSON export.  Keys match attribute names.
     _ROUND: dict[str, int] = field(
@@ -141,7 +140,6 @@ class SimulationResult:
             "max_clean_latency_ms": 3,
             "router_active_work_scale": 6,
             "router_device_credit": 6,
-            "router_busy_threshold_tokens": 2,
         },
         repr=False,
     )

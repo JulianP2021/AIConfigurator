@@ -172,7 +172,7 @@ def add_result_metadata(
 ) -> None:
     """Layer webserver-specific metadata onto a SimulationResult.to_dict() row.
 
-    This helper is shared by execute_config.py and the webserver so the
+    This helper is shared by execute_user_sweep_config.py and the webserver so the
     results JSON schema stays consistent. Per-request stats are stripped from
     the exported row to keep JSON output compact.
     """

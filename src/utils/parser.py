@@ -1,7 +1,9 @@
 import argparse
 import json
+import logging
 import math
 
+from src.logger import LOG_ALL, set_log_mask, set_min_level
 from src.utils.env_reader import EnvConfig
 
 
@@ -42,8 +44,42 @@ def _parse_sla(value: str) -> dict[str, float]:
     return parsed
 
 
+def _add_logging_args(parser: argparse.ArgumentParser, env: EnvConfig) -> None:
+    """Add shared ``--log-mask`` and ``--debug`` flags to ``parser``."""
+    parser.add_argument(
+        "--log-mask",
+        type=lambda s: int(s, 0),
+        default=env.log_mask,
+        help=(
+            "Component logging bitmask: bit 0 (1)=cache, bit 1 (2)=instances, "
+            "bit 2 (4)=router, bit 3 (8)=simulation, bit 4 (16)=bandwidth, "
+            "bit 5 (32)=config executor. 0=none, 63=all "
+            f"(default: {env.log_mask})"
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=env.debug,
+        help="Enable verbose debug logging (sets LOG_MASK to all components and min level to DEBUG)",
+    )
+
+
+def apply_logging_args(args: argparse.Namespace) -> None:
+    """Apply ``--log-mask`` / ``--debug`` from parsed CLI args.
+
+    ``--debug`` takes precedence over ``--log-mask`` and forces LOG_ALL.
+    """
+    if args.debug:
+        set_log_mask(LOG_ALL)
+        set_min_level(logging.DEBUG)
+    else:
+        set_log_mask(args.log_mask)
+
+
 def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Distributed LLM inference simulator")
+    _add_logging_args(parser, env)
     parser.add_argument(
         "--model",
         type=str,
@@ -139,13 +175,6 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=env.debug,
-        help="Enable verbose debug logging (sets LOG_MASK to all components)",
-    )
-
-    parser.add_argument(
         "--ram-usage-fraction",
         type=float,
         default=env.ram_usage_fraction,
@@ -239,32 +268,12 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.router_s3_credit,
         help=f"Credit for S3 KV hits (default: {env.router_s3_credit})",
     )
-    parser.add_argument(
-        "--router-busy-threshold-tokens",
-        type=float,
-        default=env.router_busy_threshold_tokens,
-        help=(
-            "Workers with active load above this token count are skipped "
-            f"(default: {env.router_busy_threshold_tokens})"
-        ),
-    )
     return parser
 
 
 def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
     """CLI parser for main.py (adds simulator-specific flags on top of base)."""
     parser = _base_parser(env)
-    parser.add_argument(
-        "--log-mask",
-        type=lambda s: int(s, 0),
-        default=env.log_mask,
-        help=(
-            "Component logging bitmask: bit 0 (1)=cache, bit 1 (2)=instances, "
-            "bit 2 (4)=router, bit 3 (8)=simulation, bit 4 (16)=bandwidth, "
-            "bit 5 (32)=config executor. 0=none, 63=all "
-            f"(default: {env.log_mask})"
-        ),
-    )
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -359,7 +368,7 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
 
 
 def get_create_config_parser(env: EnvConfig) -> argparse.ArgumentParser:
-    """CLI parser for create_config.py; mirrors main.py topology flags."""
+    """CLI parser for create_user_sweep_config.py; mirrors main.py topology flags."""
     parser = get_main_parser(env)
     parser.add_argument(
         "--config-name",

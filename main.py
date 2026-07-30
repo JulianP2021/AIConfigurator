@@ -27,17 +27,15 @@ from src.hardware.scraper import (
     load_combined_machine_db,
     resolve_machine_name,
 )
-from src.logger import set_debug, set_log_mask
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
-from src.router.router import RouterCostConfig
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
 )
 from src.utils.env_reader import load_env
 from src.utils.output_filter import compact_json
-from src.utils.parser import get_main_parser
+from src.utils.parser import apply_logging_args, get_main_parser
 
 
 def main():
@@ -45,13 +43,11 @@ def main():
     parser = get_main_parser(env)
     args = parser.parse_args()
 
+    apply_logging_args(args)
     if args.debug:
-        set_debug(True)
         print("Debug logging enabled (LOG_MASK=all).")
-    else:
-        set_log_mask(args.log_mask)
-        if args.log_mask:
-            print(f"Logging enabled with LOG_MASK={args.log_mask}.")
+    elif args.log_mask:
+        print(f"Logging enabled with LOG_MASK={args.log_mask}.")
 
     # If users >= total_requests every request gets its own user, which means no
     # shared prefix / no repeat users.  We keep the user's chosen value otherwise.
@@ -199,22 +195,12 @@ def main():
         eviction_time_ms=args.s3_eviction_time_ms,
     )
 
-    router_cost_config = RouterCostConfig(
-        prefill_load_scale=args.router_prefill_load_scale,
-        active_work_scale=args.router_active_work_scale,
-        device_credit=args.router_device_credit,
-        remote_ram_credit=args.router_remote_ram_credit,
-        remote_ssd_credit=args.router_remote_ssd_credit,
-        s3_credit=args.router_s3_credit,
-        busy_threshold_tokens=args.router_busy_threshold_tokens,
-    )
 
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=args.ram_usage_fraction,
         ssd_usage_fraction=args.ssd_usage_fraction,
         s3_spec=s3_spec,
-        router_cost_config=router_cost_config,
         sla=args.sla,
         user_delay_fraction=args.user_delay_fraction,
         user_delay_min_ms=args.user_delay_min_ms,
@@ -222,7 +208,6 @@ def main():
         startup_arrival_mean_ms=args.startup_arrival_mean_ms,
         random_seed=args.random_seed,
     )
-
     # CLI-only: average prompt size accounting for cumulative ISL growth
     # across session turns.  The first turn has ISL tokens; each subsequent
     # turn starts from the previous turn's (ISL + OSL) and adds another ISL.
@@ -245,7 +230,7 @@ def main():
     print(f"  S3 total cost/hour:    ${result.s3_cost_usd_per_hour:.4f}")
 
     # Diagnostic counters are only logged here in the CLI, never in the
-    # webserver or execute_config.py output.
+    # webserver or execute_user_sweep_config.py output.
     print("\n--- KV cache read counters ---")
     print(f"  RAM download requests:  {result.ram_download_requests}")
     print(f"  SSD download requests:  {result.ssd_download_requests}")

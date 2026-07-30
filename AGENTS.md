@@ -110,7 +110,6 @@ ROUTER_DEVICE_CREDIT=0.6
 ROUTER_REMOTE_RAM_CREDIT=0.0
 ROUTER_REMOTE_SSD_CREDIT=0.0
 ROUTER_S3_CREDIT=0.0
-ROUTER_BUSY_THRESHOLD_TOKENS=2000000.0
 
 LOG_MASK=0
 DEBUG=false
@@ -213,13 +212,14 @@ Covered areas:
 - `tests/test_analytics.py` — phase-level timing analytics.
 - `tests/test_sla.py` — per-request TTFT/TPOT SLA enforcement.
 - `tests/test_router.py` — routing and cost scoring.
-- `tests/test_execute_config.py` / `tests/test_scraper.py` — config-execution utilities.
-- `configs/create_ttft_config.py` / `configs/execute_ttft_config.py` — fixed-topology TTFT benchmark generation and execution.
-  - `execute_ttft_config.py --find-max-users` runs an exponential + binary search in parallel (8 workers) to find the largest user count each colocated config can serve while meeting SLAs. The result rows include `users` and `price_per_user`.
+- `tests/test_execute_user_sweep_config.py` / `tests/test_execute_hardware_economics_config.py` / `tests/test_scraper.py` — config-execution utilities.
+- `configs/create_user_sweep_config.py` / `configs/execute_user_sweep_config.py` — broad hardware/topology sweep generation and execution.
+- `configs/create_hardware_economics_config.py` / `configs/execute_hardware_economics_config.py` — fixed-topology hardware-economics benchmark generation and execution.
+  - `execute_hardware_economics_config.py --find-max-users` runs an exponential + binary search in parallel (8 workers) to find the largest user count each colocated config can serve while meeting SLAs. The result rows include `users` and `price_per_user`.
 
-## Batch runner (`configs/execute_config.py`)
+## Batch runner (`configs/execute_user_sweep_config.py`)
 
-`configs/execute_config.py --config config.json [--output results.json] [--timeout T]` runs a matrix of scenarios in parallel.
+`configs/execute_user_sweep_config.py --config config.json [--output results.json] [--timeout T]` runs a matrix of scenarios in parallel.
 
 - Each valid config is simulated in a separate process (default `max_workers=8`).
 - A **per-config timeout** (`--timeout` seconds, default `120.0`) is enforced with

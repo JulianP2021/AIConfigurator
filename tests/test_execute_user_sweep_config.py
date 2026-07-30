@@ -1,4 +1,4 @@
-"""Tests for execute_config.py batching helpers.
+"""Tests for execute_user_sweep_config.py batching helpers.
 
 These tests focus on the config-grouping logic that splits a flat list of
 configs into batches of compatible hardware for parallel execution.
@@ -6,7 +6,7 @@ configs into batches of compatible hardware for parallel execution.
 
 import pytest
 
-from configs.execute_config import (
+from configs.execute_user_sweep_config import (
     _group_colocated_configs,
     _group_separate_configs,
     extreme_first_eytzinger_layout,

@@ -20,13 +20,17 @@ def get_focus(machine_name: str, gpu_name: str) -> tuple[str, Any]:
     return m["focus"], m["value"]
 
 
-def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, Any]:
-    return {
+def build_base_config(
+    args: argparse.Namespace,
+    config_type: str,
+    *,
+    include_users: bool = True,
+) -> dict[str, Any]:
+    config: dict[str, Any] = {
         "model": args.model,
         "isl": args.isl,
         "osl": args.osl,
         "sessions_per_user": args.sessions_per_user,
-        "users": args.users,
         "think_time_ms": args.think_time_ms,
         "max_session_turns": args.max_session_turns,
         "ram_usage_fraction": args.ram_usage_fraction,
@@ -37,7 +41,6 @@ def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, A
         "router_remote_ram_credit": args.router_remote_ram_credit,
         "router_remote_ssd_credit": args.router_remote_ssd_credit,
         "router_s3_credit": args.router_s3_credit,
-        "router_busy_threshold_tokens": args.router_busy_threshold_tokens,
         "s3_enabled": args.s3_enabled,
         "s3_up_bw_gbps": args.s3_up_bw_gbps,
         "s3_down_bw_gbps": args.s3_down_bw_gbps,
@@ -55,3 +58,6 @@ def build_base_config(args: argparse.Namespace, config_type: str) -> dict[str, A
         "random_seed": args.random_seed,
         "config_type": config_type,
     }
+    if include_users:
+        config["users"] = args.users
+    return config

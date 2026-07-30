@@ -191,7 +191,6 @@ def _run_single_config(
     router_remote_ram_credit: float,
     router_remote_ssd_credit: float,
     router_s3_credit: float,
-    router_busy_threshold_tokens: float,
     user_delay_fraction: float = 0.0,
     user_delay_min_ms: float = 0.0,
     user_delay_max_ms: float = 0.0,
@@ -249,7 +248,6 @@ def _run_single_config(
         remote_ram_credit=router_remote_ram_credit,
         remote_ssd_credit=router_remote_ssd_credit,
         s3_credit=router_s3_credit,
-        busy_threshold_tokens=router_busy_threshold_tokens,
         active_work_scale=0.001,
         # @TODO add as input
     )
@@ -619,6 +617,166 @@ def _results_inner_html(
     return html
 
 
+def _build_results_page_hardware_economics(
+    results: list[dict[str, float | int | str]],
+    cost_plots: dict[str, list[str]],
+    price_plots: dict[str, list[str]],
+) -> str:
+    """Build a results page for hardware-economics imports with a TTFT selector."""
+    # Shared head style from _build_results_page.
+    head = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurator Simulator - Hardware Economics</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79b8ff;
+            --success: #3fb950;
+            --danger: #f85149;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.5;
+        }
+        h1 { text-align: center; margin-bottom: 0.25rem; font-weight: 600; }
+        .subtitle { text-align: center; color: var(--text-secondary); margin-bottom: 2rem; font-size: 0.95rem; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            overflow-x: auto;
+        }
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .plot-img { width: 100%; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 1rem; }
+        .plot-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 1rem;
+        }
+        .plot-card { padding: 0; }
+        select {
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.95rem;
+            margin-bottom: 1rem;
+        }
+        .plot-group { display: none; }
+        .plot-group.active { display: block; }
+        .legend-color {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            margin-right: 0.4rem;
+            vertical-align: middle;
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        th, td { padding: 0.5rem 0.75rem; border: 1px solid var(--border); text-align: left; }
+        th { background: var(--bg); color: var(--text-secondary); font-weight: 600; }
+        td { color: var(--text); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Configurator Simulator</h1>
+        <p class="subtitle">Hardware Economics Results</p>
+"""
+
+    ttft_keys = sorted(set(cost_plots.keys()) | set(price_plots.keys()))
+    selector = '<div class="card"><h2>Select TTFT</h2><select id="ttftSelector" onchange="showTTFT(this.value)">'
+    for key in ttft_keys:
+        selector += f'<option value="{key}">{key}</option>'
+    selector += "</select></div>\n"
+
+    body = selector
+    body += '<div id="plotContainer">\n'
+    for key in ttft_keys:
+        body += f'<div class="plot-group" id="group-{key}" data-ttft="{key}">\n'
+        cost_urls = cost_plots.get(key, [])
+        price_urls = price_plots.get(key, [])
+        if cost_urls:
+            body += '<div class="card plot-card"><h2>Cost vs Focus</h2><div class="plot-grid">\n'
+            for url in cost_urls:
+                body += f'<div><img src="{url}" class="plot-img" alt="Cost Plot"></div>\n'
+            body += "</div></div>\n"
+        if price_urls:
+            body += '<div class="card plot-card"><h2>Price per User / Max Users vs Focus</h2><div class="plot-grid">\n'
+            for url in price_urls:
+                body += f'<div><img src="{url}" class="plot-img" alt="Price per User Plot"></div>\n'
+            body += "</div></div>\n"
+        body += "</div>\n"
+    body += "</div>\n"
+
+    # Comparison table (always shown, hidden by default would need a toggle; keep simple).
+    body += '<div class="card"><h2>Result Rows</h2><table><thead><tr>'
+    body += '<th></th><th>Label</th><th>TTFT SLA</th><th>User delay (min)</th><th>Max users</th><th>Price / user / h</th><th>Total $/h</th>'
+    body += "</tr></thead><tbody>"
+    for row in results:
+        if row.get("has_error"):
+            continue
+        ttft = row.get("ttft_sla_ms", row.get("benchmark_ttft_ms", row.get("ttft", 0))) / 1000
+        delay = _extract_user_delay_ms(row)
+        delay_min = f"{delay / 1000 / 60:g}" if delay is not None else "—"
+        users = row.get("users", "—")
+        price = row.get("price_per_user", float("inf"))
+        total = row.get("total_cost_usd_per_hour", 0.0)
+        color = row.get("color", "#58a6ff")
+        body += (
+            f'<tr><td><span class="legend-color" style="background:{color}"></span></td>'
+            f"<td>{row['label']}</td><td>{ttft:g}s</td><td>{delay_min}</td>"
+            f"<td>{users}</td><td>${price:.4f}</td><td>${total:.2f}</td></tr>"
+        )
+    body += "</tbody></table></div>\n"
+
+    script = """
+    <script>
+        function showTTFT(ttft) {
+            document.querySelectorAll('.plot-group').forEach(g => g.classList.remove('active'));
+            const group = document.getElementById('group-' + ttft);
+            if (group) group.classList.add('active');
+            localStorage.setItem('hardware_economics_last_ttft', ttft);
+        }
+        const last = localStorage.getItem('hardware_economics_last_ttft');
+        const selector = document.getElementById('ttftSelector');
+        if (last && Array.from(selector.options).some(o => o.value === last)) {
+            selector.value = last;
+        }
+        showTTFT(selector.value);
+    </script>
+"""
+
+    tail = """    </div>
+</body>
+</html>"""
+    return head + body + script + tail
+
+
 def _build_single_plot(
     results: list[dict[str, float | int | str]],
     x_key: str,
@@ -673,116 +831,157 @@ def _extract_user_delay_ms(row: dict[str, Any]) -> float | None:
     return None
 
 
+def _extract_ttft_ms(row: dict[str, Any]) -> float | None:
+    for key in ("ttft_sla_ms", "benchmark_ttft_ms", "ttft"):
+        value = row.get(key)
+        if value is not None:
+            return float(value)
+    label = str(row.get("label", ""))
+    match = re.search(r"TTFT=([0-9.+-eE]+)ms", label)
+    if match:
+        return float(match.group(1))
+    return None
+
+
 def _build_ttft_cost_plots_by_delay(
     results: list[dict[str, float | int | str]],
     price_per_user: bool = False,
-) -> list[str]:
+) -> dict[str, list[str]]:
+    """Generate one plot per TTFT value, grouped by user delay.
+
+    Returns a mapping from TTFT key (e.g. "TTFT=10s") to a list of plot URLs,
+    one URL per user-delay bucket.
+    """
     valid_rows = [row for row in results if not row.get("has_error")]
 
-    by_delay: dict[float, list[dict[str, Any]]] = {}
+    by_ttft: dict[str, dict[float, list[dict[str, Any]]]] = {}
     for row in valid_rows:
+        ttft_ms = _extract_ttft_ms(row)
         delay_ms = _extract_user_delay_ms(row)
-        if delay_ms is None:
+        if ttft_ms is None or delay_ms is None:
             continue
-        by_delay.setdefault(round(delay_ms, 6), []).append(row)
+        ttft_key = f"TTFT={ttft_ms / 1000:g}s"
+        by_ttft.setdefault(ttft_key, {}).setdefault(round(delay_ms, 6), []).append(row)
 
     y_key = "price_per_user" if price_per_user else "total_cost_usd_per_hour"
     y_label = "Price per user ($/hour)" if price_per_user else "Total cost ($/hour)"
     plot_title_prefix = (
-        "UP/DOWNLOAD vs Price / User" if price_per_user else "UP/DOWNLOAD vs Cost"
+        "Price / User vs Focus" if price_per_user else "Cost vs Focus"
     )
     x_key = "users" if price_per_user else "kv_download_time"
     x2_key = "users" if price_per_user else "kv_upload_time"
-    x_label = "Max users" if price_per_user else "UP/DOWNLOAD (ms)"
+    x_label = "Max users" if price_per_user else "KV download / upload (ms)"
+    tag_prefix = ("", "") if price_per_user else ("D", "U")
 
-    plot_urls: list[str] = []
-    for delay_ms in sorted(by_delay):
-        rows = sorted(
-            by_delay[delay_ms],
-            key=lambda r: (
-                r.get("ttft", float("inf")),
-                r.get(y_key, float("inf")),
-            ),
-        )
-        fig, ax = plt.subplots(figsize=(8, 6))
-        for row in rows:
-            y_value = row.get(y_key)
-            if y_value is None or not isinstance(y_value, (int, float)):
-                continue
-            x_value = row.get(x_key)
-            x2_value = row.get(x2_key)
-            if x_value is None or not isinstance(x_value, (int, float)):
-                continue
-            if x2_value is None or not isinstance(x2_value, (int, float)):
-                x2_value = x_value
-            ax.scatter(
-                x_value,
-                y_value,
-                s=120,
-                color=row["color"],
-                edgecolors="white",
-                linewidths=0.5,
-                zorder=3,
+    plots_by_ttft: dict[str, list[str]] = {}
+    for ttft_key, by_delay in by_ttft.items():
+        plot_urls: list[str] = []
+        for delay_ms in sorted(by_delay):
+            rows = sorted(
+                by_delay[delay_ms],
+                key=lambda r: (
+                    r.get("ttft", float("inf")),
+                    r.get(y_key, float("inf")),
+                ),
             )
-            ax.annotate(
-                "D" + (row["focus_value"] if row["focus_value"] else ""),
-                (x_value, y_value),
-                textcoords="offset points",
-                xytext=(8, 4),
-                fontsize=9,
-                color=row["color"],
+            fig, ax = plt.subplots(figsize=(8, 6))
+            for row in rows:
+                y_value = row.get(y_key)
+                if y_value is None or not isinstance(y_value, (int, float)):
+                    continue
+                x_value = row.get(x_key)
+                x2_value = row.get(x2_key)
+                if x_value is None or not isinstance(x_value, (int, float)):
+                    continue
+                if x2_value is None or not isinstance(x2_value, (int, float)):
+                    x2_value = x_value
+                focus_value = str(row.get("focus_value") or "")
+                focus = str(row.get("focus") or "")
+                label = focus_value if focus_value else focus
+
+                ax.scatter(
+                    x_value,
+                    y_value,
+                    s=120,
+                    color=row["color"],
+                    edgecolors="white",
+                    linewidths=0.5,
+                    zorder=3,
+                )
+                focus_label = f"{focus_value}" if focus_value else label
+                ax.annotate(
+                    f"{tag_prefix[0]} {focus_label}",
+                    (x_value, y_value),
+                    textcoords="offset points",
+                    xytext=(8, 4),
+                    fontsize=9,
+                    color=row["color"],
+                )
+
+                ax.scatter(
+                    x2_value,
+                    y_value,
+                    s=120,
+                    color=row["color"],
+                    edgecolors="white",
+                    linewidths=0.5,
+                    zorder=3,
+                )
+                ax.annotate(
+                    f"{tag_prefix[1]} {focus_label}",
+                    (x2_value, y_value),
+                    textcoords="offset points",
+                    xytext=(8, 4),
+                    fontsize=9,
+                    color=row["color"],
+                )
+
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            ax.set_title(
+                f"{plot_title_prefix} ({ttft_key}, delay {delay_ms / 1000 / 60:g} min)"
             )
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", dpi=150)
+            plt.close(fig)
+            buf.seek(0)
+            pid = str(uuid.uuid4())
+            _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+            plot_urls.append(f"/plot/{pid}")
+        plots_by_ttft[ttft_key] = plot_urls
 
-            ax.scatter(
-                x2_value,
-                y_value,
-                s=120,
-                color=row["color"],
-                edgecolors="white",
-                linewidths=0.5,
-                zorder=3,
-            )
-            ax.annotate(
-                "U" + (row["focus_value"] if row["focus_value"] else ""),
-                (x2_value, y_value),
-                textcoords="offset points",
-                xytext=(8, 4),
-                fontsize=9,
-                color=row["color"],
-            )
-
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
-        ax.set_title(f"{plot_title_prefix} (user delay {delay_ms / 1000 / 60:g} min)")
-        # ax.set_ylim(bottom=0)
-        # ax.set_xlim(left=0)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150)
-        plt.close(fig)
-        buf.seek(0)
-        pid = str(uuid.uuid4())
-        _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-        plot_urls.append(f"/plot/{pid}")
-
-    return plot_urls
+    return plots_by_ttft
 
 
-def _load_results_from_dir(results_dir: Path) -> list[dict[str, Any]]:
-    """Load every results_*.json file from a directory and tag rows with users."""
+def _load_results_from_dir(results_dir: Path) -> tuple[list[dict[str, Any]], str]:
+    """Load every results_*.json file from a directory and detect the benchmark type.
+
+    Returns the flat list of result rows plus the detected benchmark key:
+    ``user_sweep`` when files are named ``results_users_<N>.json``,
+    ``hardware_economics`` otherwise (e.g. ``results_<focus>_<value>.json``).
+    """
     rows: list[dict[str, Any]] = []
+    benchmark: str | None = None
     for path in sorted(results_dir.glob("results_*.json")):
         with path.open(encoding="utf-8") as fh:
             data = json.load(fh)
+        file_benchmark = data.get("benchmark")
+        if isinstance(file_benchmark, str):
+            benchmark = file_benchmark
+        elif path.stem.startswith("results_users_"):
+            benchmark = "user_sweep"
+        else:
+            benchmark = "hardware_economics"
         for row in data.get("results", []):
-            if "users" not in row:
+            if "users" not in row and path.stem.startswith("results_users_"):
                 # Infer users from filename like results_users_100.json
                 stem = path.stem.replace("results_users_", "")
                 with suppress(ValueError):
                     row["users"] = int(stem)
             rows.append(row)
-    return rows
+    return rows, benchmark or "hardware_economics"
 
 
 def _resolve_results_dir(results_dir: str) -> Path:
@@ -970,7 +1169,7 @@ def _mode_for_row(row: dict[str, Any]) -> str:
 
     The mode is determined primarily from the row's label, because exported
     result JSON often has stringly-typed booleans or omits the ``mixed`` field
-    entirely.  Labels generated by ``create_config.py`` start with
+    entirely.  Labels generated by ``create_user_sweep_config.py`` start with
     ``Colocated:``, ``Mixed:`` or ``separate:``.
 
     As a secondary fallback we still check the explicit ``mixed`` and
@@ -1051,7 +1250,6 @@ async def simulate(
     router_remote_ram_credit: float = Form(_env.router_remote_ram_credit),
     router_remote_ssd_credit: float = Form(_env.router_remote_ssd_credit),
     router_s3_credit: float = Form(_env.router_s3_credit),
-    router_busy_threshold_tokens: float = Form(_env.router_busy_threshold_tokens),
     user_delay_fraction: float = Form(_env.user_delay_fraction),
     user_delay_min_ms: float = Form(_env.user_delay_min_ms),
     user_delay_max_ms: float = Form(_env.user_delay_max_ms),
@@ -1104,7 +1302,6 @@ async def simulate(
             "router_remote_ram_credit": router_remote_ram_credit,
             "router_remote_ssd_credit": router_remote_ssd_credit,
             "router_s3_credit": router_s3_credit,
-            "router_busy_threshold_tokens": router_busy_threshold_tokens,
             "user_delay_fraction": user_delay_fraction,
             "user_delay_min_ms": user_delay_min_ms,
             "user_delay_max_ms": user_delay_max_ms,
@@ -1242,16 +1439,53 @@ async def import_page():
         return HTMLResponse(content=fh.read())
 
 
+@app.get("/help", response_class=HTMLResponse)
+async def help_page():
+    """Serve the webserver usage guide."""
+    html_path = Path(__file__).parent / "templates" / "help.html"
+    with Path(html_path).open(encoding="utf-8") as fh:
+        return HTMLResponse(content=fh.read())
+
+
+def _detect_benchmark(payload: Any) -> str:
+    """Detect the benchmark type from an imported JSON payload."""
+    if isinstance(payload, dict):
+        benchmark = payload.get("benchmark")
+        if isinstance(benchmark, str):
+            return benchmark
+        results = payload.get("results", [])
+        if isinstance(results, list) and results:
+            return _detect_row_benchmark(results[0])
+    if isinstance(payload, list) and payload:
+        return _detect_row_benchmark(payload[0])
+    return "hardware_economics"
+
+
+def _detect_row_benchmark(row: dict[str, Any]) -> str:
+    """Heuristic: hardware_economics rows carry user_delay_ms; user_sweep rows carry users."""
+    if row.get("user_delay_ms") is not None:
+        return "hardware_economics"
+    if row.get("users") is not None:
+        return "user_sweep"
+    label = str(row.get("label", "")).lower()
+    if "delay=" in label or "ttft=" in label:
+        return "hardware_economics"
+    if "users=" in label:
+        return "user_sweep"
+    return "hardware_economics"
+
+
 @app.post("/import_results", response_class=HTMLResponse)
 async def import_results(
     results_json: str = Form(""),
     results_dir: str = Form(""),
-    plot_mode: str = Form("comparison"),
+    plot_mode: str = Form("auto"),
 ):
     """Render a results page from pasted JSON or from a results directory.
 
-    Accepts either a raw JSON body (legacy / JS fetch) or form fields from the
-    import page: ``results_json`` or ``results_dir``.
+    The result type is auto-detected:
+    - ``user_sweep`` → directory of ``results_users_<N>.json`` (cost vs users).
+    - ``hardware_economics`` → TTFT/user-delay sweeps (cost and price/user by delay).
     """
     try:
         results: list[dict[str, float | int | str]] = []
@@ -1262,12 +1496,13 @@ async def import_results(
             path = _resolve_results_dir(results_dir)
             if not path.is_dir():
                 raise ValueError(f"Not a directory: {results_dir}")
-            rows = _load_results_from_dir(path)
+            rows, dir_benchmark = _load_results_from_dir(path)
             if not rows:
                 raise ValueError(
                     f"Directory '{results_dir}' has results_*.json files, but none contain valid result rows."
                 )
             results.extend(rows)
+            benchmark_mode = plot_mode.strip().lower() if plot_mode.strip().lower() != "auto" else dir_benchmark
         elif results_json:
             payload = json.loads(results_json)
             if isinstance(payload, list):
@@ -1278,6 +1513,7 @@ async def import_results(
                     raise ValueError("Payload 'results' must be a list")
             else:
                 raise ValueError("Payload must be a list or {'results': [...]}")
+            benchmark_mode = plot_mode.strip().lower() if plot_mode.strip().lower() != "auto" else _detect_benchmark(payload)
         else:
             raise ValueError("Provide either results_json or results_dir")
 
@@ -1289,37 +1525,35 @@ async def import_results(
             if "color" not in row:
                 row["color"] = COLORS[i % len(COLORS)]
 
-        benchmark_mode = plot_mode.strip().lower()
-        if benchmark_mode in {"ttft", "ttft_cost", "ttft_cost_by_delay"}:
-            plot_urls = _build_ttft_cost_plots_by_delay(results, price_per_user=False)
-            if not plot_urls:
+        if benchmark_mode not in {"user_sweep", "hardware_economics"}:
+            benchmark_mode = "hardware_economics"
+
+        if benchmark_mode == "hardware_economics":
+            cost_plots = _build_ttft_cost_plots_by_delay(results, price_per_user=False)
+            price_plots = _build_ttft_cost_plots_by_delay(results, price_per_user=True)
+            if not cost_plots and not price_plots:
                 raise ValueError(
-                    "Imported results do not contain user_delay_ms metadata needed for TTFT plots"
+                    "Imported hardware-economics results do not contain ttft_sla_ms and user_delay_ms metadata."
                 )
-            plot_title = "TTFT vs Cost by User Delay"
+            plot_title = "Hardware Economics (cost and price per user by TTFT)"
             show_users_section = True
-        elif benchmark_mode in {"price_per_user_by_delay", "price_per_user"}:
-            plot_urls = _build_ttft_cost_plots_by_delay(results, price_per_user=True)
-            if not plot_urls:
-                raise ValueError(
-                    "Imported results do not contain user_delay_ms metadata needed for price-per-user plots"
+            return HTMLResponse(
+                content=_build_results_page_hardware_economics(
+                    results, cost_plots, price_plots
                 )
-            plot_title = "Price per User by Delay"
-            show_users_section = False
-        elif from_directory:
+            )
+        elif benchmark_mode == "user_sweep":
+            if not from_directory:
+                raise ValueError("user_sweep mode requires a results directory (results_users_*.json).")
             plot_url, selected = _build_users_cost_plot(results)
             plot_urls = [plot_url]
             results = selected
-            plot_title = "Cost vs Users"
+            plot_title = "User Sweep (cost vs users)"
             show_users_section = True
         else:
-            # For single JSON imports, color the points by mode as well so the
-            # per-mode color legend stays consistent with directory imports.
-            for row in results:
-                row["color"] = _color_for_row(row)
-            plot_urls = _build_comparison_plots(results)
-            plot_title = "Cost-Latency Plots"
-            show_users_section = True
+            raise ValueError(
+                f"Unknown plot mode '{benchmark_mode}'. Use 'auto', 'user_sweep', or 'hardware_economics'."
+            )
         return HTMLResponse(
             content=_build_results_page(
                 results,

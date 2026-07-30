@@ -12,10 +12,10 @@ The simulator is primarily used to compare hardware topologies, batch sizes, cac
 2. [Repository layout](#repository-layout)
 3. [Scripts and entry points](#scripts-and-entry-points)
    - [`main.py`](#mainpy)
-  - [`configs/create_config.py`](#configscreate_configpy)
-  - [`configs/execute_config.py`](#configsexecute_configpy)
-  - [`configs/create_ttft_config.py`](#configscreate_ttft_configpy)
-  - [`configs/execute_ttft_config.py`](#configsexecute_ttft_configpy)
+   - [`configs/create_user_sweep_config.py`](#configscreate_user_sweep_configpy)
+   - [`configs/execute_user_sweep_config.py`](#configsexecute_user_sweep_configpy)
+   - [`configs/create_hardware_economics_config.py`](#configscreate_hardware_economics_configpy)
+   - [`configs/execute_hardware_economics_config.py`](#configsexecute_hardware_economics_configpy)
    - [`src/webserver/server.py`](#srcwebserverserverpy)
    - [`scripts/add_custom_machine.py`](#scriptsadd_custom_machinepy)
    - [`scripts/generate_focused_machines.py`](#scriptsgenerate_focused_machinespy)
@@ -51,8 +51,8 @@ The project uses a local virtual environment under `.venv`.
   --num-prefill-nodes 1 --num-decode-nodes 1
 
 # Generate and run a swept config matrix
-.venv/bin/python configs/create_config.py --config-name config.json
-.venv/bin/python configs/execute_config.py --config config.json --output results.json
+.venv/bin/python configs/create_user_sweep_config.py --config-name config.json
+.venv/bin/python configs/execute_user_sweep_config.py --config config.json --output results.json
 
 # Start the FastAPI web server
 .venv/bin/python -m uvicorn src.webserver.server:app --reload
@@ -69,10 +69,10 @@ The project uses a local virtual environment under `.venv`.
 .
 ├── .env                          # Default simulator parameters
 ├── main.py                       # CLI entry point for single simulations
-├── configs/create_config.py      # Generate swept config.json matrices
-├── configs/execute_config.py     # Run config matrices in parallel
-├── configs/create_ttft_config.py  # Generate fixed-topology TTFT config JSON
-├── configs/execute_ttft_config.py # Run TTFT sweeps into grouped results files
+├── configs/create_user_sweep_config.py      # Generate swept config.json matrices
+├── configs/execute_user_sweep_config.py     # Run config matrices in parallel
+├── configs/create_hardware_economics_config.py  # Generate fixed-topology hardware-economics config JSON
+├── configs/execute_hardware_economics_config.py # Run hardware-economics sweeps into grouped results files
 ├── config.json                   # Example generated config matrix
 ├── src/
 │   ├── cache/cache.py            # Two-tier RAM/SSD/S3 KV cache
@@ -130,7 +130,7 @@ Example:
 
 The output is a compact JSON `SimulationResult` plus human-readable breakdowns of request shape, cost, and S3 counters.
 
-### `configs/create_config.py`
+### `configs/create_user_sweep_config.py`
 
 Generate a `config.json` that sweeps over hardware topologies. It mirrors the CLI flags of `main.py` and emits one entry per combination of machine, node count, GPU split, and batch size.
 
@@ -143,7 +143,7 @@ Supported topology categories (`--config-types`):
 Example:
 
 ```bash
-.venv/bin/python configs/create_config.py \
+.venv/bin/python configs/create_user_sweep_config.py \
   --model Qwen/Qwen3-8B \
   --isl 30000 --osl 2000 \
   --sessions-per-user 20 --users 40 \
@@ -152,18 +152,26 @@ Example:
   --config-name config.json
 ```
 
-### `configs/execute_config.py`
+### `configs/execute_user_sweep_config.py`
 
 Run a generated `config.json` in parallel. Each valid config is executed in a separate process with a configurable per-config timeout. Failed configs can invalidate related smaller/larger configs in the sweep so the matrix terminates early.
 
 ```bash
-.venv/bin/python configs/execute_config.py \
+.venv/bin/python configs/execute_user_sweep_config.py \
   --config config.json \
   --output results.json \
   --timeout 120.0
 ```
 
 The output JSON contains one `SimulationResult` per config with metadata such as label, color, and user count, suitable for plotting or importing back into the webserver.
+
+### `configs/create_hardware_economics_config.py`
+
+Generate a fixed-topology config for the hardware-economics sweep. It keeps the deployment mode constant and sweeps TTFT SLA and user-delay values.
+
+### `configs/execute_hardware_economics_config.py`
+
+Run a hardware-economics config in parallel, searching for the maximum users each fixed topology can serve while meeting SLAs. Results are grouped into `results_<focus>_<value>.json` files suitable for importing into the webserver.
 
 ### `src/webserver/server.py`
 
@@ -311,7 +319,6 @@ ROUTER_DEVICE_CREDIT=0.8
 ROUTER_REMOTE_RAM_CREDIT=0.5
 ROUTER_REMOTE_SSD_CREDIT=0.3
 ROUTER_S3_CREDIT=0.1
-ROUTER_BUSY_THRESHOLD_TOKENS=1000000.0
 
 # Logging
 LOG_MASK=63
@@ -472,7 +479,7 @@ Machine presets are loaded from a combined database (`src/hardware/aws_hardware.
 
 ### Example `config.json`
 
-The following example matches the current `.env` defaults and sweeps over a few node counts and batch sizes on AWS H200 hardware. Save it as `config.json` and run with `configs/execute_config.py`.
+The following example matches the current `.env` defaults and sweeps over a few node counts and batch sizes on AWS H200 hardware. Save it as `config.json` and run with `configs/execute_user_sweep_config.py`.
 
 ```json
 {
@@ -490,7 +497,6 @@ The following example matches the current `.env` defaults and sweeps over a few 
   "router_remote_ram_credit": 0.5,
   "router_remote_ssd_credit": 0.3,
   "router_s3_credit": 0.1,
-  "router_busy_threshold_tokens": 1000000.0,
   "s3_enabled": true,
   "s3_up_bw_gbps": 25.0,
   "s3_down_bw_gbps": 25.0,
@@ -542,7 +548,7 @@ The following example matches the current `.env` defaults and sweeps over a few 
 Run it:
 
 ```bash
-.venv/bin/python configs/execute_config.py --config config.json --output results.json --timeout 120.0
+.venv/bin/python configs/execute_user_sweep_config.py --config config.json --output results.json --timeout 120.0
 ```
 
 ---
@@ -574,7 +580,7 @@ The project uses `ruff`. Configuration is in `ruff.toml`.
 - **Request shape**: ISL and OSL are fixed in a given run. Total requests = `users * sessions_per_user * max_session_turns`. Within a session, ISL grows cumulatively from the previous turn's `isl + osl`.
 - **Cache tiers**: Each node has RAM and SSD. The shared S3 tier is optional. Items are merged per `(user_id, session_id)` to keep one contiguous entry per tier. Eviction follows LRU within each tier.
 - **Bandwidth**: The global `BandwidthScheduler` applies equal-share fairness across `RAM_LOCAL`, `SSD_LOCAL`, `NETWORK`, `S3_UPLOAD`, and `S3_DOWNLOAD` legs.
-- **Router**: Picks the cheapest prefill/decode worker using a cost model that credits local, remote RAM, remote SSD, and S3 KV hits, plus load and busy thresholds.
+- **Router**: Picks the cheapest prefill/decode worker using a cost model that credits local, remote RAM, remote SSD, and S3 KV hits, plus load. Ties are broken deterministically using the configured random seed.
 
 ---
 

@@ -118,10 +118,13 @@ class TestTTFTDelayPlots:
             },
         ]
 
-        plot_urls = webserver_module._build_ttft_cost_plots_by_delay(rows)
+        plots_by_ttft = webserver_module._build_ttft_cost_plots_by_delay(rows)
 
-        assert len(plot_urls) == 2
-        assert all(url.startswith("/plot/") for url in plot_urls)
+        # With TTFT grouping the outer dict has one key per TTFT value.
+        assert set(plots_by_ttft.keys()) == {"TTFT=0.025s", "TTFT=0.05s"}
+        all_urls = [url for urls in plots_by_ttft.values() for url in urls]
+        assert len(all_urls) == 3
+        assert all(url.startswith("/plot/") for url in all_urls)
 
     def test_extract_user_delay_from_label(self, webserver_module):
         assert (
@@ -140,7 +143,8 @@ class TestTTFTDelayPlots:
             encoding="utf-8",
         )
 
-        rows = webserver_module._load_results_from_dir(tmp_path)
+        rows, benchmark = webserver_module._load_results_from_dir(tmp_path)
 
         assert len(rows) == 1
         assert rows[0]["label"] == "cfg"
+        assert benchmark == "hardware_economics"

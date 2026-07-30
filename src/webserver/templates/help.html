@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configurator Simulator - Help</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card: #161b22;
+            --border: #30363d;
+            --text: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent: #58a6ff;
+            --accent-hover: #79b8ff;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+        h1 { text-align: center; margin-bottom: 0.25rem; font-weight: 600; }
+        .subtitle { text-align: center; color: var(--text-secondary); margin-bottom: 2rem; font-size: 0.95rem; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        code {
+            background: rgba(255,255,255,0.08);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        pre {
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.85rem;
+        }
+        ul { margin-top: 0.5rem; }
+        li { margin-bottom: 0.5rem; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); text-decoration: underline; }
+        .btn {
+            display: inline-block;
+            padding: 0.65rem 1.5rem;
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.15s;
+        }
+        .btn:hover { background: var(--accent-hover); }
+        .navbar {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            background: var(--bg);
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .navbar a {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.15s;
+        }
+        .navbar a:hover, .navbar a.active {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Configurator Simulator</h1>
+        <p class="subtitle">Webserver usage guide</p>
+
+        <nav class="navbar">
+            <a href="/">Start</a>
+            <a href="/import">Import Results</a>
+            <a href="/help" class="active">Help</a>
+        </nav>
+
+        <div class="card">
+            <h2>Overview</h2>
+            <p>
+                The webserver provides two main workflows:
+            </p>
+            <ul>
+                <li><a href="/">/</a> — interactive comparison. Enter model parameters and one or more hardware/topology configs, then run simulations and get cost-vs-latency plots.</li>
+                <li><a href="/import">/import</a> — import pre-generated result files from the command-line sweep scripts and render their specialised plots.</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>1. Interactive comparison</h2>
+            <p>
+                Use the form on <a href="/">the home page</a> to define global parameters
+                (model, ISL/OSL, users, batch size, S3 settings, etc.) and add hardware/topology configs.
+                Each config row specifies prefill/decode hardware, node counts, GPU split, batch size, and a label.
+            </p>
+            <p>
+                The server runs each config in an isolated process and returns:
+            </p>
+            <ul>
+                <li>A summary of the best config by latency.</li>
+                <li>Cost-latency scatter plots (TTFT, TPOT, latency, KV upload/download).</li>
+                <li>A full comparison table and timing breakdown (hidden by default).</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>2. Importing sweep results</h2>
+            <p>
+                The import page accepts a results directory. The result type is detected automatically
+                from the JSON file contents and filenames:
+            </p>
+            <ul>
+                <li>
+                    <strong>User sweep</strong> — output of
+                    <code>configs/execute_user_sweep_config.py</code>.
+                    Files are named <code>results_users_&lt;N&gt;.json</code>.
+                    Rendered plot: cost vs. users, coloured by deployment mode.
+                </li>
+                <li>
+                    <strong>Hardware economics</strong> — output of
+                    <code>configs/execute_hardware_economics_config.py</code>.
+                    Files are named <code>results_&lt;focus&gt;_&lt;value&gt;.json</code>.
+                    Rendered plots: cost by user delay and price per user by user delay.
+                </li>
+            </ul>
+            <p>
+                You can also paste a raw JSON array or <code>{"results": [...]}</code> object;
+                the benchmark type is inferred from row metadata (<code>users</code> vs. <code>user_delay_ms</code>).
+            </p>
+        </div>
+
+        <div class="card">
+            <h2>Generating sweep configs</h2>
+            <p>Use the command-line scripts in <code>configs/</code>:</p>
+            <pre># Broad topology sweep across hardware and user counts
+.venv/bin/python configs/create_user_sweep_config.py --config-name sweep.json
+.venv/bin/python configs/execute_user_sweep_config.py --config sweep.json --results-dir ./results
+
+# Fixed-topology hardware economics sweep (TTFT and user delay)
+.venv/bin/python configs/create_hardware_economics_config.py --config-name he.json
+.venv/bin/python configs/execute_hardware_economics_config.py --config he.json --ttft-values 10,20,50 --user-delay-values 20,50,100 --results-dir ./he_results</pre>
+        </div>
+
+        <div class="card">
+            <h2>Plot storage</h2>
+            <p>
+                Plots are stored in memory keyed by UUID and served from
+                <code>/plot/&lt;uuid&gt;</code>. They disappear when the server restarts,
+                so export or screenshot results you want to keep.
+            </p>
+        </div>
+
+        <a href="/" class="btn">Back to simulator</a>
+        <a href="/import" class="btn" style="margin-left: 0.5rem;">Import results</a>
+    </div>
+</body>
+</html>

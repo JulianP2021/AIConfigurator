@@ -156,7 +156,34 @@
         .toast.show { opacity: 1; }
         .toast.ok { background: var(--success); color: #fff; }
         .toast.err { background: var(--danger); color: #fff; }
-        #importBox { display: none; margin-top: 1rem; }
+        #importBox { display: none; margin-top: 1rem;         }
+        .navbar {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            background: var(--bg);
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+        .navbar a {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.15s;
+        }
+        .navbar a:hover, .navbar a.active {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
         @media (max-width: 900px) {
             .config-row, .config-row.sub, .config-header { grid-template-columns: 1fr 1fr 1fr auto; }
         }
@@ -166,6 +193,12 @@
     <div class="container">
         <h1>Configurator Simulator</h1>
         <p class="subtitle">Compare multiple hardware / topology / batch-size configurations on cost-vs-latency plots.</p>
+
+        <nav class="navbar">
+            <a href="/" class="active">Start</a>
+            <a href="/import">Import Results</a>
+            <a href="/help">Help</a>
+        </nav>
 
         <div class="card">
             <h2>Global Parameters</h2>
@@ -245,7 +278,6 @@
             <div class="toolbar">
                 <button type="button" class="btn btn-success" onclick="exportConfig()">Export JSON</button>
                 <button type="button" class="btn btn-outline" onclick="toggleImport()">Import / Inject JSON</button>
-                <a href="/import" class="btn btn-outline">Import Results</a>
                 <button type="button" class="btn btn-outline" onclick="saveToStorage()">Save to Browser</button>
                 <button type="button" class="btn btn-outline" onclick="loadFromStorage()">Load from Browser</button>
                 <button type="button" class="btn btn-danger" onclick="clearStorage()">Clear Saved</button>

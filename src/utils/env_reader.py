@@ -78,7 +78,6 @@ class EnvConfig:
     router_remote_ram_credit: float = 0.0
     router_remote_ssd_credit: float = 0.3
     router_s3_credit: float = 0.1
-    router_busy_threshold_tokens: float = 1_000_000.0
 
     log_mask: int = 0
     debug: bool = False
@@ -125,7 +124,6 @@ _DEFAULTS = {
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
     "ROUTER_REMOTE_SSD_CREDIT": "0.3",
     "ROUTER_S3_CREDIT": "0.1",
-    "ROUTER_BUSY_THRESHOLD_TOKENS": "1000000.0",
     "LOG_MASK": "15",
     "DEBUG": "false",
     "MACHINE_HARDWARE": "AWS p5en.48xlarge (H200 x8)",
@@ -172,7 +170,6 @@ def _typed(key: str, value: str) -> str | int | float | bool:
         "ROUTER_REMOTE_RAM_CREDIT",
         "ROUTER_REMOTE_SSD_CREDIT",
         "ROUTER_S3_CREDIT",
-        "ROUTER_BUSY_THRESHOLD_TOKENS",
     }:
         return float(value)
     if key in {
@@ -267,7 +264,6 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),
         router_remote_ssd_credit=float(merged["ROUTER_REMOTE_SSD_CREDIT"]),
         router_s3_credit=float(merged["ROUTER_S3_CREDIT"]),
-        router_busy_threshold_tokens=float(merged["ROUTER_BUSY_THRESHOLD_TOKENS"]),
         log_mask=int(merged["LOG_MASK"], 0),
         debug=_parse_bool(merged["DEBUG"]),
         machine_hardware=str(merged["MACHINE_HARDWARE"]),

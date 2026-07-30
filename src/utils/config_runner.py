@@ -43,6 +43,7 @@ def build_common_config(
     user_delay_min_ms_override: float | None = None,
     user_delay_max_ms_override: float | None = None,
     startup_arrival_mean_ms_override: float | None = None,
+    router_cost_config: RouterCostConfig | None = None,
 ) -> dict[str, Any]:
     raw_sla = config.get("sla")
     if sla_override is not None:
@@ -88,6 +89,7 @@ def build_common_config(
         ),
         "random_seed": config.get("random_seed", env.random_seed),
         "sla": sla,
+        "router_cost_config": router_cost_config,
     }
 
 

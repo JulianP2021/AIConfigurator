@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate fixed-topology configs for TTFT benchmark sweeps.
+"""Generate fixed-topology configs for hardware-economics sweeps.
 
 This script keeps the topology dimensions fixed and selects exactly one config
 family via ``--config-type``:
@@ -8,7 +8,7 @@ family via ``--config-type``:
 - ``mixed``: colocated nodes with different prefill/decode GPU types.
 - ``separate``: distinct prefill-only and decode-only nodes.
 
-The generated config JSON can then be fed into ``execute_ttft_config.py``.
+The generated config JSON can then be fed into ``execute_hardware_economics_config.py``.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _generate_configs(
     gpu_db: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     config_type = args.config_type
-    base = build_base_config(args, config_type)
+    base = build_base_config(args, config_type, include_users=False)
     candidates = _machine_candidates(machine_db, gpu_db, False)
 
     if not candidates:

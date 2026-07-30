@@ -84,9 +84,8 @@ from src.eroors.errors import (
 from src.hardware.hardware import GPUHardwareSpec, S3Spec
 from src.hardware.mixed_gpu import fetch_mixed_gpu_hardware
 from src.hardware.scraper import fetch_machine_hardware, resolve_machine_name
-from src.logger import LOG_CONFIG_EXECUTOR, log, set_log_mask
+from src.logger import LOG_CONFIG_EXECUTOR, log
 
-# , set_debug
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
 from src.result import SimulationResult
@@ -97,6 +96,7 @@ from src.simulations.simulation_distributed import (
 )
 from src.utils.env_reader import load_env
 from src.utils.output_filter import compact_json
+from src.utils.parser import _add_logging_args, apply_logging_args
 from src.utils.router_tuner import TunableRouterParams, tune_router_for_config
 from src.utils.utils import add_result_metadata, parse_int_list
 
@@ -351,8 +351,6 @@ def _run_single_config(
         )
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
-    # set_log_mask(63)
-    # set_debug(True)
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
@@ -371,7 +369,6 @@ def _run_single_config(
     )
     result.router_active_work_scale = effective_router_config.active_work_scale
     result.router_device_credit = effective_router_config.device_credit
-    result.router_busy_threshold_tokens = effective_router_config.busy_threshold_tokens
     return result
 
 
@@ -1314,6 +1311,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run multi-config distributed simulator comparisons"
     )
+    _add_logging_args(parser, env)
     parser.add_argument(
         "--config",
         type=Path,
@@ -1371,9 +1369,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    set_log_mask(LOG_CONFIG_EXECUTOR)
-    set_log_mask(0)
-    # set_debug(True)
+    apply_logging_args(args)
 
     if config.get("sla"):
         sla = config.get("sla")
@@ -1437,9 +1433,6 @@ def main() -> None:
             config.get("router_remote_ssd_credit", env.router_remote_ssd_credit)
         ),
         s3_credit=float(config.get("router_s3_credit", env.router_s3_credit)),
-        busy_threshold_tokens=float(
-            config.get("router_busy_threshold_tokens", env.router_busy_threshold_tokens)
-        ),
     )
 
     # Apply inter-node bandwidth override globally so fetch_machine_hardware()

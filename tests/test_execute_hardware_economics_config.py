@@ -1,4 +1,4 @@
-"""Tests for the TTFT sweep runner."""
+"""Tests for the hardware-economics sweep runner."""
 
 from __future__ import annotations
 import json
@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from configs.execute_ttft_config import (
+from configs.execute_hardware_economics_config import (
     _build_run_config,
     _expand_run_specs,
     _write_results_dir,
@@ -49,7 +49,7 @@ class TestTTFTExpansion:
             sla_ttft_ms=30000.0,
             sla_tpot_ms=100.0,
         )
-        monkeypatch.setattr("configs.execute_ttft_config.load_env", lambda: fake_env)
+        monkeypatch.setattr("configs.execute_hardware_economics_config.load_env", lambda: fake_env)
 
         config = {
             "model": "Qwen/Qwen3-8B",
@@ -109,7 +109,7 @@ class TestTTFTExpansion:
         )
         assert run_cfg["benchmark_ttft_ms"] == 100.0
         assert run_cfg["benchmark_user_delay_ms"] == 50.0
-        assert run_cfg["benchmark_mode"] == "ttft_cost_by_delay"
+        assert run_cfg["benchmark_mode"] == "hardware_economics"
 
     def test_build_run_config_keeps_focus_metadata(self) -> None:
         cfg = {

@@ -661,6 +661,87 @@ class Cache:
         prefix = self.find_cache(session_id, node_id=node_id)
         return prefix[-1].token_end if prefix else 0
 
+    def estimated_download_time_ms(
+        self, session_id: tuple[int, int], dest_node_id: int, required_end: int
+    ) -> float:
+        """Return an optimistic download time for ``required_end`` tokens.
+
+        This is a routing-only estimate.  It assumes the request would receive
+        the full unshared bandwidth for every leg, so it intentionally ignores
+        concurrent transfers.  It is intended to make routing sensitive to the
+        physical cost of moving KV from its current tier to the destination,
+        especially when the destination RAM is full and a remote/SSD source is
+        needed.
+        """
+        effective_end, segments = self._find_download_segments(
+            session_id, dest_node_id, required_end
+        )
+        if effective_end == 0:
+            return 0.0
+
+        total_ms = 0.0
+        for start, end, source_node_id, source_layer_name in segments:
+            tokens = end - start
+            if tokens <= 0:
+                continue
+            bytes_to_transfer = self.kv_size(self.model, tokens)
+            if bytes_to_transfer <= 0:
+                continue
+
+            # Local RAM already in destination: only the GPU staging leg.
+            if source_node_id == dest_node_id and source_layer_name == "RAM":
+                total_ms += self._estimated_leg_time_ms(
+                    bytes_to_transfer, "RAM_LOCAL", dest_node_id
+                )
+                continue
+
+            # Build the optimistic legs that would be used and sum them.
+            legs = self._build_data_legs(
+                source_layer_name, source_node_id, dest_node_id, bytes_to_transfer
+            )
+            for leg in legs:
+                total_ms += self._estimated_leg_time_ms(
+                    leg.remaining_bytes, leg.bottleneck, leg.source_node_id
+                )
+
+        return total_ms
+
+    def _estimated_leg_time_ms(
+        self, bytes_to_transfer: int, bottleneck: str, node_id: int
+    ) -> float:
+        """Return the full-bandwidth time for one leg, including fixed latency."""
+        if bytes_to_transfer <= 0:
+            return 0.0
+
+        latency_ms = TransferLeg._DEFAULT_LATENCY_MS.get(bottleneck, 0.0)
+        if bottleneck == "S3_UPLOAD" or bottleneck == "S3_DOWNLOAD":
+            # S3 legs use the shared S3 bandwidth, not the node NIC.
+            if not self.s3_spec.enabled:
+                return float("inf")
+            bw_bytes_per_s = (
+                self.s3_spec.up_bw_bytes_per_s
+                if bottleneck == "S3_UPLOAD"
+                else self.s3_spec.down_bw_bytes_per_s
+            )
+            return latency_ms + (bytes_to_transfer / max(1, bw_bytes_per_s)) * 1000.0
+
+        node = self.node_hardware.get(node_id)
+        if node is None:
+            return float("inf")
+        spec = node.spec
+
+        if bottleneck == "RAM_LOCAL":
+            per_gpu_bw = spec.nvlink_bw if spec.nvlink_bw > 0 else spec.pcie_bw
+            total_bw = per_gpu_bw * max(1, spec.num_gpus)
+        elif bottleneck == "SSD_LOCAL":
+            total_bw = spec.nvme_bw
+        elif bottleneck == "NETWORK":
+            total_bw = spec.network_inter_node_up
+        else:
+            return latency_ms + (bytes_to_transfer / max(1, float(spec.pcie_bw))) * 1000.0
+
+        return latency_ms + (bytes_to_transfer / max(1, total_bw)) * 1000.0
+
     def delete_item(self, item: CacheItem):
         layer = item.layer
         if layer is None:
