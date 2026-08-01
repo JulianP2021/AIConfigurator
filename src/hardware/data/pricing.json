@@ -37,10 +37,10 @@
         "gpu_compute_fraction": 0.6
       },
       "A10G": {
-        "ssd_bw_usd_per_gb_s_hour": 0.0015921879538658727,
+        "ssd_bw_usd_per_gb_s_hour": 0.0015921879538658736,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.00305525779242352,
-        "inter_node_up_usd_per_gbps_hour": 0.0005913575395130276,
+        "pcie_bw_usd_per_gb_s_hour": 0.003280558074827041,
+        "inter_node_up_usd_per_gbps_hour": 0.000591357539513028,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
         "inet_down_usd_per_gbps_hour": 0.0,
@@ -78,8 +78,8 @@
       "GB202": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.006745331662489562,
-        "inter_node_up_usd_per_gbps_hour": 0.004398063157894732,
+        "pcie_bw_usd_per_gb_s_hour": 0.00724274472276649,
+        "inter_node_up_usd_per_gbps_hour": 0.004398063157894739,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
         "inet_down_usd_per_gbps_hour": 0.0,
@@ -130,7 +130,7 @@
       "INF1": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.0047827948673386635,
+        "pcie_bw_usd_per_gb_s_hour": 0.005135486884674056,
         "inter_node_up_usd_per_gbps_hour": 0.0,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
@@ -143,7 +143,7 @@
       "INF2": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.006426852316602318,
+        "pcie_bw_usd_per_gb_s_hour": 0.006900780129007199,
         "inter_node_up_usd_per_gbps_hour": 0.0,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
@@ -156,7 +156,7 @@
       "L4": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.010862622387238724,
+        "pcie_bw_usd_per_gb_s_hour": 0.01166365197549694,
         "inter_node_up_usd_per_gbps_hour": 0.0,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
@@ -169,7 +169,7 @@
       "L40S": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.024739624783906962,
+        "pcie_bw_usd_per_gb_s_hour": 0.026563969840547864,
         "inter_node_up_usd_per_gbps_hour": 0.0,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
@@ -182,7 +182,7 @@
       "RTX_PRO_4500": {
         "ssd_bw_usd_per_gb_s_hour": 0.0,
         "nvlink_bw_usd_per_gb_s_hour": 0.0,
-        "pcie_bw_usd_per_gb_s_hour": 0.017098502098157272,
+        "pcie_bw_usd_per_gb_s_hour": 0.01835937683054322,
         "inter_node_up_usd_per_gbps_hour": 0.0,
         "inter_node_down_usd_per_gbps_hour": 0.0,
         "inet_up_usd_per_gbps_hour": 0.0,
