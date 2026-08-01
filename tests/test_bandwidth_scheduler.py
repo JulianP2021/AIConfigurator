@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.hardware.hardware import Hardware, S3Spec
+from src.hardware.hardware import Hardware, HardwareSpec, S3Spec
 from src.request.request import DownloadRequest, TransferLeg, UploadRequest
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 
@@ -142,6 +142,157 @@ class TestBandwidthScheduler:
         assert scheduler.next_event_ms() == pytest.approx(1.0, rel=1e-3)
         for leg in ur.active_legs:
             assert leg.bandwidth_bytes_per_ms == tiny_hardware.spec.pcie_bw / 2 / 1000.0
+
+    def test_ram_local_pcie_not_scaled_by_gpu_count(self, tiny_hardware: Hardware):
+        """PCIe bandwidth is total node bandwidth and must not scale with num_gpus."""
+        spec = tiny_hardware.spec
+        multi_gpu_spec = HardwareSpec(
+            gpu_hardware=spec.gpu_hardware,
+            num_gpus=4,
+            nvme_mem=spec.nvme_mem,
+            nvme_bw=spec.nvme_bw,
+            network_inet_up=spec.network_inet_up,
+            network_inet_down=spec.network_inet_down,
+            network_inter_node_up=spec.network_inter_node_up,
+            network_inter_node_down=spec.network_inter_node_down,
+            cpu_cores=spec.cpu_cores,
+            cpu_cores_effective=spec.cpu_cores_effective,
+            cpu_ghz=spec.cpu_ghz,
+            cpu_name=spec.cpu_name,
+            cpu_ram=spec.cpu_ram,
+            disk_name=spec.disk_name,
+            dlperf=spec.dlperf,
+            dlperf_per_dphtotal=spec.dlperf_per_dphtotal,
+            dph_base=spec.dph_base,
+            geolocation=spec.geolocation,
+            gpu_display_active=spec.gpu_display_active,
+            gpu_frac=spec.gpu_frac,
+            gpu_lanes=spec.gpu_lanes,
+            gpu_max_power=spec.gpu_max_power,
+            gpu_max_temp=spec.gpu_max_temp,
+            has_avx=spec.has_avx,
+            host_id=spec.host_id,
+            inet_down_cost=spec.inet_down_cost,
+            inet_up_cost=spec.inet_up_cost,
+            mobo_name=spec.mobo_name,
+            os_version=spec.os_version,
+            pci_gen=spec.pci_gen,
+            pcie_bw=spec.pcie_bw,
+            network_bw=spec.network_bw,
+            reliability=spec.reliability,
+            reliability_mult=spec.reliability_mult,
+            score=spec.score,
+            storage_cost=spec.storage_cost,
+            storage_total_cost=spec.storage_total_cost,
+            verification=spec.verification,
+            nvlink_bw=0.0,
+        )
+        multi_gpu_hardware = Hardware(name="multi-gpu-pcie", spec=multi_gpu_spec)
+        scheduler = BandwidthScheduler([FakeNode(0, multi_gpu_hardware)])
+
+        # A single transfer gets the full node PCIe bandwidth.
+        req_single = FakeRequest()
+        ur_single = UploadRequest(
+            req_single, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]]
+        )
+        scheduler.register(ur_single)
+        assert scheduler.next_event_ms() == pytest.approx(1.0, rel=1e-3)
+        assert ur_single.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
+            multi_gpu_hardware.spec.pcie_bw / 1000.0, rel=1e-3
+        )
+
+        # Multiple transfers share the same total node PCIe bandwidth. With the
+        # old PCIe*num_gpus logic, four transfers on a 4-GPU node would each
+        # incorrectly get pcie_bw/2 instead of pcie_bw/4.
+        scheduler.unregister(ur_single)
+        req_a = FakeRequest()
+        req_b = FakeRequest()
+        ur_a = UploadRequest(req_a, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]])
+        ur_b = UploadRequest(req_b, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]])
+        scheduler.register(ur_a)
+        scheduler.register(ur_b)
+        scheduler.update_shares()
+        expected_share = multi_gpu_hardware.spec.pcie_bw / 2 / 1000.0
+        assert ur_a.active_legs[0].bandwidth_bytes_per_ms == expected_share
+        assert ur_b.active_legs[0].bandwidth_bytes_per_ms == expected_share
+
+    def test_ram_local_nvlink_scales_by_gpu_count(self, tiny_hardware: Hardware):
+        """NVLink bandwidth is per-GPU, so aggregate bandwidth scales with num_gpus."""
+        spec = tiny_hardware.spec
+        per_gpu_nvlink = spec.pcie_bw / 4  # arbitrary per-GPU NVLink value
+        multi_gpu_spec = HardwareSpec(
+            gpu_hardware=spec.gpu_hardware,
+            num_gpus=4,
+            nvme_mem=spec.nvme_mem,
+            nvme_bw=spec.nvme_bw,
+            network_inet_up=spec.network_inet_up,
+            network_inet_down=spec.network_inet_down,
+            network_inter_node_up=spec.network_inter_node_up,
+            network_inter_node_down=spec.network_inter_node_down,
+            cpu_cores=spec.cpu_cores,
+            cpu_cores_effective=spec.cpu_cores_effective,
+            cpu_ghz=spec.cpu_ghz,
+            cpu_name=spec.cpu_name,
+            cpu_ram=spec.cpu_ram,
+            disk_name=spec.disk_name,
+            dlperf=spec.dlperf,
+            dlperf_per_dphtotal=spec.dlperf_per_dphtotal,
+            dph_base=spec.dph_base,
+            geolocation=spec.geolocation,
+            gpu_display_active=spec.gpu_display_active,
+            gpu_frac=spec.gpu_frac,
+            gpu_lanes=spec.gpu_lanes,
+            gpu_max_power=spec.gpu_max_power,
+            gpu_max_temp=spec.gpu_max_temp,
+            has_avx=spec.has_avx,
+            host_id=spec.host_id,
+            inet_down_cost=spec.inet_down_cost,
+            inet_up_cost=spec.inet_up_cost,
+            mobo_name=spec.mobo_name,
+            os_version=spec.os_version,
+            pci_gen=spec.pci_gen,
+            pcie_bw=0.0,
+            network_bw=spec.network_bw,
+            reliability=spec.reliability,
+            reliability_mult=spec.reliability_mult,
+            score=spec.score,
+            storage_cost=spec.storage_cost,
+            storage_total_cost=spec.storage_total_cost,
+            verification=spec.verification,
+            nvlink_bw=per_gpu_nvlink,
+        )
+        multi_gpu_hardware = Hardware(name="multi-gpu-nvlink", spec=multi_gpu_spec)
+        scheduler = BandwidthScheduler([FakeNode(0, multi_gpu_hardware)])
+
+        # A single NVLink transfer is capped at one GPU's link bandwidth.
+        req_single = FakeRequest()
+        ur_single = UploadRequest(
+            req_single, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]]
+        )
+        scheduler.register(ur_single)
+        expected_single_ms = 10_000_000 / (per_gpu_nvlink / 1000.0)
+        assert scheduler.next_event_ms() == pytest.approx(expected_single_ms, rel=1e-3)
+        assert ur_single.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
+            per_gpu_nvlink / 1000.0, rel=1e-3
+        )
+
+        # Many transfers share the aggregate NVLink bandwidth.
+        scheduler.unregister(ur_single)
+        transfers = [
+            UploadRequest(
+                FakeRequest(i), [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]]
+            )
+            for i in range(8)
+        ]
+        for ur in transfers:
+            scheduler.register(ur)
+        scheduler.update_shares()
+        # 8 transfers share 4 NVLink links -> each gets half a link.
+        expected_share = (per_gpu_nvlink / 2) / 1000.0
+        for ur in transfers:
+            assert ur.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
+                expected_share, rel=1e-3
+            )
 
     def test_s3_download_bandwidth(self, tiny_hardware: Hardware):
         s3_spec = S3Spec.from_gbps(enabled=True, up_gbps=25.0, down_gbps=25.0)

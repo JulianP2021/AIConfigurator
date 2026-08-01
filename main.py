@@ -206,6 +206,7 @@ def main():
         user_delay_max_ms=args.user_delay_max_ms,
         startup_arrival_mean_ms=args.startup_arrival_mean_ms,
         random_seed=args.random_seed,
+        bandwidth_aware_routing=args.bandwidth_aware_routing,
     )
     # CLI-only: average prompt size accounting for cumulative ISL growth
     # across session turns.  The first turn has ISL tokens; each subsequent

@@ -38,7 +38,7 @@ class TestBuildNodesInterNodeBandwidth:
             decode_gpus_per_node=4,
             batch_size=2,
             model="Qwen/Qwen3-8B",
-            colocated=False,
+            config_type="separate",
             inter_node_network_up_gbps=2.0,
             inter_node_network_down_gbps=3.0,
         )
@@ -71,7 +71,7 @@ class TestBuildNodesInterNodeBandwidth:
             decode_gpus_per_node=4,
             batch_size=2,
             model="Qwen/Qwen3-8B",
-            colocated=False,
+            config_type="separate",
         )
 
         expected = int(100.0 * 1e9 / 8.0)

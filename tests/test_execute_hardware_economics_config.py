@@ -26,7 +26,7 @@ class TestValidateColocatedConfigs:
                     "decode_hardware": "H200 x8 #a",
                     "prefill_nodes": 1,
                     "decode_nodes": 1,
-                    "colocated": False,
+                    "config_type": "separate",
                 }
             ])
 
@@ -48,6 +48,7 @@ class TestTTFTExpansion:
             random_seed=42,
             sla_ttft_ms=30000.0,
             sla_tpot_ms=100.0,
+            bandwidth_aware_routing=True,
         )
         monkeypatch.setattr(
             "configs.execute_hardware_economics_config.load_env", lambda: fake_env
@@ -72,7 +73,7 @@ class TestTTFTExpansion:
                     "prefill_gpus_per_node": 4,
                     "decode_gpus_per_node": 4,
                     "batch_size": 16,
-                    "colocated": True,
+                    "config_type": "colocated",
                 }
             ],
         }
@@ -100,7 +101,7 @@ class TestTTFTExpansion:
             "decode_hardware": "H200 x8 #a",
             "prefill_nodes": 1,
             "decode_nodes": 1,
-            "colocated": True,
+            "config_type": "colocated",
         }
 
         run_cfg = _build_run_config(cfg, 100.0, 50.0)
@@ -121,7 +122,7 @@ class TestTTFTExpansion:
             "decode_hardware": "H200 x8 #a",
             "prefill_nodes": 2,
             "decode_nodes": 2,
-            "colocated": True,
+            "config_type": "colocated",
             "focus": "nodes",
             "focus_value": 2,
         }

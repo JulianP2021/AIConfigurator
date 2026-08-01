@@ -119,11 +119,16 @@ class BandwidthScheduler:
             for leg in transfer.active_legs:
                 if leg.bottleneck == "RAM_LOCAL":
                     spec = self.node_specs[leg.source_node_id]
-                    # nvlink_bw is stored as per-GPU bandwidth. Aggregate node
-                    # bandwidth is per-GPU bw * num_gpus, shared equally among
-                    # active RAM-local transfers, but capped at the per-GPU bw.
-                    per_gpu_bw = spec.nvlink_bw if spec.nvlink_bw > 0 else spec.pcie_bw
-                    total_bw = per_gpu_bw * max(1, spec.num_gpus)
+                    # NVLink bandwidth is stored per-GPU, so aggregate node
+                    # bandwidth scales with the number of GPUs. PCIe bandwidth is
+                    # already stored as total node bandwidth and must not be
+                    # multiplied by the GPU count.
+                    if spec.nvlink_bw > 0:
+                        total_bw = spec.nvlink_bw * max(1, spec.num_gpus)
+                        per_gpu_bw = spec.nvlink_bw
+                    else:
+                        total_bw = spec.pcie_bw
+                        per_gpu_bw = spec.pcie_bw
                     share_bw = total_bw / ram_counts[leg.source_node_id]
                     node_bw = min(share_bw, per_gpu_bw)
                     leg.bandwidth_bytes_per_ms = node_bw / 1000.0

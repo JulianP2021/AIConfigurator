@@ -37,15 +37,15 @@ if __name__ == "__main__":
 
     # High-end training GPUs to keep when --high-end-only is set.
     HIGH_END_GPUS = {
-        # "A100_40GB",
-        # "A100_80GB",
-        # "H100 NVL",
+        "A100_40GB",
+        "A100_80GB",
+        "H100 NVL",
         "H200",
-        # "H200 NVL",
-        # "B200",
-        # "B300",
+        "H200 NVL",
+        "B200",
+        "B300",
         "INF1",
-        # "INF2",
+        "INF2",
     }
 
     possible_machines: list[tuple[str, dict[str, Any]]] = []
@@ -122,7 +122,7 @@ if __name__ == "__main__":
                         )
                         colocation_configs.append(
                             {
-                                "colocated": "true",
+                                "config_type": "colocated",
                                 "prefill_hardware": machine_name,
                                 "decode_hardware": machine_name,  # only so it passes, not used
                                 "prefill_gpus_per_node": str(prefill_gpus_per_node),
@@ -165,8 +165,7 @@ if __name__ == "__main__":
                                 continue
                             mixed_configs.append(
                                 {
-                                    "mixed": "true",
-                                    "colocated": "false",
+                                    "config_type": "mixed",
                                     "prefill_hardware": machine_name,
                                     "decode_hardware": donor_name,
                                     "prefill_gpus_per_node": str(prefill_gpus_per_node),
@@ -189,7 +188,7 @@ if __name__ == "__main__":
                         for batch_size in batch_size_values:
                             separate_configs.append(
                                 {
-                                    "colocated": "false",
+                                    "config_type": "separate",
                                     "prefill_hardware": prefill_machine_name,
                                     "decode_hardware": decode_machine_name,
                                     "prefill_nodes": str(prefill_nodes),

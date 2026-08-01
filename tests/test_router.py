@@ -1,4 +1,4 @@
-"""Tests for Dynamo-style cost-based routing."""
+"""Tests for routing (Dynamo-style and bandwidth-aware)."""
 
 from unittest.mock import MagicMock
 
@@ -222,6 +222,32 @@ def _make_cache() -> Cache:
     )
 
 
+def _make_router(
+    *,
+    prefill_instances,
+    decode_instances,
+    cache=None,
+    cost_config=None,
+    random_seed=None,
+    bandwidth_aware_routing=False,
+):
+    """Create a Router with a deterministic default mode for the test suite.
+
+    The existing tests are written for the Dynamo-style cost model, so this
+    helper defaults to ``bandwidth_aware_routing=False``.  New bandwidth-aware
+    tests opt in explicitly.
+    """
+    return Router(
+        queue=[],
+        prefill_instances=prefill_instances,
+        decode_instances=decode_instances,
+        cache=cache,
+        cost_config=cost_config,
+        random_seed=random_seed,
+        bandwidth_aware_routing=bandwidth_aware_routing,
+    )
+
+
 class TestRouterCostFunction:
     def prefer_cache_over_tokens(self):
         cache = _make_cache()
@@ -238,8 +264,7 @@ class TestRouterCostFunction:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
@@ -268,8 +293,7 @@ class TestRouterCostFunction:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
@@ -289,8 +313,7 @@ class TestRouterCostFunction:
         # Put one active prefill request on node 0.
         prefill_0.queue.append((Request(isl=500, osl=10), -1))
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=None,
@@ -312,8 +335,7 @@ class TestRouterCostFunction:
         prefill_a.queue.append((Request(isl=5000, osl=10), -1))
         prefill_b.queue.append((Request(isl=10, osl=10), -1))
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_a, prefill_b],
             decode_instances=[decode_0],
             cache=None,
@@ -339,8 +361,7 @@ class TestRouterCostFunction:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
@@ -366,8 +387,7 @@ class TestRouterCostFunction:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
@@ -389,8 +409,7 @@ class TestRouterCostFunction:
         # Node 0 is already decoding one request.
         decode_0.queue.append((Request(isl=1000, osl=100), -1))
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=None,
@@ -427,8 +446,7 @@ class TestRouterCostFunction:
         for inst in (decode_0, decode_1):
             inst.add_request = make_decode_add(inst)  # type: ignore[method-assign]
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=None,
@@ -457,8 +475,7 @@ class TestRouterTieBreaking:
         decode_1 = _make_decode_instance(1)
 
         def sequence(seed: int | None) -> list[int]:
-            router = Router(
-                queue=[],
+            router = _make_router(
                 prefill_instances=[prefill_0, prefill_1],
                 decode_instances=[decode_0, decode_1],
                 cache=None,
@@ -489,8 +506,7 @@ class TestRouterTieBreaking:
         decode_1 = _make_decode_instance(1)
 
         def sequence(seed: int | None) -> list[int]:
-            router = Router(
-                queue=[],
+            router = _make_router(
                 prefill_instances=[prefill_0, prefill_1],
                 decode_instances=[decode_0, decode_1],
                 cache=None,
@@ -591,6 +607,136 @@ class TestRouterTieBreaking:
         assert sequence(42) != sequence(43)
 
 
+class TestBandwidthAwareRouter:
+    """Tests for the bandwidth-aware completion-time router."""
+
+    def test_prefill_prefers_node_with_shorter_compute_time(self):
+        """Bandwidth-aware router picks the node with the lower completion-time estimate."""
+        prefill_0 = _make_prefill_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        decode_0 = _make_decode_instance(0)
+        decode_1 = _make_decode_instance(1)
+
+        # Node 0 already has a large prefill queued, node 1 is idle.
+        prefill_0.queue.append((Request(isl=50000, osl=10), -1))
+
+        router = _make_router(
+            prefill_instances=[prefill_0, prefill_1],
+            decode_instances=[decode_0, decode_1],
+            cache=None,
+            bandwidth_aware_routing=True,
+        )
+        req = Request(isl=1000, osl=100)
+        chosen = router._choose_prefill_instance(req)
+        assert chosen.node_id == 1
+
+    def test_prefill_prefers_colocated_decode_node(self):
+        """Bandwidth-aware router rewards colocated decode to avoid cross-node KV transfer."""
+        prefill_0 = _make_prefill_instance(0)
+        decode_0 = _make_decode_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        # Node 1 has no decode instance, so node 0's colocation bonus should win.
+
+        router = _make_router(
+            prefill_instances=[prefill_0, prefill_1],
+            decode_instances=[decode_0],
+            cache=None,
+            bandwidth_aware_routing=True,
+        )
+        req = Request(isl=1000, osl=100)
+        chosen = router._choose_prefill_instance(req)
+        assert chosen.node_id == 0
+
+    def test_decode_prefers_node_with_cached_prefix(self):
+        """Bandwidth-aware decode routes to the node holding the KV prefix locally."""
+        cache = _make_cache()
+        item_0_1000 = CacheItem((1, 0), 0, 1000)
+        layer_0 = CacheLayer(0, "RAM")
+        layer_0._add_item(item_0_1000)
+        cache.layers = {
+            0: [layer_0],
+            1: [CacheLayer(1, "RAM")],
+        }
+
+        prefill_0 = _make_prefill_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        decode_0 = _make_decode_instance(0)
+        decode_1 = _make_decode_instance(1)
+
+        router = _make_router(
+            prefill_instances=[prefill_0, prefill_1],
+            decode_instances=[decode_0, decode_1],
+            cache=cache,
+            bandwidth_aware_routing=True,
+        )
+        req = Request(isl=1000, osl=100, user_id=1, session_id=0)
+        req.prefilled_tokens = 1000
+        chosen = router._choose_decode_instance(req)
+        assert chosen.node_id == 0
+
+    def test_bandwidth_aware_ignores_dynamo_credits(self):
+        """The bandwidth-aware path does not use credit-based overlap scoring."""
+        cache = _make_cache()
+        item_0_1000 = CacheItem((1, 0), 0, 1000)
+        layer_1 = CacheLayer(1, "RAM")
+        layer_1._add_item(item_0_1000)
+        cache.layers = {
+            0: [CacheLayer(0, "RAM")],
+            1: [layer_1],
+        }
+
+        prefill_0 = _make_prefill_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        decode_0 = _make_decode_instance(0)
+        decode_1 = _make_decode_instance(1)
+
+        # With bandwidth-aware routing, the remote-download penalty should keep
+        # the request on the prefix owner (node 1) regardless of Dynamo credits.
+        router = _make_router(
+            prefill_instances=[prefill_0, prefill_1],
+            decode_instances=[decode_0, decode_1],
+            cache=cache,
+            cost_config=RouterCostConfig(device_credit=1.0, remote_ram_credit=1.0),
+            bandwidth_aware_routing=True,
+        )
+        req = Request(isl=1000, osl=100, user_id=1, session_id=0)
+        chosen_prefill = router._choose_prefill_instance(req)
+        assert chosen_prefill.node_id == 1
+
+        decode_req = Request(isl=1000, osl=100, user_id=1, session_id=0)
+        decode_req.prefilled_tokens = 1000
+        chosen_decode = router._choose_decode_instance(decode_req)
+        assert chosen_decode.node_id == 1
+
+    def test_tie_breaking_deterministic_with_seed(self):
+        """Bandwidth-aware tie-breaking is deterministic for a fixed seed."""
+        prefill_0 = _make_prefill_instance(0)
+        prefill_1 = _make_prefill_instance(1)
+        decode_0 = _make_decode_instance(0)
+        decode_1 = _make_decode_instance(1)
+
+        def sequence(seed: int | None) -> list[int]:
+            router = _make_router(
+                prefill_instances=[prefill_0, prefill_1],
+                decode_instances=[decode_0, decode_1],
+                cache=None,
+                bandwidth_aware_routing=True,
+                random_seed=seed,
+            )
+            active_prefill = {0: 0.0, 1: 0.0}
+            active_decode = {0: 0.0, 1: 0.0}
+            req = Request(isl=1000, osl=100)
+            return [
+                router._choose_prefill_instance(
+                    req, active_prefill, active_decode
+                ).node_id
+                for _ in range(20)
+            ]
+
+        assert sequence(42) == sequence(42)
+        assert sequence(42) != sequence(43)
+
+
 class TestRouterRamTieBreaking:
     def test_tie_break_prefers_node_with_more_free_ram(self):
         """When two nodes have identical routing cost, the one with the lower
@@ -606,8 +752,7 @@ class TestRouterRamTieBreaking:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
@@ -644,8 +789,7 @@ class TestRouterRamTieBreaking:
         decode_1 = _make_decode_instance(1)
 
         def sequence(seed: int | None) -> list[int]:
-            router = Router(
-                queue=[],
+            router = _make_router(
                 prefill_instances=[prefill_0, prefill_1],
                 decode_instances=[decode_0, decode_1],
                 cache=cache,
@@ -671,8 +815,7 @@ class TestRouterRamTieBreaking:
         decode_0 = _make_decode_instance(0)
         decode_1 = _make_decode_instance(1)
 
-        router = Router(
-            queue=[],
+        router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=None,

@@ -20,7 +20,6 @@ choice is made using the configured ``random_seed`` so repeated runs with the
 same seed produce identical routing decisions.
 """
 
-import os
 import random
 
 from dataclasses import dataclass, field
@@ -78,6 +77,7 @@ class Router:
     cache: Cache | None = None
     cost_config: RouterCostConfig | None = None
     random_seed: int | None = None
+    bandwidth_aware_routing: bool | None = None
     _rng: random.Random = field(init=False, repr=False)
     model: Model | None = None
 
@@ -490,13 +490,10 @@ class Router:
 
     @property
     def _bandwidth_aware(self) -> bool:
-        """Return True when the env flag requests the bandwidth-aware router."""
-        return os.environ.get("BANDWIDTH_AWARE_ROUTING", "true").strip().lower() in {
-            "true",
-            "1",
-            "yes",
-            "on",
-        }
+        """Return True when the bandwidth-aware router mode is active."""
+        if self.bandwidth_aware_routing is None:
+            return True
+        return self.bandwidth_aware_routing
 
     def _total_cost(
         self,

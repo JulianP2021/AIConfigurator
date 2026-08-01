@@ -88,6 +88,9 @@ def build_common_config(
             else config.get("startup_arrival_mean_ms", env.startup_arrival_mean_ms)
         ),
         "random_seed": config.get("random_seed", env.random_seed),
+        "bandwidth_aware_routing": bool(
+            config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
+        ),
         "sla": sla,
         "router_cost_config": router_cost_config,
     }
@@ -103,7 +106,7 @@ def build_scenario(
         "prefill_nodes",
         "decode_nodes",
         "batch_size",
-        "colocated",
+        "config_type",
     }
     missing = sorted(required - cfg.keys())
     if missing:
@@ -120,7 +123,12 @@ def build_scenario(
     batch_size = int(cfg["batch_size"])
     prefill_nodes = int(cfg["prefill_nodes"])
     decode_nodes = int(cfg["decode_nodes"])
-    colocated = _parse_bool(cfg.get("colocated", False))
+    config_type = str(cfg.get("config_type", "separate")).lower()
+    if config_type not in {"separate", "colocated", "mixed"}:
+        raise ValueError(
+            f"Config '{cfg.get('label')}' has unsupported config_type '{config_type}'. "
+            "Use 'separate', 'colocated', or 'mixed'."
+        )
 
     from src.hardware.scraper import parse_gpu_count
 
@@ -129,19 +137,19 @@ def build_scenario(
     prefill_gpus = int(cfg.get("prefill_gpus_per_node", prefill_total_gpus))
     decode_gpus = int(cfg.get("decode_gpus_per_node", decode_total_gpus))
 
-    mixed_gpu_donor = cfg.get("mixed_gpu_donor")
     mixed_gpu_count = cfg.get("mixed_gpu_count")
     mixed_gpu_count = int(mixed_gpu_count) if mixed_gpu_count is not None else None
     gpu_compute_fraction = float(cfg.get("gpu_compute_fraction", 0.6))
 
-    is_mixed = _parse_bool(cfg.get("mixed", False))
+    is_colocated = config_type == "colocated"
+    is_mixed = config_type == "mixed"
 
     nodes: list[Node] = []
-    if colocated or is_mixed:
+    if is_colocated or is_mixed:
         if prefill_nodes != decode_nodes:
             raise ValueError(
-                f"Config '{cfg.get('label')}' is colocated/mixed but prefill_nodes ({prefill_nodes}) "
-                f"!= decode_nodes ({decode_nodes}). In colocated/mixed mode both values represent the number of shared nodes."
+                f"Config '{cfg.get('label')}' is {config_type} but prefill_nodes ({prefill_nodes}) "
+                f"!= decode_nodes ({decode_nodes}). In {config_type} mode both values represent the number of shared nodes."
             )
         if prefill_gpus + decode_gpus != prefill_total_gpus:
             raise ValueError(
@@ -149,10 +157,10 @@ def build_scenario(
                 f"total GPUs per node ({prefill_total_gpus})."
             )
 
-        if is_mixed or mixed_gpu_donor:
+        if is_mixed:
             if mixed_gpu_count is None:
                 mixed_gpu_count = decode_gpus
-            donor_hw_name = resolve_machine_name(mixed_gpu_donor or decode_hw_name)
+            donor_hw_name = decode_hw_name
             node_hw = fetch_mixed_gpu_hardware(
                 prefill_hw_name,
                 prefill_gpus,
@@ -175,7 +183,7 @@ def build_scenario(
             if prefill_hw_name != decode_hw_name:
                 raise ValueError(
                     f"Config '{cfg.get('label')}' is colocated but prefill_hardware ({prefill_hw_name}) "
-                    f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type unless mixed_gpu_donor is set.; {cfg.get('colocated')}"
+                    f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type."
                 )
             node_hw = fetch_machine_hardware(prefill_hw_name)
             donor_gpu_spec = None
@@ -237,7 +245,7 @@ def run_single_config(
     ram_usage_fraction: float,
     ssd_usage_fraction: float,
     s3_spec: S3Spec,
-    _router_cost_config: RouterCostConfig | None = None,
+    router_cost_config: RouterCostConfig | None = None,
 ) -> SimulationResult:
     scenario = build_scenario(common, cfg)
     return simulate_run_distributed(
@@ -245,6 +253,7 @@ def run_single_config(
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
         s3_spec=s3_spec,
+        router_cost_config=router_cost_config,
         should_print=False,
         sla=common.get("sla"),
         user_delay_fraction=float(common.get("user_delay_fraction", 0.0)),
@@ -254,6 +263,7 @@ def run_single_config(
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
+        bandwidth_aware_routing=bool(common.get("bandwidth_aware_routing", True)),
     )
 
 
@@ -308,10 +318,10 @@ def collect_future_results(
 def validate_colocated_configs(configs: list[dict[str, Any]]) -> None:
     invalid: list[str] = []
     for cfg in configs:
-        colocated = _parse_bool(cfg.get("colocated", False))
+        config_type = str(cfg.get("config_type", "")).lower()
         same_hardware = cfg.get("prefill_hardware") == cfg.get("decode_hardware")
         same_nodes = str(cfg.get("prefill_nodes")) == str(cfg.get("decode_nodes"))
-        if not (colocated and same_hardware and same_nodes):
+        if not (config_type == "colocated" and same_hardware and same_nodes):
             invalid.append(str(cfg.get("label", "<unknown>")))
     if invalid:
         raise ValueError(

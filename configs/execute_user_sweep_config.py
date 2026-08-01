@@ -33,7 +33,7 @@ The input JSON schema mirrors the webserver export/import state:
                 "prefill_nodes": 1,
                 "decode_nodes": 1,
                 "batch_size": 10,
-                "colocated": false
+                "config_type": "separate"
             }
         ]
     }
@@ -51,7 +51,7 @@ Colocated example (prefill + decode share each node):
                 "prefill_gpus_per_node": 1,
                 "decode_gpus_per_node": 0,
                 "batch_size": 10,
-                "colocated": true
+                "config_type": "colocated"
             }
         ]
     }
@@ -127,9 +127,10 @@ def parse_users_arg(raw: str | None) -> list[int] | None:
 def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedScenario:
     """Build a DistributedScenario from one config entry.
 
-    Each config can describe either separate prefill/decode nodes or colocated
-    prefill+decode nodes.  When a node has both instance types the KV cache is
-    reused locally, eliminating the network KV download.
+    Each config describes either separate prefill/decode nodes or colocated
+    prefill+decode nodes via ``config_type`` ("separate", "colocated", or
+    "mixed").  When a node has both instance types the KV cache is reused
+    locally, eliminating the network KV download.
     """
     required = {
         "label",
@@ -138,7 +139,7 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
         "prefill_nodes",
         "decode_nodes",
         "batch_size",
-        "colocated",
+        "config_type",
     }
     missing = sorted(required - cfg.keys())
     if missing:
@@ -155,10 +156,12 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     batch_size = int(cfg["batch_size"])
     prefill_nodes = int(cfg["prefill_nodes"])
     decode_nodes = int(cfg["decode_nodes"])
-    colocated = bool(
-        cfg.get("colocated", "False").lower()
-        in ["true", "1", "t", "y", "yes", "yeah", "yup", "certainly", "uh-huh"]
-    )
+    config_type = str(cfg.get("config_type", "separate")).lower()
+    if config_type not in {"separate", "colocated", "mixed"}:
+        raise ValueError(
+            f"Config '{cfg.get('label')}' has unsupported config_type '{config_type}'. "
+            "Use 'separate', 'colocated', or 'mixed'."
+        )
 
     # Infer total GPUs per node from the machine key (e.g. "RTX 5090 x2 #...").
     from src.hardware.scraper import parse_gpu_count
@@ -168,19 +171,19 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
     prefill_gpus = int(cfg.get("prefill_gpus_per_node", prefill_total_gpus))
     decode_gpus = int(cfg.get("decode_gpus_per_node", decode_total_gpus))
 
-    mixed_gpu_donor = cfg.get("mixed_gpu_donor")
     mixed_gpu_count = cfg.get("mixed_gpu_count")
     mixed_gpu_count = int(mixed_gpu_count) if mixed_gpu_count is not None else None
     gpu_compute_fraction = float(cfg.get("gpu_compute_fraction", 0.6))
 
-    is_mixed = cfg.get("mixed", "").lower() in ["true", "1", "t", "y", "yes"]
+    is_colocated = config_type == "colocated"
+    is_mixed = config_type == "mixed"
 
     nodes: list[Node] = []
-    if colocated or is_mixed:
+    if is_colocated or is_mixed:
         if prefill_nodes != decode_nodes:
             raise ValueError(
-                f"Config '{cfg.get('label')}' is colocated/mixed but prefill_nodes ({prefill_nodes}) "
-                f"!= decode_nodes ({decode_nodes}). In colocated/mixed mode both values represent the number of shared nodes."
+                f"Config '{cfg.get('label')}' is {config_type} but prefill_nodes ({prefill_nodes}) "
+                f"!= decode_nodes ({decode_nodes}). In {config_type} mode both values represent the number of shared nodes."
             )
         if prefill_gpus + decode_gpus != prefill_total_gpus:
             raise ValueError(
@@ -188,10 +191,12 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
                 f"total GPUs per node ({prefill_total_gpus})."
             )
 
-        if is_mixed or mixed_gpu_donor:
+        if is_mixed:
             if mixed_gpu_count is None:
                 mixed_gpu_count = decode_gpus
-            donor_hw_name = resolve_machine_name(mixed_gpu_donor or decode_hw_name)
+            donor_hw_name = resolve_machine_name(
+                cfg.get("mixed_gpu_donor", decode_hw_name)
+            )
             node_hw = fetch_mixed_gpu_hardware(
                 prefill_hw_name,
                 prefill_gpus,
@@ -214,7 +219,7 @@ def build_scenario(common: dict[str, Any], cfg: dict[str, Any]) -> DistributedSc
             if prefill_hw_name != decode_hw_name:
                 raise ValueError(
                     f"Config '{cfg.get('label')}' is colocated but prefill_hardware ({prefill_hw_name}) "
-                    f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type unless mixed_gpu_donor is set.; {cfg.get('colocated')}"
+                    f"!= decode_hardware ({decode_hw_name}). A colocated node must use one GPU type."
                 )
             node_hw = fetch_machine_hardware(prefill_hw_name)
             donor_gpu_spec = None
@@ -335,8 +340,9 @@ def _run_single_config(
     The tuned parameters are stored on the returned ``SimulationResult`` so
     the runner can emit them in the output JSON.
     """
+    bandwidth_aware_routing = bool(common.get("bandwidth_aware_routing", True))
     effective_router_config = router_cost_config
-    if tune_router:
+    if tune_router and not bandwidth_aware_routing:
         effective_router_config = tune_router_for_config(
             common,
             cfg,
@@ -365,6 +371,7 @@ def _run_single_config(
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
+        bandwidth_aware_routing=bandwidth_aware_routing,
     )
     result.router_active_work_scale = effective_router_config.active_work_scale
     result.router_device_credit = effective_router_config.device_credit
@@ -1348,6 +1355,12 @@ def main() -> None:
         help="If set, dump cProfile stats for this process to the given path",
     )
     parser.add_argument(
+        "--bandwidth-aware-routing",
+        type=lambda s: str(s).strip().lower() in {"true", "1", "t", "yes", "y"},
+        default=None,
+        help="Enable bandwidth-aware routing (true/false). Defaults to env/config.",
+    )
+    parser.add_argument(
         "--tune-router",
         action="store_true",
         default=False,
@@ -1402,6 +1415,13 @@ def main() -> None:
             "startup_arrival_mean_ms", env.startup_arrival_mean_ms
         ),
         "random_seed": config.get("random_seed", env.random_seed),
+        "bandwidth_aware_routing": (
+            args.bandwidth_aware_routing
+            if args.bandwidth_aware_routing is not None
+            else bool(
+                config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
+            )
+        ),
         "sla": sla,
     }
     ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
@@ -1453,15 +1473,11 @@ def main() -> None:
         resolve_machine_name(cfg["decode_hardware"])
 
     colocated_configs = [
-        cfg
-        for cfg in configs
-        if cfg.get("colocated", False) == "true" and cfg.get("mixed", "") != "true"
+        cfg for cfg in configs if cfg.get("config_type", "") == "colocated"
     ]
-    mixed_configs = [cfg for cfg in configs if cfg.get("mixed", "") == "true"]
+    mixed_configs = [cfg for cfg in configs if cfg.get("config_type", "") == "mixed"]
     separate_configs = [
-        cfg
-        for cfg in configs
-        if cfg.get("colocated", False) != "true" and cfg.get("mixed", "") != "true"
+        cfg for cfg in configs if cfg.get("config_type", "") == "separate"
     ]
 
     colocated_config_splitted = _group_colocated_configs(colocated_configs)
@@ -1548,7 +1564,9 @@ def main() -> None:
         else float(config.get("timeout_s", 240.0))
     )
 
-    tune_router = bool(args.tune_router)
+    bandwidth_aware_routing = bool(common["bandwidth_aware_routing"])
+    # The bandwidth-aware router has no tunable cost-model parameters; skip tuning.
+    tune_router = False if bandwidth_aware_routing else bool(args.tune_router)
     tune_max_workers = int(args.tune_max_workers)
     tune_timeout_s = float(args.tune_timeout)
 

@@ -88,7 +88,7 @@ def _build_nodes(
     decode_gpus_per_node: int,
     batch_size: int,
     model: str,
-    colocated: bool = False,
+    config_type: str = "separate",
     inter_node_network_up_gbps: float = 100.0,
     inter_node_network_down_gbps: float = 100.0,
 ) -> list[Node]:
@@ -96,6 +96,11 @@ def _build_nodes(
     # before resolving/loading any machine hardware.
     os.environ["INTER_NODE_NETWORK_UP_GBPS"] = str(inter_node_network_up_gbps)
     os.environ["INTER_NODE_NETWORK_DOWN_GBPS"] = str(inter_node_network_down_gbps)
+
+    if config_type not in {"separate", "colocated", "mixed"}:
+        raise ValueError(
+            f"Invalid config_type '{config_type}'. Use 'separate', 'colocated', or 'mixed'."
+        )
 
     prefill_hw_name = resolve_machine_name(prefill_hardware_name)
     decode_hw_name = resolve_machine_name(decode_hardware_name)
@@ -110,32 +115,61 @@ def _build_nodes(
     prefill_hw = fetch_machine_hardware(prefill_hw_name)
     decode_hw = fetch_machine_hardware(decode_hw_name)
     print(
-        f"Building nodes for prefill hardware: {prefill_hw}, decode hardware: {decode_hw}, colocated={colocated}"
+        f"Building nodes for prefill hardware: {prefill_hw}, decode hardware: {decode_hw}, config_type={config_type}"
     )
 
     nodes: list[Node] = []
-    if colocated:
+    is_colocated = config_type == "colocated"
+    is_mixed = config_type == "mixed"
+    if is_colocated or is_mixed:
         if prefill_nodes != decode_nodes:
             raise ValueError(
-                f"Colocated config requires prefill_nodes ({prefill_nodes}) == decode_nodes ({decode_nodes})."
-            )
-        if prefill_hw_name != decode_hw_name:
-            raise ValueError(
-                "Colocated config requires identical prefill and decode hardware."
+                f"{config_type.title()} config requires prefill_nodes ({prefill_nodes}) == decode_nodes ({decode_nodes})."
             )
         if prefill_gpus_per_node + decode_gpus_per_node != prefill_total_gpus:
             raise ValueError(
                 f"GPU split {prefill_gpus_per_node}+{decode_gpus_per_node} does not equal "
                 f"total GPUs per node ({prefill_total_gpus})."
             )
+
+        if is_mixed:
+            from src.hardware.hardware import GPUHardwareSpec
+            from src.hardware.mixed_gpu import fetch_mixed_gpu_hardware
+            from src.hardware.scraper import lookup as lookup_gpu
+            from src.hardware.scraper import lookup_machine
+
+            node_hw = fetch_mixed_gpu_hardware(
+                prefill_hw_name,
+                prefill_gpus_per_node,
+                decode_hw_name,
+                decode_gpus_per_node,
+                compute_price_fraction=0.6,
+            )
+            donor_machine_config = lookup_machine(decode_hw_name)
+            donor_gpu_name = donor_machine_config["gpu_name"]
+            donor_gpu_config = lookup_gpu(donor_gpu_name)
+            donor_gpu_spec = GPUHardwareSpec(
+                flops=donor_gpu_config["flops"],
+                gpu_mem=donor_gpu_config["gpu_mem"],
+                gpu_bw=donor_gpu_config["gpu_bw"],
+            )
+        else:
+            if prefill_hw_name != decode_hw_name:
+                raise ValueError(
+                    "Colocated config requires identical prefill and decode hardware."
+                )
+            node_hw = prefill_hw
+            donor_gpu_spec = None
+
         for _ in range(prefill_nodes):
             nodes.append(
                 Node(
-                    hardware=prefill_hw,
+                    hardware=node_hw,
                     model_name=model,
                     batch_size=batch_size,
                     prefill_instances=prefill_gpus_per_node,
                     decode_instances=decode_gpus_per_node,
+                    decode_gpu_hardware=donor_gpu_spec,
                 )
             )
     else:
@@ -197,7 +231,7 @@ def _run_single_config(
     user_delay_max_ms: float = 0.0,
     startup_arrival_mean_ms: float = 0.0,
     random_seed: int | None = None,
-    colocated: bool = False,
+    config_type: str = "separate",
     ttft_sla_ms: float = 30000.0,
     tpot_sla_ms: float = 100.0,
 ) -> SimulationResult | None:
@@ -210,7 +244,7 @@ def _run_single_config(
         decode_gpus_per_node,
         batch_size,
         model,
-        colocated,
+        config_type,
         inter_node_network_up_gbps=inter_node_network_up_gbps,
         inter_node_network_down_gbps=inter_node_network_down_gbps,
     )
@@ -268,6 +302,7 @@ def _run_single_config(
                 user_delay_max_ms=user_delay_max_ms,
                 startup_arrival_mean_ms=startup_arrival_mean_ms,
                 random_seed=random_seed,
+                bandwidth_aware_routing=False,
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")
@@ -1348,9 +1383,8 @@ def _mode_for_row(row: dict[str, Any]) -> str:
     entirely.  Labels generated by ``create_user_sweep_config.py`` start with
     ``Colocated:``, ``Mixed:`` or ``separate:``.
 
-    As a secondary fallback we still check the explicit ``mixed`` and
-    ``colocated`` fields (coercing strings to booleans) and the mixed-GPU
-    hardware-name marker `` + ``.
+    As a secondary fallback we still check the explicit ``config_type`` field
+    (normalizing booleans/strings) and the mixed-GPU hardware-name marker `` + ``.
     """
     label = str(row.get("label", "")).strip().lower()
     if label.startswith("colocated"):
@@ -1360,24 +1394,15 @@ def _mode_for_row(row: dict[str, Any]) -> str:
     if label.startswith("separate"):
         return "separate"
 
-    def _truthy(value: Any) -> bool:
-        if value is None:
-            return False
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        return str(value).strip().lower() in {"true", "1", "yes", "on", "t", "y"}
-
-    if _truthy(row.get("mixed")):
+    config_type = str(row.get("config_type", "separate")).strip().lower()
+    if config_type in {"colocated", "true", "1", "yes", "on"}:
+        return "colocated"
+    if config_type == "mixed":
         return "mixed"
 
     prefill_hw = str(row.get("prefill_hardware", ""))
     if " + " in prefill_hw:
         return "mixed"
-
-    if _truthy(row.get("colocated")):
-        return "colocated"
 
     return "separate"
 
@@ -1410,7 +1435,7 @@ async def simulate(
     cfg_decode_nodes: list[str] = Form(...),
     cfg_prefill_gpus: list[str] = Form(...),
     cfg_decode_gpus: list[str] = Form(...),
-    cfg_colocated: list[str] = Form(...),
+    cfg_config_type: list[str] = Form(...),
     cfg_batch: list[str] = Form(...),
     cfg_label: list[str] = Form(...),
     ram_usage_fraction: float = Form(_env.ram_usage_fraction),
@@ -1442,19 +1467,22 @@ async def simulate(
             == len(cfg_decode_nodes)
             == len(cfg_prefill_gpus)
             == len(cfg_decode_gpus)
+            == len(cfg_config_type)
             == len(cfg_batch)
             == len(cfg_label)
             == n
         ):
             raise ValueError("Configuration arrays must all have the same length.")
 
-        # Unchecked checkboxes are not submitted, so normalize colocated to a
-        # boolean per config using a set of submitted indices.
-        colocated_set = {
-            i
-            for i, v in enumerate(cfg_colocated)
-            if v.strip().lower() in {"true", "1", "yes", "on"}
-        }
+        def _normalize_config_type(raw: str) -> str:
+            value = str(raw).strip().lower()
+            if value in {"colocated", "true", "1", "yes", "on"}:
+                return "colocated"
+            if value == "mixed":
+                return "mixed"
+            return "separate"
+
+        config_types = [_normalize_config_type(v) for v in cfg_config_type]
 
         s3_on = s3_enabled.strip().lower() in {"true", "1", "yes", "on"}
         common = {
@@ -1490,8 +1518,8 @@ async def simulate(
             prefill_hw = cfg_prefill_hardware[i]
             decode_hw = cfg_decode_hardware[i]
             prefill_n = int(cfg_prefill_nodes[i])
-            colocated = i in colocated_set
-            # In colocated mode decode_nodes mirrors prefill_nodes.
+            config_type = config_types[i]
+            # In colocated/mixed mode decode_nodes mirrors prefill_nodes.
             decode_n = int(cfg_decode_nodes[i]) if cfg_decode_nodes[i] else prefill_n
             prefill_gpus = (
                 int(cfg_prefill_gpus[i])
@@ -1520,7 +1548,7 @@ async def simulate(
                 "prefill_gpus_per_node": prefill_gpus,
                 "decode_gpus_per_node": decode_gpus,
                 "batch_size": batch,
-                "colocated": colocated,
+                "config_type": config_type,
                 **common,
             }
             config_kwargs.append((label, kwargs, i))
@@ -1570,7 +1598,7 @@ async def simulate(
                 "prefill_gpus_per_node": 0,
                 "decode_gpus_per_node": 0,
                 "batch_size": 0,
-                "colocated": False,
+                "config_type": "separate",
                 "ttft": 0.0,
                 "kv_upload_time": 0.0,
                 "kv_download_time": 0.0,

@@ -97,7 +97,6 @@ def _generate_configs(
                 "prefill_gpus_per_node": args.prefill_gpus_per_node,
                 "decode_gpus_per_node": decode_gpus_per_node,
                 "batch_size": args.batch_size,
-                "colocated": True,
                 "config_type": config_type,
                 "focus": focus,
                 "focus_value": focus_value,
@@ -127,10 +126,7 @@ def _generate_configs(
     #             "decode_nodes": args.decode_nodes,
     #             "prefill_gpus_per_node": args.prefill_gpus_per_node,
     #             "decode_gpus_per_node": args.decode_gpus_per_node,
-    #             "mixed": True,
-    #             "mixed_gpu_donor": donor_name,
     #             "batch_size": args.batch_size,
-    #             "colocated": True,
     #             "config_type": config_type,
     #             "focus": focus,
     #             "focus_value": focus_value,
@@ -154,8 +150,8 @@ def _generate_configs(
         #                 "prefill_gpus_per_node": args.prefill_gpus_per_node,
         #                 "decode_gpus_per_node": args.decode_gpus_per_node,
         #                 "batch_size": args.batch_size,
-        #                 "colocated": False,
         #                 "config_type": config_type,
+
         #                 "focus": focus,
         #                 "focus_value": focus_value,
         #             }

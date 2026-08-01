@@ -13,7 +13,7 @@ from src.logger import LOG_SIMULATION, log, should_log
 from src.node.node import Node
 from src.request.request import Request, RequestGenerator, RequestScenario
 from src.result import SimulationResult
-from src.router.router import Router
+from src.router.router import Router, RouterCostConfig
 from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 
 
@@ -204,6 +204,7 @@ def simulate_run_distributed(
     ram_usage_fraction: float = 0.8,
     ssd_usage_fraction: float = 0.8,
     s3_spec: S3Spec | None = None,
+    router_cost_config: RouterCostConfig | None = None,
     should_print: bool = True,
     sla: dict[str, float] | None = None,
     user_delay_fraction: float = 0.0,
@@ -211,6 +212,7 @@ def simulate_run_distributed(
     user_delay_max_ms: float = 0.0,
     startup_arrival_mean_ms: float = 0.0,
     random_seed: int | None = None,
+    bandwidth_aware_routing: bool = True,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -250,8 +252,9 @@ def simulate_run_distributed(
         prefill_instances=prefill_instances,
         decode_instances=decode_instances,
         cache=cache,
-        cost_config=None,
+        cost_config=router_cost_config,
         random_seed=random_seed,
+        bandwidth_aware_routing=bandwidth_aware_routing,
         model=model,
     )
 

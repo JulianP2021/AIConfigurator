@@ -20,7 +20,7 @@ The input config file follows the same schema as execute_user_sweep_config.py:
                 "prefill_gpus_per_node": 4,
                 "decode_gpus_per_node": 4,
                 "batch_size": 10,
-                "colocated": true
+                "config_type": "colocated"
             }
         ]
     }
@@ -402,12 +402,14 @@ def _run_spec_worker(
         common["random_seed"] = seed_override
 
     # set_log_mask(63)
+    bandwidth_aware_routing = bool(common.get("bandwidth_aware_routing", True))
     effective_router_config = router_cost_config
     # Preserve any router config that arrived as part of the common payload.
     if isinstance(common.get("router_cost_config"), RouterCostConfig):
         effective_router_config = common["router_cost_config"]
 
-    if tune_router:
+    # The bandwidth-aware router has no tunable parameters; skip tuning.
+    if tune_router and not bandwidth_aware_routing:
         ram_usage_fraction = float(
             config.get("ram_usage_fraction", env.ram_usage_fraction)
         )
@@ -532,6 +534,13 @@ def _run_sweep(
         s3_credit=float(config.get("router_s3_credit", env.router_s3_credit)),
     )
 
+    bandwidth_aware_routing = bool(
+        config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
+    )
+    # The bandwidth-aware router has no tunable cost-model parameters; skip tuning.
+    if bandwidth_aware_routing:
+        tune_router = False
+
     _common, expanded_runs = _expand_run_specs(
         config,
         ttft_values,
@@ -539,6 +548,7 @@ def _run_sweep(
         user_delay_fraction,
         router_cost_config=router_cost_config,
     )
+    _common["bandwidth_aware_routing"] = bandwidth_aware_routing
 
     base_seed = int(config.get("random_seed", env.random_seed or 0))
     seeds = [base_seed + i for i in range(max(1, num_seeds))]

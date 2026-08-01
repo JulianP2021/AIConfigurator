@@ -321,7 +321,7 @@
                         </div>
                         <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
                             <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
-                                <input type="checkbox" name="cfg_colocated" value="true" form="simForm" onchange="syncColocatedNodes(this)">
+                                <input type="checkbox" name="cfg_config_type" value="colocated" form="simForm" onchange="syncColocatedNodes(this)">
                                 same nodes
                             </label>
                         </div>
@@ -429,7 +429,8 @@
                 const decNodes = block.querySelector('[name="cfg_decode_nodes"]')?.value || '1';
                 const preGpus = block.querySelector('[name="cfg_prefill_gpus"]')?.value || '';
                 const decGpus = block.querySelector('[name="cfg_decode_gpus"]')?.value || '';
-                const colocated = block.querySelector('[name="cfg_colocated"]')?.checked || false;
+                const configTypeEl = block.querySelector('[name="cfg_config_type"]');
+                const config_type = configTypeEl?.checked ? 'colocated' : 'separate';
                 const batch = block.querySelector('[name="cfg_batch"]')?.value || '10';
                 const label = block.querySelector('[name="cfg_label"]')?.value || ('Config ' + (state.configs.length + 1));
                 state.configs.push({
@@ -439,7 +440,7 @@
                     decode_nodes: decNodes,
                     prefill_gpus_per_node: preGpus,
                     decode_gpus_per_node: decGpus,
-                    colocated: colocated,
+                    config_type: config_type,
                     batch_size: batch,
                     label: label
                 });
@@ -482,7 +483,7 @@
             block.style.borderLeft = `4px solid ${color}`;
             const preHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.prefill_hardware ? ' selected' : ''}>${p}</option>`).join('');
             const decHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.decode_hardware ? ' selected' : ''}>${p}</option>`).join('');
-            const colocated = cfg.colocated === true || cfg.colocated === 'true';
+            const is_colocated = cfg.config_type === 'colocated';
             block.innerHTML = `
                 <div class="config-row">
                     <div class="field">
@@ -503,7 +504,7 @@
                         </div>
                         <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
                             <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
-                                <input type="checkbox" name="cfg_colocated" value="true" form="simForm" ${colocated ? 'checked' : ''} onchange="syncColocatedNodes(this)">
+                                <input type="checkbox" name="cfg_config_type" value="colocated" form="simForm" ${is_colocated ? 'checked' : ''} onchange="syncColocatedNodes(this)">
                                 same nodes
                             </label>
                         </div>
@@ -526,13 +527,13 @@
                             <input type="number" name="cfg_decode_gpus" value="${cfg.decode_gpus_per_node || ''}" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
                         </div>
                     <div class="field" style="grid-column: span 2; color:var(--text-secondary);font-size:0.75rem;align-self:center;">
-                        <span class="colocated-hint" style="display:${colocated ? 'inline' : 'none'};">In colocated mode, prefill and decode share each node using the GPU split above.</span>
+                        <span class="colocated-hint" style="display:${is_colocated ? 'inline' : 'none'};">In colocated mode, prefill and decode share each node using the GPU split above.</span>
                     </div>
                     <div class="field" style="grid-column: span 3;"></div>
                 </div>
             `;
             list.appendChild(block);
-            syncColocatedNodes(block.querySelector('[name="cfg_colocated"]'));
+            syncColocatedNodes(block.querySelector('[name="cfg_config_type"]'));
         }
 
         function addConfig() {
@@ -563,10 +564,10 @@
         function updateDecodeGpus(block) {
             const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
             const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
-            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
+            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
             const preGpusEl = block.querySelector('[name="cfg_prefill_gpus"]');
             const decGpusEl = block.querySelector('[name="cfg_decode_gpus"]');
-            const totalGpus = colocated ? parseGpusFromKey(preHw) : parseGpusFromKey(decHw);
+            const totalGpus = is_colocated ? parseGpusFromKey(preHw) : parseGpusFromKey(decHw);
             const preGpus = parseInt(preGpusEl.value, 10);
             if (!isNaN(preGpus) && preGpus > 0 && preGpus < totalGpus) {
                 decGpusEl.value = totalGpus - preGpus;
@@ -579,14 +580,14 @@
 
         function onHardwareChange(el) {
             const block = el.closest('.config-block');
-            const colocated = block.querySelector('[name="cfg_colocated"]');
-            if (colocated.checked) {
+            const configType = block.querySelector('[name="cfg_config_type"]');
+            if (configType.checked) {
                 const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
                 const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
                 if (preHw !== decHw) {
                     showToast('Colocated mode requires identical prefill and decode hardware.', false);
-                    colocated.checked = false;
-                    syncColocatedNodes(colocated);
+                    configType.checked = false;
+                    syncColocatedNodes(configType);
                 }
             }
             updateDecodeGpus(block);
@@ -620,8 +621,8 @@
 
         function syncDecodeNodes(el) {
             const block = el.closest('.config-block');
-            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
-            if (colocated) {
+            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
+            if (is_colocated) {
                 const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
                 decNodes.value = el.value;
             }
@@ -634,8 +635,8 @@
 
         function syncPrefillNodes(el) {
             const block = el.closest('.config-block');
-            const colocated = block.querySelector('[name="cfg_colocated"]')?.checked;
-            if (colocated) {
+            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
+            if (is_colocated) {
                 const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
                 decNodes.value = el.value;
             }
