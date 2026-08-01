@@ -196,14 +196,12 @@ class TestBandwidthScheduler:
             req_single, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]]
         )
         scheduler.register(ur_single)
-        assert scheduler.next_event_ms() == pytest.approx(1.0, rel=1e-3)
+        assert scheduler.next_event_ms() == pytest.approx(4.0, rel=1e-3)
         assert ur_single.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
-            multi_gpu_hardware.spec.pcie_bw / 1000.0, rel=1e-3
+            multi_gpu_hardware.spec.pcie_bw / 1000.0 / 4, rel=1e-3
         )
 
-        # Multiple transfers share the same total node PCIe bandwidth. With the
-        # old PCIe*num_gpus logic, four transfers on a 4-GPU node would each
-        # incorrectly get pcie_bw/2 instead of pcie_bw/4.
+        # Multiple transfers share the same total node PCIe bandwidth but are capped at per gpu bw
         scheduler.unregister(ur_single)
         req_a = FakeRequest()
         req_b = FakeRequest()
@@ -212,14 +210,14 @@ class TestBandwidthScheduler:
         scheduler.register(ur_a)
         scheduler.register(ur_b)
         scheduler.update_shares()
-        expected_share = multi_gpu_hardware.spec.pcie_bw / 2 / 1000.0
+        expected_share = multi_gpu_hardware.spec.pcie_bw / 4 / 1000.0
         assert ur_a.active_legs[0].bandwidth_bytes_per_ms == expected_share
         assert ur_b.active_legs[0].bandwidth_bytes_per_ms == expected_share
 
     def test_ram_local_nvlink_scales_by_gpu_count(self, tiny_hardware: Hardware):
         """NVLink bandwidth is per-GPU, so aggregate bandwidth scales with num_gpus."""
         spec = tiny_hardware.spec
-        per_gpu_nvlink = spec.pcie_bw / 4  # arbitrary per-GPU NVLink value
+        nvlink = spec.pcie_bw / 4  # arbitrary per-GPU NVLink value
         multi_gpu_spec = HardwareSpec(
             gpu_hardware=spec.gpu_hardware,
             num_gpus=4,
@@ -259,7 +257,7 @@ class TestBandwidthScheduler:
             storage_cost=spec.storage_cost,
             storage_total_cost=spec.storage_total_cost,
             verification=spec.verification,
-            nvlink_bw=per_gpu_nvlink,
+            nvlink_bw=nvlink,
         )
         multi_gpu_hardware = Hardware(name="multi-gpu-nvlink", spec=multi_gpu_spec)
         scheduler = BandwidthScheduler([FakeNode(0, multi_gpu_hardware)])
@@ -270,10 +268,10 @@ class TestBandwidthScheduler:
             req_single, [[TransferLeg(10_000_000, 0, 0, "RAM_LOCAL")]]
         )
         scheduler.register(ur_single)
-        expected_single_ms = 10_000_000 / (per_gpu_nvlink / 1000.0)
+        expected_single_ms = 10_000_000 / (nvlink / 1000.0) * 4
         assert scheduler.next_event_ms() == pytest.approx(expected_single_ms, rel=1e-3)
         assert ur_single.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
-            per_gpu_nvlink / 1000.0, rel=1e-3
+            nvlink / 1000.0 / 4, rel=1e-3
         )
 
         # Many transfers share the aggregate NVLink bandwidth.
@@ -288,7 +286,7 @@ class TestBandwidthScheduler:
             scheduler.register(ur)
         scheduler.update_shares()
         # 8 transfers share 4 NVLink links -> each gets half a link.
-        expected_share = (per_gpu_nvlink / 2) / 1000.0
+        expected_share = (nvlink / 8) / 1000.0
         for ur in transfers:
             assert ur.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
                 expected_share, rel=1e-3

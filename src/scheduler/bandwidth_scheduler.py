@@ -124,11 +124,11 @@ class BandwidthScheduler:
                     # already stored as total node bandwidth and must not be
                     # multiplied by the GPU count.
                     if spec.nvlink_bw > 0:
-                        total_bw = spec.nvlink_bw * max(1, spec.num_gpus)
-                        per_gpu_bw = spec.nvlink_bw
+                        total_bw = spec.nvlink_bw
+                        per_gpu_bw = spec.nvlink_bw / max(1, spec.num_gpus)
                     else:
                         total_bw = spec.pcie_bw
-                        per_gpu_bw = spec.pcie_bw
+                        per_gpu_bw = spec.pcie_bw / max(1, spec.num_gpus)
                     share_bw = total_bw / ram_counts[leg.source_node_id]
                     node_bw = min(share_bw, per_gpu_bw)
                     leg.bandwidth_bytes_per_ms = node_bw / 1000.0
