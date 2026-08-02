@@ -44,8 +44,6 @@ if __name__ == "__main__":
         "H200 NVL",
         "B200",
         "B300",
-        "INF1",
-        "INF2",
     }
 
     possible_machines: list[tuple[str, dict[str, Any]]] = []
@@ -93,12 +91,7 @@ if __name__ == "__main__":
     decode_node_values = [1, 2, 4, 8]
     batch_size_values = [64, 128]
 
-    # For mixed-GPU colocated configs, use these donor GPU types.
-    mixed_gpu_donor_pool = sorted({
-        name
-        for name, _ in sorted_possible_machines
-        if "B200" in name or "H200" in name or "H100" in name or "RTX 4090" in name
-    })
+    mixed_gpu_donor_pool = sorted({name for name, _ in sorted_possible_machines})
 
     if "colocated" in config_types:
         for machine_name, prefill_machine in sorted_possible_machines:
@@ -132,7 +125,7 @@ if __name__ == "__main__":
                                     nodes
                                 ),  # only so it passes, not used
                                 "batch_size": str(batch_size),
-                                "label": f"Colocated: {machine_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}",
+                                "label": f"Colocated: {machine_name} - {nodes} - {prefill_gpus_per_node} - batch {batch_size}",
                             },
                         )
 
@@ -174,7 +167,7 @@ if __name__ == "__main__":
                                     "decode_nodes": str(nodes),
                                     "batch_size": str(batch_size),
                                     "mixed_gpu_donor": donor_name,
-                                    "label": f"Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - {prefill_gpus_per_node}- batch {batch_size}",
+                                    "label": f"Mixed: {machine_name} + {decode_gpus_per_node}x {donor_name} - {nodes} - batch {batch_size}",
                                 },
                             )
 
@@ -194,7 +187,7 @@ if __name__ == "__main__":
                                     "prefill_nodes": str(prefill_nodes),
                                     "decode_nodes": str(decode_nodes),
                                     "batch_size": str(batch_size),
-                                    "label": f"separate: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
+                                    "label": f"Separate: {prefill_machine_name} - {decode_machine_name} - {prefill_nodes} - {decode_nodes} - batch {batch_size}",
                                 },
                             )
 

@@ -16,12 +16,6 @@ def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> in
     ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
     per_layer_flops = qo_proj + kv_proj + attn + ffn
     output_proj = 2 * c["hidden_size"] * c["vocab_size"]
-    total = embedding + per_layer_flops * c["num_hidden_layers"] + output_proj
-    print(
-        embedding / total,
-        (per_layer_flops * c["num_hidden_layers"]) / total,
-        output_proj / total,
-    )
     return int(embedding + per_layer_flops * c["num_hidden_layers"] + output_proj)
 
 

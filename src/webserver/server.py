@@ -1214,18 +1214,20 @@ def _build_users_cost_plot(
 ) -> tuple[str, list[dict[str, Any]]]:
     """Generate a users-vs-cost line/scatter plot.
 
-    The plot now shows *all* valid rows, colored by mode (separate, colocated,
-    mixed).  Labels are only shown for the 10 cheapest configurations per user
-    count, but every point is rendered.  A separate line connects the cheapest
-    configuration of each mode across user counts.
+    The plot shows only the top-5 cheapest configurations per mode per user
+    count, matching the "Configurations by Users" list printed on the results
+    page.  A separate line connects the cheapest configuration of each mode
+    across user counts.
 
-    Returns the plot URL and the full set of valid rows, with each row's color
-    set to the mode color.
+    Returns the plot URL and the selected rows, with each row's color set to
+    the mode color.
     """
     valid_rows = [row for row in rows if not row.get("has_error")]
 
-    # Group all valid rows by user count for plotting and top-10 selection.
+    # Group all valid rows by user count and mode, keeping only the top-5
+    # cheapest per mode.  This matches the "Configurations by Users" display.
     by_users: dict[int, list[dict[str, Any]]] = {}
+    selected_rows: list[dict[str, Any]] = []
     for row in valid_rows:
         users = int(row.get("users", 0))
         if users > 0:
@@ -1233,27 +1235,35 @@ def _build_users_cost_plot(
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Draw all points per user count, colored by mode.
     for users in sorted(by_users):
+        grouped_by_mode: dict[str, list[dict[str, Any]]] = {}
         for row in by_users[users]:
-            color = _color_for_row(row)
-            row["color"] = color
-            ax.scatter(
-                row["users"],
-                row["total_cost_usd_per_hour"],
-                s=90,
-                color=color,
-                edgecolors="white",
-                linewidths=0.4,
-                zorder=3,
+            grouped_by_mode.setdefault(_mode_for_row(row), []).append(row)
+        for mode in MODE_COLORS:
+            mode_rows = sorted(
+                grouped_by_mode.get(mode, []),
+                key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
             )
+            for row in mode_rows[:5]:
+                color = _color_for_row(row)
+                row["color"] = color
+                selected_rows.append(row)
+                ax.scatter(
+                    row["users"],
+                    row["total_cost_usd_per_hour"],
+                    s=90,
+                    color=color,
+                    edgecolors="white",
+                    linewidths=0.4,
+                    zorder=3,
+                )
 
     # Draw best-per-mode lines: for each mode and each user count, pick the
-    # cheapest valid row and connect them in ascending user-count order.
+    # cheapest selected row and connect them in ascending user-count order.
     best_per_mode: dict[str, dict[int, dict[str, Any]]] = {
         mode: {} for mode in MODE_COLORS
     }
-    for row in valid_rows:
+    for row in selected_rows:
         users = int(row.get("users", 0))
         if users <= 0:
             continue
@@ -1264,6 +1274,56 @@ def _build_users_cost_plot(
             "total_cost_usd_per_hour", float("inf")
         ):
             best_per_mode[mode][users] = row
+
+    def _short_instance(name: str) -> str:
+        """Return a compact instance identifier, keeping the size suffix."""
+        name = name.strip()
+        name = re.sub(r"^AWS\s+", "", name)
+        # e.g. "p4de.24xlarge (A100 80GB x8)" -> "p4de.24xlarge A100"
+        m = re.match(r"(\S+)\s*\(([^)]+)\)", name)
+        if not m:
+            return name
+        instance, gpu_part = m.groups()
+        gpu = gpu_part.split()[0]  # first word is the GPU name
+        return f"{instance} {gpu}"
+
+    def _abbreviate_label(label: str) -> str:
+        """Abbreviate a normalized config label for plot annotations."""
+        label = re.sub(r"\s*\(users=\d+\)\s*$", "", label.strip())
+        if label.startswith("Colocated:"):
+            # Colocated: {machine} - {nodes} - {gpus} - batch {batch}
+            m = re.match(
+                r"Colocated:\s*(.+?)\s+-\s+(\d+)\s+-\s+(\d+)\s+-\s+batch\s+(\d+)",
+                label,
+            )
+            if m:
+                machine, nodes, gpus, batch = m.groups()
+                return f"{_short_instance(machine)} x{nodes} g{gpus} bs{batch}"
+        if label.startswith("Mixed:"):
+            # Mixed: {machine} + {gpus}x {donor} - {nodes} - batch {batch}
+            m = re.match(
+                r"Mixed:\s*(.+?)\s+\+\s+(\d+)x\s+(.+?)\s+-\s+(\d+)\s+-\s+batch\s+(\d+)",
+                label,
+            )
+            if m:
+                machine, donor_gpus, donor, nodes, batch = m.groups()
+                return (
+                    f"{_short_instance(machine)} +{donor_gpus}x {_short_instance(donor)} "
+                    f"x{nodes} bs{batch}"
+                )
+        if label.startswith("Separate:"):
+            # Separate: {prefill} - {decode} - {p_nodes} - {d_nodes} - batch {batch}
+            m = re.match(
+                r"Separate:\s*(.+?)\s+-\s+(.+?)\s+-\s+(\d+)\s+-\s+(\d+)\s+-\s+batch\s+(\d+)",
+                label,
+            )
+            if m:
+                prefill, decode, p_nodes, d_nodes, batch = m.groups()
+                return (
+                    f"{_short_instance(prefill)} x{p_nodes} → "
+                    f"{_short_instance(decode)} x{d_nodes} bs{batch}"
+                )
+        return label
 
     for mode, best_by_users in best_per_mode.items():
         if not best_by_users:
@@ -1286,21 +1346,54 @@ def _build_users_cost_plot(
             zorder=2,
             label=f"Best {mode}",
         )
+        # Label every point on the best-per-mode line with an abbreviated
+        # configuration label.  Separate labels always go above the point;
+        # colocated labels always go below; mixed alternates above/below.
+        for i, (x, y, (_, row)) in enumerate(zip(xs, ys, series, strict=False)):
+            label_text = _abbreviate_label(str(row.get("label", "")))
+            if mode == "separate":
+                offset_y = 12
+                va = "bottom"
+            elif mode == "colocated":
+                offset_y = -12
+                va = "top"
+            else:
+                offset_y = 10 if i % 2 == 0 else -10
+                va = "bottom" if i % 2 == 0 else "top"
+            ax.annotate(
+                label_text,
+                (x, y),
+                textcoords="offset points",
+                xytext=(6, offset_y),
+                ha="left",
+                va=va,
+                fontsize=6,
+                color=color,
+                zorder=10,
+                bbox={
+                    "boxstyle": "round,pad=0.15",
+                    "fc": "white",
+                    "ec": color,
+                    "alpha": 0.9,
+                },
+            )
 
     ax.set_xlabel("Users")
     ax.set_ylabel("Total cost ($/hour)")
-    ax.set_title("Cost vs Users (all configs, top-10 labeled, best-per-mode line)")
+    ax.set_title("Cost vs Users (top-5 per mode per user count)")
     ax.set_ylim(bottom=0)
     ax.grid(True, alpha=0.3, which="both", linestyle="--")
     ax.legend(loc="upper left")
+    # Leave extra room on the right so long annotations are not clipped.
     plt.tight_layout()
+    fig.subplots_adjust(right=0.78)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150)
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
     pid = str(uuid.uuid4())
     _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-    return f"/plot/{pid}", valid_rows
+    return f"/plot/{pid}", selected_rows
 
 
 async def _run_configs_parallel(

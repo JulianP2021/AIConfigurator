@@ -61,7 +61,6 @@ from src.utils.config_runner import (
 )
 from src.utils.env_reader import EnvConfig, load_env
 from src.utils.parser import _add_logging_args, apply_logging_args
-from src.utils.router_tuner import TunableRouterParams, tune_router_for_config
 from src.utils.utils import add_result_metadata, parse_float_list
 
 
@@ -373,22 +372,9 @@ def _run_spec_worker(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float,
-    tune_router: bool = True,
-    tune_grid: list[TunableRouterParams] | None = None,
-    tune_max_workers: int = 4,
-    tune_timeout_s: float = 120.0,
-    tune_refine: bool = True,
-    tune_budget_fractions: list[float] | None = None,
-    estimate_timeout_s: float = 60.0,
     seed_override: int | None = None,
 ) -> tuple[dict[str, Any], SimulationResult | Exception | None]:
     """Run one expanded spec, searching for the max user count.
-
-    This function is submitted to the process pool so each worker performs
-    the search in isolation. Router tuning, when enabled, first estimates the
-    feasible user count, then evaluates a grid of router configs at a few
-    fractions of that estimate. The best router config is reused for the
-    full max-users search.
 
     When ``seed_override`` is provided, it replaces the random seed in the
     common payload so each per-seed run is deterministic and independent.
@@ -401,81 +387,10 @@ def _run_spec_worker(
     if seed_override is not None:
         common["random_seed"] = seed_override
 
-    # set_log_mask(63)
-    bandwidth_aware_routing = bool(common.get("bandwidth_aware_routing", True))
-    effective_router_config = router_cost_config
     # Preserve any router config that arrived as part of the common payload.
+    effective_router_config = router_cost_config
     if isinstance(common.get("router_cost_config"), RouterCostConfig):
         effective_router_config = common["router_cost_config"]
-
-    # The bandwidth-aware router has no tunable parameters; skip tuning.
-    if tune_router and not bandwidth_aware_routing:
-        ram_usage_fraction = float(
-            config.get("ram_usage_fraction", env.ram_usage_fraction)
-        )
-        ssd_usage_fraction = float(
-            config.get("ssd_usage_fraction", env.ssd_usage_fraction)
-        )
-        if should_log(LOG_CONFIG_EXECUTOR):
-            log(
-                LOG_CONFIG_EXECUTOR,
-                f"{run_spec['cfg']['label']} tuning router: base="
-                f"(aws={router_cost_config.active_work_scale:.6f}, "
-                f"dc={router_cost_config.device_credit:.4f})",
-            )
-
-        estimated = _estimate_max_users(
-            run_spec,
-            config,
-            env,
-            s3_spec,
-            router_cost_config,
-            estimate_timeout_s,
-        )
-        if should_log(LOG_CONFIG_EXECUTOR):
-            log(
-                LOG_CONFIG_EXECUTOR,
-                f"{run_spec['cfg']['label']} estimated max users: {estimated}",
-            )
-
-        fractions = tune_budget_fractions or [0.25, 0.5, 1.0]
-        if estimated <= 0:
-            budgets = [1]
-        else:
-            budgets = sorted({max(2, int(estimated * f)) for f in fractions})
-
-        if should_log(LOG_CONFIG_EXECUTOR):
-            log(
-                LOG_CONFIG_EXECUTOR,
-                f"{run_spec['cfg']['label']} router tuning budgets: {budgets}",
-            )
-
-        effective_router_config = tune_router_for_config(
-            run_spec["common"],
-            run_spec["cfg"],
-            ram_usage_fraction,
-            ssd_usage_fraction,
-            s3_spec,
-            effective_router_config,
-            grid=tune_grid,
-            max_workers=tune_max_workers,
-            timeout_s=tune_timeout_s,
-            budgets=budgets,
-            refine=tune_refine,
-        )
-        if effective_router_config is router_cost_config:
-            if should_log(LOG_CONFIG_EXECUTOR):
-                log(
-                    LOG_CONFIG_EXECUTOR,
-                    f"{run_spec['cfg']['label']} router tuning fell back to base config",
-                )
-        elif should_log(LOG_CONFIG_EXECUTOR):
-            log(
-                LOG_CONFIG_EXECUTOR,
-                f"{run_spec['cfg']['label']} tuned router: "
-                f"(aws={effective_router_config.active_work_scale:.6f}, "
-                f"dc={effective_router_config.device_credit:.4f})",
-            )
 
     max_users, result = _find_max_users(
         run_spec,
@@ -497,13 +412,6 @@ def _run_sweep(
     user_delay_values: list[float],
     user_delay_fraction: float,
     timeout_s: float,
-    tune_router: bool = True,
-    tune_grid: list[TunableRouterParams] | None = None,
-    tune_max_workers: int = 4,
-    tune_timeout_s: float = 120.0,
-    tune_refine: bool = True,
-    tune_budget_fractions: list[float] | None = None,
-    estimate_timeout_s: float = 60.0,
     num_seeds: int = 1,
 ) -> list[dict[str, Any]]:
     env = load_env()
@@ -537,10 +445,6 @@ def _run_sweep(
     bandwidth_aware_routing = bool(
         config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
     )
-    # The bandwidth-aware router has no tunable cost-model parameters; skip tuning.
-    if bandwidth_aware_routing:
-        tune_router = False
-
     _common, expanded_runs = _expand_run_specs(
         config,
         ttft_values,
@@ -588,13 +492,6 @@ def _run_sweep(
                 s3_spec,
                 router_cost_config,
                 timeout_s,
-                tune_router,
-                tune_grid,
-                tune_max_workers,
-                tune_timeout_s,
-                tune_refine,
-                tune_budget_fractions,
-                estimate_timeout_s,
                 seed,
             ): (run_spec, seed)
             for run_spec in expanded_runs
@@ -784,49 +681,6 @@ def main() -> None:
         help="Per-config timeout in seconds (default: 240.0)",
     )
     parser.add_argument(
-        "--tune-router",
-        action="store_true",
-        default=True,
-        help="Run a small grid search to pick router knobs per config (default: True)",
-    )
-    parser.add_argument(
-        "--no-tune-router",
-        action="store_false",
-        dest="tune_router",
-        help="Disable per-config router tuning and use the env/config defaults",
-    )
-    parser.add_argument(
-        "--tune-max-workers",
-        type=int,
-        default=4,
-        help="Parallel workers for the per-config router tuning grid (default: 4)",
-    )
-    parser.add_argument(
-        "--tune-timeout",
-        type=float,
-        default=120.0,
-        help="Per-candidate timeout for router tuning in seconds (default: 120.0)",
-    )
-    parser.add_argument(
-        "--tune-budget-fractions",
-        type=_parse_float_values,
-        default=None,
-        help="Comma-separated fractions of estimated max users used as router tuning budgets (default: 0.25,0.5,1.0)",
-    )
-    parser.add_argument(
-        "--estimate-timeout",
-        type=float,
-        default=60.0,
-        help="Timeout in seconds for the quick max-users estimate used to set tuning budgets (default: 60.0)",
-    )
-    parser.add_argument(
-        "--tune-no-refine",
-        action="store_false",
-        dest="tune_refine",
-        default=True,
-        help="Disable local refinement around the best coarse router point",
-    )
-    parser.add_argument(
         "--seeds",
         type=int,
         default=1,
@@ -857,13 +711,6 @@ def main() -> None:
         args.user_delay_values,
         args.user_delay_fraction,
         args.timeout,
-        tune_router=args.tune_router,
-        tune_grid=None,
-        tune_max_workers=args.tune_max_workers,
-        tune_timeout_s=args.tune_timeout,
-        tune_refine=args.tune_refine,
-        tune_budget_fractions=args.tune_budget_fractions,
-        estimate_timeout_s=args.estimate_timeout,
         num_seeds=args.seeds,
     )
 

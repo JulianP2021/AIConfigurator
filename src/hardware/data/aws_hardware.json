@@ -89,7 +89,7 @@
       "pcie_bw": 252000000000,
       "cpu_ram": 1099511627776,
       "dph_base": 27.52,
-      "nvlink_bw": 483183820800
+      "nvlink_bw": 450000000000
     },
     "AWS p5.48xlarge (H100 NVL x8)": {
       "name": "AWS p5.48xlarge (H100 NVL x8)",

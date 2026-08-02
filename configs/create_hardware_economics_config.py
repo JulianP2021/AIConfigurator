@@ -88,7 +88,7 @@ def _generate_configs(
 
             focus, focus_value = get_focus(machine_name, gpu_name)
             configs.append({
-                "label": (f"{config_type.title()}: {machine_name}"),
+                "label": f"Colocated: {machine_name} - {args.prefill_nodes} - {args.prefill_gpus_per_node} - batch {args.batch_size}",
                 "gpu": gpu_name,
                 "prefill_hardware": machine_name,
                 "decode_hardware": machine_name,
