@@ -7,7 +7,7 @@ from src.cache.cache import Cache
 #     get_meta,
 #     run_static_inference,
 # )
-from src.eroors.errors import KVStoreTooSmallError
+from src.eroors.errors import DecodeError, KVStoreTooSmallError
 from src.hardware.hardware import GPUHardwareSpec
 from src.logger import LOG_INSTANCE, log, should_log
 from src.model.model import Model
@@ -167,27 +167,27 @@ class DecodeInstance:
         )
 
         assert time_ms >= 0, "Time to process queue should be non-negative"
-        # if self._kv_cache_bytes > self.hardware.gpu_mem:
-        #     log(
-        #         LOG_INSTANCE,
-        #         f"KV cache exceeds GPU memory for node {self.node_id}: "
-        #         f"{self._kv_cache_bytes} bytes used by {len(self.queue)} requests with {sum(r.cache_length for r, _ in self.queue) / len(self.queue) if self.queue else 0} avg tokens , {self.hardware.gpu_mem} bytes available",
-        #     )
+        if self._kv_cache_bytes > self.hardware.gpu_mem:
+            log(
+                LOG_INSTANCE,
+                f"KV cache exceeds GPU memory for node {self.node_id}: "
+                f"{self._kv_cache_bytes} bytes used by {len(self.queue)} requests with {sum(r.cache_length for r, _ in self.queue) / len(self.queue) if self.queue else 0} avg tokens , {self.hardware.gpu_mem} bytes available",
+            )
 
-        #     head = self.queue[0][0]
-        #     sample_size = min(5, len(self.queue))
-        #     sample_info = ", ".join(
-        #         f"r{req.id}: isl={req.isl}, osl={req.osl}, "
-        #         f"cache_length={req.cache_length}"
-        #         for req, _ in self.queue[:sample_size]
-        #     )
-        #     raise DecodeError(
-        #         f"KV cache exceeds GPU memory for node {self.node_id}: "
-        #         f"{self._kv_cache_bytes} bytes used, {self.hardware.gpu_mem} bytes available. "
-        #         f"Head request r{head.id}: isl={head.isl}, osl={head.osl}, "
-        #         f"cache_length={head.cache_length}. "
-        #         f"Sample requests (first {sample_size}): {sample_info}"
-        #     )
+            head = self.queue[0][0]
+            sample_size = min(5, len(self.queue))
+            sample_info = ", ".join(
+                f"r{req.id}: isl={req.isl}, osl={req.osl}, "
+                f"cache_length={req.cache_length}"
+                for req, _ in self.queue[:sample_size]
+            )
+            raise DecodeError(
+                f"KV cache exceeds GPU memory for node {self.node_id}: "
+                f"{self._kv_cache_bytes} bytes used, {self.hardware.gpu_mem} bytes available. "
+                f"Head request r{head.id}: isl={head.isl}, osl={head.osl}, "
+                f"cache_length={head.cache_length}. "
+                f"Sample requests (first {sample_size}): {sample_info}"
+            )
 
         finished_requests: list[Request] = []
 

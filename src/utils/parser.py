@@ -320,8 +320,6 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=(
             "GPUs on each node to use as prefill instances. "
             "In --colocated mode the remaining GPUs become decode instances. "
-            f"When omitted, colocated mode falls back to --num-prefill-nodes and "
-            "non-colocated mode uses all GPUs per prefill-only node "
             f"(default: {env.prefill_gpus_per_node})"
         ),
     )

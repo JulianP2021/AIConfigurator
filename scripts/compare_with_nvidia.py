@@ -56,7 +56,6 @@ def run_your_simulator(
     osl: int,
     sessions_per_user: int,
     users: int,
-    think_time_ms: float,
     batch_size: int,
     prefill_workers: int,
     decode_workers: int,
@@ -64,6 +63,8 @@ def run_your_simulator(
 ) -> SimulationResult:
     """Run the discrete-event simulator with the matched topology."""
     print("[1/2] Running your simulator ...")
+
+    print(users, sessions_per_user)
 
     return simulate_run_distributed(
         DistributedScenario(
@@ -88,7 +89,7 @@ def run_your_simulator(
                 sessions_per_user=sessions_per_user,
                 users=users,
                 max_session_turns=1,
-                think_time_ms=think_time_ms,
+                think_time_ms=0,
                 token_distribution=TokenDistribution(
                     min_input_tokens=isl,
                     max_input_tokens=isl,
@@ -190,14 +191,6 @@ def print_comparison_table(
     keys = [
         ("ttft", "TTFT (ms)"),
         ("tpot", "TPOT (ms)"),
-        ("max_ttft", "MAX TTFT (ms)"),
-        ("request_latency", "Request Latency (ms)"),
-        ("max_request_latency", "max Latency (ms)"),
-        ("tokens_per_second", "tokens/s"),
-        ("tokens_per_second_per_gpu", "tokens/s/gpu"),
-        ("tokens_per_second_per_user", "tokens/s/user"),
-        ("seq_per_second", "seq/s"),
-        ("concurrency", "Concurrency"),
     ]
 
     # Print header
@@ -215,8 +208,10 @@ def print_comparison_table(
 
     for key, display in keys:
         line = f"{display:>{col_w}}"
-        for _, d in rows:
+        for name, d in rows:
             v = d.get(key, "N/A")
+            if name == "Your Simulator" and key == "ttft":
+                v = d.get("avg_prefill_time_ms")
             s = f"{v:,.2f}" if isinstance(v, float) else str(v)
             line += f" | {s:^{val_w}}"
         print(line)
@@ -265,7 +260,7 @@ def main():
         "--osl",
         type=int,
         default=2,
-        help="Output sequence length (fixed, default: 100)",
+        help="Output sequence length (fixed, default: 2)",
     )
     parser.add_argument(
         "--sessions-per-user",
@@ -278,18 +273,6 @@ def main():
         type=int,
         default=10,
         help="Fixed pool of users taking turns (default: 10)",
-    )
-    parser.add_argument(
-        "--think-time-ms",
-        type=float,
-        default=0.0,
-        help="Think time between a user's consecutive requests in ms (default: 0.0)",
-    )
-    parser.add_argument(
-        "--cache-pct",
-        type=float,
-        default=0.0,
-        help="Cache percentage for prefix caching (default: 0.0)",
     )
     # Topology
     parser.add_argument(
@@ -334,11 +317,9 @@ def main():
         osl=args.osl,
         sessions_per_user=args.sessions_per_user,
         users=args.users,
-        think_time_ms=args.think_time_ms,
         batch_size=args.batch_size,
         prefill_workers=args.prefill_workers,
         decode_workers=args.decode_workers,
-        cache_pct=args.cache_pct,
         hardware=args.hardware,
     )
 
@@ -368,11 +349,6 @@ def main():
     # Print comparison
     print_comparison_table(sim_result, nvidia_results)
 
-    for db_mode, est in nvidia_results:
-        print(f"NVIDIA ({est.mode}, {db_mode}) raw output:")
-        print(json.dumps(est.raw, indent=2))
-        print()
-
     # Optional JSON save
     if args.save:
         payload = {
@@ -388,11 +364,9 @@ def main():
                 "osl": args.osl,
                 "sessions_per_user": args.sessions_per_user,
                 "users": args.users,
-                "think_time_ms": args.think_time_ms,
                 "batch_size": args.batch_size,
                 "prefill_workers": args.prefill_workers,
                 "decode_workers": args.decode_workers,
-                "cache_pct": args.cache_pct,
             },
         }
         with Path(args.save).open("w") as fh:

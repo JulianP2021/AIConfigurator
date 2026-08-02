@@ -472,12 +472,11 @@ class RequestGenerator:
         # that SLA violation messages can report inter-request delay.
         self._last_request_generated_ms[key] = request.generated_ms
 
-    def finish_request(self, request: Request, _now_ms: float) -> None:
+    def finish_request(self, request: Request, now_ms: float) -> None:
         """Record that ``request`` has completed and is no longer in flight.
 
-        ``now_ms`` is ignored; the user's next request is generated after
-        ``request.generated_ms + ttft_sla_ms + tpot_sla_ms * osl +
-        think_time_ms`` has elapsed.  With probability ``delay_fraction`` an
+        the user's next request is generated after
+        ``now_ms + think_time_ms`` has elapsed.  With probability ``delay_fraction`` an
         extra uniform delay in [``delay_min_ms``, ``delay_max_ms``] is added on
         top of that base interval.
 
@@ -507,12 +506,7 @@ class RequestGenerator:
             return
 
         self._idle_users.add(user_id)
-        next_ready_ms = (
-            request.generated_ms
-            + self.ttft_sla_ms
-            + self.tpot_sla_ms * request.osl
-            + self.think_time_ms
-        )
+        next_ready_ms = now_ms + self.think_time_ms
         if (
             self.delay_fraction > 0.0
             and _rng.random() < self.delay_fraction

@@ -23,7 +23,6 @@ same seed produce identical routing decisions.
 import random
 
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 
 from src.cache.cache import S3_NODE_ID, Cache
 from src.hardware.hardware import Hardware, HardwareSpec
@@ -188,17 +187,7 @@ class Router:
         model = self._model()
         if spec is None or model is None:
             return 0.0
-        # Model the request as running alone; batch_size is a guess.
-        dummy = SimpleNamespace(
-            prefilled_tokens=req.prefilled_tokens,
-            decoded_tokens=req.decoded_tokens,
-            cache_length=req.prefilled_tokens + req.decoded_tokens,
-            remaining_tokens_prefill=0,
-            remaining_tokens_decode=req.osl - req.decoded_tokens,
-            osl=req.osl,
-            isl=req.isl,
-        )
-        batch = [(dummy, 0.0)] * batch_size
+        batch = [(req, 0.0)] * batch_size
         flops = calculate_flops(model, batch, "decode")
         memory = calculate_memory(model, batch, "decode")
         return (

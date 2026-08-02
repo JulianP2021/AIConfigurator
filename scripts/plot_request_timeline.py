@@ -120,8 +120,8 @@ def _parse_args(env) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("request_timeline.png"),
-        help="Output PNG path (default: request_timeline.png)",
+        default=Path("timeline.png"),
+        help="Output PNG path (default: timeline.png)",
     )
     return parser.parse_args()
 
@@ -199,10 +199,7 @@ def build_schedule(args: argparse.Namespace) -> list[dict]:
             "isl": request.isl,
             "osl": request.osl,
         })
-        # The schedule is exogenous: we pass the generation time as the
-        # finish time so the generator's next-ready calculation uses SLA + think
-        # + delay, not the real completion time.
-        generator.finish_request(request, request.generated_ms)
+        generator.finish_request(request, request.generated_ms + expected_service_ms)
 
     return schedule
 
@@ -210,10 +207,10 @@ def build_schedule(args: argparse.Namespace) -> list[dict]:
 def _auto_time_unit(max_time_s: float) -> tuple[float, str]:
     """Return a divisor and label for the x-axis based on the total span."""
     if max_time_s < 120:
-        return 1.0, "s"
+        return max_time_s, "s"
     if max_time_s < 7200:
-        return 60.0, "min"
-    return 3600.0, "h"
+        return max_time_s / 60.0, "min"
+    return max_time_s / 3600, "h"
 
 
 def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:
@@ -235,7 +232,10 @@ def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:
         (entry["generated_ms"] + entry["expected_service_ms"]) / 1000.0
         for entry in schedule
     )
-    divisor, unit = _auto_time_unit(max_time_s)
+    divisor, unit = (
+        max_time_s / _auto_time_unit(max_time_s)[0],
+        _auto_time_unit(max_time_s)[1],
+    )
 
     fig_height = max(6.0, len(users) * 0.35)
     fig, ax = plt.subplots(figsize=(14, fig_height))
@@ -262,9 +262,16 @@ def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:
     ax.set_yticklabels([f"user {uid}" for uid in users])
     ax.set_xlabel(f"Time ({unit})")
     ax.set_ylabel("User")
+
+    ttft = _auto_time_unit(args.ttft_ms / 1000)
+    tpot = _auto_time_unit(args.tpot_ms / 1000)
+    user_delay = _auto_time_unit(args.user_delay_max_ms / 1000)
+    think_time = _auto_time_unit(args.think_time_ms / 1000)
+
     ax.set_title(
         f"Request schedule: {args.users} users, {args.sessions_per_user} sessions/user, "
-        f"{args.max_session_turns} turns, seed={args.seed}"
+        f"{args.max_session_turns} turns, seed={args.seed}, "
+        f" ttft: {ttft[0]}{ttft[1]}, tpot: {tpot[0]}{tpot[1]}, user delay: {user_delay[0]}{user_delay[1]} * {args.user_delay_fraction}, thinking time: {think_time[0]}{think_time[1]} "
     )
 
     # Legend for sessions, but keep it compact for many sessions.

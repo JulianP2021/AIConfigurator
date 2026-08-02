@@ -49,10 +49,10 @@ class TestUserDelay:
         # Force every user to be past its startup offset.
         req = gen.generate_request(scenario, 1_000.0)
         assert req is not None
-        gen.finish_request(req, 5.0)
-        # next_ready = generated + ttft + tpot*osl + think
-        # generated 1000 + ttft 100 + tpot 10*1 + think 10 = 1120
-        assert gen._next_available_ms[req.user_id] == pytest.approx(1120.0)
+        gen.finish_request(req, 1_100.0)
+        # next_ready = finished + think
+        # finished 1100 + think 10 = 1110
+        assert gen._next_available_ms[req.user_id] == pytest.approx(1110.0)
 
     def test_fixed_delay_added_on_top_of_think_time(self):
         set_request_rng(2)
@@ -66,9 +66,9 @@ class TestUserDelay:
         )
         req = gen.generate_request(scenario, 1_000.0)
         assert req is not None
-        gen.finish_request(req, 5.0)
-        # generated 1000 + ttft 100 + tpot 10*1 + think 10 + fixed delay 50 = 1170
-        assert gen._next_available_ms[req.user_id] == pytest.approx(1170.0)
+        gen.finish_request(req, 1_100.0)
+        # generated 1100 + think 10 + fixed delay 50 = 1160
+        assert gen._next_available_ms[req.user_id] == pytest.approx(1160.0)
 
     def test_random_delay_within_range(self):
         set_request_rng(3)
@@ -82,9 +82,9 @@ class TestUserDelay:
         )
         req = gen.generate_request(scenario, 1_000.0)
         assert req is not None
-        gen.finish_request(req, 5.0)
+        gen.finish_request(req, 1_110.0)
         ready = gen._next_available_ms[req.user_id]
-        # base = generated 1000 + ttft 100 + tpot 10*1 + think 10 = 1120,
+        # base = finished 1110 + think 10 = 1120,
         # plus delay in [20, 80]
         assert 1140.0 <= ready <= 1200.0
 
@@ -106,10 +106,10 @@ class TestUserDelay:
             req = gen.generate_request(scenario, 1_000.0)
             assert req is not None
             seen_users.add(req.user_id)
-            gen.finish_request(req, 0.0)
+            gen.finish_request(req, 2_000.0)
         for ready in gen._next_available_ms.values():
-            # generated 1000 + ttft 100 + tpot 10*1 + think 10 + fixed delay 100
-            assert ready == pytest.approx(1220.0)
+            # finished 2000 + think 10 + fixed delay 100
+            assert ready == pytest.approx(2110.0)
 
     def test_think_time_blocks_second_request(self):
         """A user cannot generate its next request before think_time_ms elapses."""
@@ -261,11 +261,9 @@ class TestSLADrivenSchedule:
         )
         req = gen.generate_request(scenario, 1_000.0)
         assert req is not None
-        gen.finish_request(req, 7.0)
-        # next ready = generated + ttft + tpot*osl + think.
-        assert gen._next_available_ms[req.user_id] == pytest.approx(
-            1_000.0 + 50.0 + 5.0 * req.osl + 10.0
-        )
+        gen.finish_request(req, 1_100.0)
+        # next ready = finished + think.
+        assert gen._next_available_ms[req.user_id] == pytest.approx(1_100.0 + 10.0)
 
     def test_schedule_is_generation_driven(self):
         set_request_rng(0)
@@ -279,11 +277,9 @@ class TestSLADrivenSchedule:
         )
         req = gen.generate_request(scenario, 1_000.0)
         assert req is not None
-        # next ready depends on generation time, not late finish time.
+        # next ready depends on finish time
         gen.finish_request(req, 10_000.0)
-        assert gen._next_available_ms[req.user_id] == pytest.approx(
-            1_000.0 + 100.0 + 10.0 * 1 + 10.0
-        )
+        assert gen._next_available_ms[req.user_id] == pytest.approx(10_000.0 + 10.0)
 
     def test_sessions_start_at_one(self):
         set_request_rng(0)
