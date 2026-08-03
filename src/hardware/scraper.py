@@ -69,8 +69,6 @@ def load_aws_hardware_db(
 
       * ``cpu_ram_usd_per_gb_hour`` USD per GB of CPU RAM per hour.
       * ``ssd_usd_per_gb_hour`` USD per GB of SSD storage per hour.
-      * ``ssd_bw_usd_per_gb_s_hour`` USD per GB/s per hour of SSD (NVMe)
-        bandwidth.
       * ``inet_up_usd_per_gbps_hour`` USD per Gbps per hour of internet upload
         bandwidth.
       * ``inet_down_usd_per_gbps_hour`` USD per Gbps per hour of internet download
@@ -252,9 +250,7 @@ def _derive_custom_price_raw(
 
     def family_price(key: str) -> float:
         if key not in family:
-            raise ValueError(
-                f"Per-family pricing for {gpu_name!r} is missing required key {key!r}"
-            )
+            return float(pricing[key])
         if float(family[key]) == 0:
             return float(pricing[key])
         return float(family[key])
@@ -268,9 +264,6 @@ def _derive_custom_price_raw(
     price = num_gpus * compute_price
     price += cpu_ram_gb * family_price("cpu_ram_usd_per_gb_hour")
     price += ssd_gb * family_price("ssd_usd_per_gb_hour")
-    price += (float(config.get("nvme_bw", 0)) / _GB) * family_price(
-        "ssd_bw_usd_per_gb_s_hour"
-    )
     price += bits_to_gbps(config.get("network_inet_up", 0)) * family_price(
         "inet_up_usd_per_gbps_hour"
     )
@@ -285,14 +278,13 @@ def _derive_custom_price_raw(
     )
     price += inter_node_up_gbps * family_price("inter_node_up_usd_per_gbps_hour")
     price += inter_node_down_gbps * family_price("inter_node_down_usd_per_gbps_hour")
-    price += (float(config.get("pcie_bw", 0)) / _GB) * family_price(
-        "pcie_bw_usd_per_gb_s_hour"
-    )
 
     nvlink_bw_gb_s = float(config.get("nvlink_bw", 0)) / _GB
     if nvlink_bw_gb_s > 0:
         price += nvlink_bw_gb_s * num_gpus * family_price("nvlink_bw_usd_per_gb_s_hour")
-
+    price += (float(config.get("pcie_bw", 0)) / _GB) * family_price(
+        "pcie_bw_usd_per_gb_s_hour"
+    )
     return price
 
 

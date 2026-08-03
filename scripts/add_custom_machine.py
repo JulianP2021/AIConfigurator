@@ -69,10 +69,20 @@ def _gb_to_bytes(gb: float) -> int:
     return int(gb * _GB)
 
 
+def _derive_nvme_bw_from_capacity(ssd_mem_gb: float) -> int:
+    """Return NVMe bandwidth in bytes/s from installed SSD capacity.
+
+    Custom/focused machines use a simple rule of 8 GB/s for every 4 TB of SSD
+    storage. This reflects the simulator's pricing model where SSD bandwidth is
+    bundled with SSD capacity rather than priced separately.
+    """
+    return int((ssd_mem_gb / 4096.0) * 8.0 * _GB)
+
+
 def _build_machine_config(settings: dict[str, Any]) -> dict:
     """Convert one combination of settings into a raw machine config dict."""
-    inet_up_gbps = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
-    inet_down_gbps = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
+    inet_up_gbps = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
+    inet_down_gbps = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
 
     config: dict[str, Any] = {
         "name": settings["machine_name"],
@@ -82,7 +92,7 @@ def _build_machine_config(settings: dict[str, Any]) -> dict:
         "nvlink_bw": _gb_to_bytes(settings["nvlink_bw_gbps"]),
         "cpu_ram": _gb_to_bytes(settings["ram_mem_gb"]),
         "nvme_mem": _gb_to_bytes(settings["ssd_mem_gb"]),
-        "nvme_bw": _gb_to_bytes(settings["ssd_bw_gbps"]),
+        "nvme_bw": _derive_nvme_bw_from_capacity(settings["ssd_mem_gb"]),
         "network_inet_up": _gb_to_bytes(inet_up_gbps),
         "network_inet_down": _gb_to_bytes(inet_down_gbps),
         "network_inter_node_up": _resolve_inter_node_bw(
@@ -106,15 +116,17 @@ def _variant_name(base: str, settings: dict[str, Any]) -> str:
     )
     if settings["nvlink_bw_gbps"]:
         slug += f" nvl{settings['nvlink_bw_gbps']:.0f}"
-    slug += f" sbw{settings['ssd_bw_gbps']:.1f}"
+
+    ssd_bw_gbps = _derive_nvme_bw_from_capacity(settings["ssd_mem_gb"]) / _GB
+    slug += f" sbw{ssd_bw_gbps:.1f}"
 
     inter_node_up = settings.get("inter_node_up_gbps")
     inter_node_down = settings.get("inter_node_down_gbps")
 
     slug += f" in{inter_node_up:.1f}/{inter_node_down:.1f}"
 
-    inet_up = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
-    inet_down = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
+    inet_up = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
+    inet_down = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
     slug += f" inet{inet_up:.1f}/{inet_down:.1f}"
     return f"{base} {slug}"
 
@@ -174,12 +186,6 @@ def main() -> int:
         type=str,
         required=True,
         help="Local SSD size in GB. Comma-separated list accepted.",
-    )
-    parser.add_argument(
-        "--ssd-bw-gbps",
-        type=str,
-        required=True,
-        help="SSD (NVMe) bandwidth in Gbps. Comma-separated list accepted.",
     )
     parser.add_argument(
         "--inet-bw-gbps",
@@ -277,7 +283,6 @@ def main() -> int:
         "nvlink_bw_gbps": parse_float_list(args.nvlink_bw_gbps),
         "ram_mem_gb": parse_float_list(args.ram_mem_gb),
         "ssd_mem_gb": parse_float_list(args.ssd_mem_gb),
-        "ssd_bw_gbps": parse_float_list(args.ssd_bw_gbps),
         "inet_bw_gbps": parse_float_list(args.inet_bw_gbps),
         "inter_node_up_gbps": parse_float_list(args.inter_node_up_gbps),
         "inter_node_down_gbps": parse_float_list(args.inter_node_down_gbps),
@@ -314,7 +319,7 @@ def main() -> int:
             "num_gpus": settings["num_gpus"],
             "ram_gb": settings["ram_mem_gb"],
             "ssd_gb": settings["ssd_mem_gb"],
-            "ssd_bw_gbps": settings["ssd_bw_gbps"],
+            "ssd_bw_gbps": _derive_nvme_bw_from_capacity(settings["ssd_mem_gb"]) / _GB,
             "pcie_gbps": settings["pcie_bw_gbps"],
             "nvlink_gbps": settings["nvlink_bw_gbps"],
             "inet_up_gbps": settings.get("inet_up_gbps", settings["inet_bw_gbps"]),

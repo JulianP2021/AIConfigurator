@@ -80,7 +80,6 @@ def _gpu_slot_price(machine_name: str, compute_price_fraction: float = 0.6) -> f
     slot_price = fprice("compute_usd_per_gpu_hour")
     slot_price += fprice("cpu_ram_usd_per_gb_hour") * (ref["cpu_ram"] / GB) / n
     slot_price += fprice("ssd_usd_per_gb_hour") * (ref["nvme_mem"] / GB) / n
-    slot_price += fprice("ssd_bw_usd_per_gb_s_hour") * (ref["nvme_bw"] / GB) / n
     slot_price += fprice("pcie_bw_usd_per_gb_s_hour") * (ref["pcie_bw"] / GB) / n
     slot_price += (
         fprice("nvlink_bw_usd_per_gb_s_hour") * (ref.get("nvlink_bw", 0.0) / GB) / n
