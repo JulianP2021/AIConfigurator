@@ -51,40 +51,13 @@ class HardwareSpec:
     num_gpus: int
     nvme_mem: int
     nvme_bw: int
-    network_inet_up: int  # in bytes per second (internet / S3)
-    network_inet_down: int  # in bytes per second (internet / S3)
-    network_inter_node_up: int  # in bytes per second (datacenter NIC)
-    network_inter_node_down: int  # in bytes per second (datacenter NIC)
-    cpu_cores: int
-    cpu_cores_effective: float
-    cpu_ghz: float
-    cpu_name: str
+    network_inet_up: int  # in bits per second (internet / S3)
+    network_inet_down: int  # in bits per second (internet / S3)
+    network_inter_node_up: int  # in bits per second (datacenter NIC)
+    network_inter_node_down: int  # in bits per second (datacenter NIC)
     cpu_ram: int
-    disk_name: str
-    dlperf: float
-    dlperf_per_dphtotal: float
-    dph_base: float  # hourly compute price in USD
-    geolocation: str
-    gpu_display_active: bool
-    gpu_frac: float
-    gpu_lanes: int
-    gpu_max_power: float
-    gpu_max_temp: float
-    has_avx: int
-    host_id: int
-    inet_down_cost: float
-    inet_up_cost: float
-    mobo_name: str
-    os_version: str
-    pci_gen: float
+    dph_base: float
     pcie_bw: float
-    network_bw: float
-    reliability: float
-    reliability_mult: float
-    score: float
-    storage_cost: float
-    storage_total_cost: float
-    verification: str
     nvlink_bw: float = 0.0
 
 

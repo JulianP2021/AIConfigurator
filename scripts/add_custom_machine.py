@@ -81,8 +81,8 @@ def _derive_nvme_bw_from_capacity(ssd_mem_gb: float) -> int:
 
 def _build_machine_config(settings: dict[str, Any]) -> dict:
     """Convert one combination of settings into a raw machine config dict."""
-    inet_up_gbps = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
-    inet_down_gbps = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+    inet_up_gbps = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
+    inet_down_gbps = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
 
     config: dict[str, Any] = {
         "name": settings["machine_name"],
@@ -125,8 +125,8 @@ def _variant_name(base: str, settings: dict[str, Any]) -> str:
 
     slug += f" in{inter_node_up:.1f}/{inter_node_down:.1f}"
 
-    inet_up = settings.get("inet_up_gbps", settings["inet_bw_gbps"])
-    inet_down = settings.get("inet_down_gbps", settings["inet_bw_gbps"])
+    inet_up = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
+    inet_down = settings.get("inet_bw_gbps", settings["inet_down_gbps"])
     slug += f" inet{inet_up:.1f}/{inet_down:.1f}"
     return f"{base} {slug}"
 
