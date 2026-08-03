@@ -201,21 +201,17 @@ class Router:
     def _download_time_ms(self, req: Request, node_id: int) -> float:
         """Estimate KV download time to ``node_id`` using full bandwidth.
 
-        When ``_REMOTE_DOWNLOAD_PENALTY`` is non-zero, any prefix bytes that are
-        not already cached locally on ``node_id`` are charged as if they had to
-        be downloaded over the slowest realistic path.  Setting this very high
-        effectively disables remote prefix fetching in routing decisions.
+        In bandwidth-aware mode this uses the cache's own optimistic download
+        estimator, which resolves the true location of every prefix segment
+        (local RAM, local SSD, remote RAM/SSD, or S3) and sums the unshared
+        leg times.  This makes the router sensitive to actual hardware bandwidths
+        instead of the previous arbitrary 0.1 ms/byte penalty.
         """
         if self.cache is None:
             return 0.0
-        local_prefix = self._cached_prefix(req, node_id)
-        remote_bytes = max(0.0, req.isl - local_prefix) * self.model.kv_size_per_token
-        if remote_bytes <= 0:
-            return 0.0
-        # Penalty factor: milliseconds per byte of remote prefix.  A value of
-        # 1e-1 ms/byte makes any non-trivial remote download dominate the cost
-        # function, so the router will keep requests on the prefix owner.
-        return remote_bytes * 0.1
+        return self.cache.estimated_download_time_ms(
+            (req.user_id, req.session_id), node_id, req.isl
+        )
 
     def _prefill_remaining_time_ms(self, inst: PrefillInstance) -> float:
         """Sum of remaining prefill compute time for requests on one instance."""

@@ -462,11 +462,6 @@ def _run_sweep(
     )
 
     results: list[dict[str, Any]] = []
-    # Per (run_spec, ttft, delay, focus) we keep all seed outcomes so the output
-    # row can expose raw max_users values for variance / tail plotting.
-    per_spec_seed_results: dict[
-        tuple[str, float, float, str, str], list[dict[str, Any]]
-    ] = defaultdict(list)
     """RAM|NVLink|SSD|SSD BW|INET BW"""
     palette = {
         "RAM": "#58a6ff",
@@ -542,22 +537,6 @@ def _run_sweep(
                     price_per_user = (
                         total_cost / max_users if max_users > 0 else float("inf")
                     )
-                    seed_row = {
-                        "seed": seed,
-                        "max_users": max_users,
-                        "price_per_user": round(price_per_user, 6),
-                        "tokens_per_second": row.get("tokens_per_second"),
-                        "max_ttft": row.get("max_ttft"),
-                        "max_tpot": row.get("max_tpot"),
-                    }
-                    per_spec_key = (
-                        str(run_spec["cfg"]["label"]),
-                        float(run_spec["ttft_ms"]),
-                        float(run_spec["user_delay_ms"]),
-                        str(focus),
-                        str(focus_value),
-                    )
-                    per_spec_seed_results[per_spec_key].append(seed_row)
                     add_result_metadata(
                         row,
                         str(run_spec["cfg"]["label"]),
@@ -585,20 +564,6 @@ def _run_sweep(
                             LOG_CONFIG_EXECUTOR,
                             f"Config '{run_spec['cfg']['label']}' seed={seed} failed: {exc}",
                         )
-
-    # Attach the per-seed raw outcome arrays to each aggregated row so plots can
-    # show variance, tails, etc.  When only one seed was requested the array has
-    # length 1 and behaves like the legacy output.
-    if num_seeds > 1:
-        for row in results:
-            key = (
-                str(row.get("label", "")),
-                float(row.get("ttft_sla_ms", 0.0)),
-                float(row.get("user_delay_ms", 0.0)),
-                str(row.get("focus", "")),
-                str(row.get("focus_value", "")),
-            )
-            row["seed_results"] = per_spec_seed_results.get(key, [])
 
     return results
 

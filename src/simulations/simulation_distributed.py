@@ -85,6 +85,7 @@ def _finish_request(
         + request.prefill_download_wait_ms
         + request.prefill_upload_wait_ms
         + request.decode_download_wait_ms
+        + request.decode_wait_ms
     )
 
     # Compute the gap from the previous request in the same (user, session).

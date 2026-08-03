@@ -666,14 +666,12 @@ class Cache:
     ) -> float:
         """Return an optimistic download time for ``required_end`` tokens.
 
-        This is a routing-only estimate.  It assumes the request would receive
-        the full unshared bandwidth for every leg, so it intentionally ignores
-        concurrent transfers.  It is intended to make routing sensitive to the
-        physical cost of moving KV from its current tier to the destination,
-        especially when the destination RAM is full and a remote/SSD source is
-        needed.
+        This is a routing-only estimate.  It uses the read-only segment resolver
+        so it does not mutate cache state or cost counters.  It assumes the
+        request would receive the full unshared bandwidth for every leg, so it
+        intentionally ignores concurrent transfers.
         """
-        effective_end, segments = self._find_download_segments(
+        effective_end, segments, _s3_ok = self._find_download_segments_read_only(
             session_id, dest_node_id, required_end
         )
         if effective_end == 0:
@@ -880,16 +878,14 @@ class Cache:
         eviction_legs = self.insert_cache_item(merged, node_id)
         return merged, eviction_legs
 
-    def _find_download_segments(
+    def _find_download_segments_read_only(
         self, session_id: tuple[int, int], dest_node_id: int, required_end: int
-    ) -> tuple[int, list[tuple[int, int, int, str]]]:
-        """Find source segments needed to assemble [0, required_end) on ``dest_node_id``.
+    ) -> tuple[int, list[tuple[int, int, int, str]], bool]:
+        """Read-only version of segment resolution for routing estimates.
 
-        Returns ``(effective_end, segments)`` where each segment is
-        ``(start, end, source_node_id, source_layer_name)``.  ``effective_end``
-        is the largest token index that can actually be downloaded given the
-        globally cached contiguous prefix.  Local SSD items on ``dest_node_id``
-        are promoted; remote items and the shared S3 tier are copied.
+        Returns ``(effective_end, segments, s3_download_ok)`` without
+        touching LRU state or updating S3 cost counters.  The caller is
+        responsible for any cache mutation / accounting.
         """
         all_items = self._find_all_items(session_id)
         global_prefix = self._contiguous_prefix_from_sorted(all_items)
@@ -910,13 +906,13 @@ class Cache:
             ]
             log(
                 LOG_CACHE,
-                f"_find_download_segments for session {session_id} dest={dest_node_id} "
+                f"_find_download_segments_read_only for session {session_id} dest={dest_node_id} "
                 f"required_end={required_end}: all_ranges={all_ranges} "
                 f"global_prefix_end={global_prefix[-1].token_end if global_prefix else 0}",
             )
 
         if not global_prefix:
-            return 0, []
+            return 0, [], False
 
         # If the destination already holds a prefix starting at 0 and the global
         # prefix extends further than the request requires, download the full
@@ -957,49 +953,30 @@ class Cache:
             if (layer := self.find_cache_layer(item)) is not None
             and layer.node_id == S3_NODE_ID
         ]
-        # Build covering indexes keyed by (token_start, token_end).  Make sure
-        # items carry a layer back-pointer, otherwise _covering_item cannot
-        # determine the source layer for the returned segment.
+
         local_index = SortedDict()
         for item in local_items:
-            if (
-                item.layer is None
-                and (layer := self.find_cache_layer(item)) is not None
-            ):
-                item.layer = layer
+            if item.layer is None:
+                item.layer = self.find_cache_layer(item)
             local_index[(item.token_start, item.token_end)] = item
 
         remote_index = SortedDict()
         for item in remote_items:
-            if (
-                item.layer is None
-                and (layer := self.find_cache_layer(item)) is not None
-            ):
-                item.layer = layer
+            if item.layer is None:
+                item.layer = self.find_cache_layer(item)
             remote_index[(item.token_start, item.token_end)] = item
 
         s3_index = SortedDict()
         for item in s3_items:
-            if (
-                item.layer is None
-                and (layer := self.find_cache_layer(item)) is not None
-            ):
-                item.layer = layer
+            if item.layer is None:
+                item.layer = self.find_cache_layer(item)
             s3_index[(item.token_start, item.token_end)] = item
 
         def _covering_item(
             index: SortedDict[tuple[int, int], CacheItem], pos: int
         ) -> CacheItem | None:
-            """Return the covering item in ``index`` that extends furthest past ``pos``.
-
-            Several items may cover ``pos``; the longest one is chosen so gaps
-            are closed as far as possible.  Returns None if no item covers ``pos``.
-            """
             if not index:
                 return None
-            # All candidates have token_start <= pos.  Scan backwards over those
-            # candidates and pick the item with the maximum token_end that
-            # actually covers pos.
             idx = index.bisect_right((pos, float("inf")))
             best: CacheItem | None = None
             while idx > 0:
@@ -1023,7 +1000,6 @@ class Cache:
         )
 
         miss_start = 0
-        s3_layer = self._s3_layer()
 
         while miss_start < effective_end:
             item = _covering_item(local_index, miss_start)
@@ -1033,7 +1009,6 @@ class Cache:
                 seg_end = min(item.token_end, effective_end)
                 segments.append((miss_start, seg_end, layer.node_id, layer.name))
                 miss_start = seg_end
-                self._touch(item, layer)
                 continue
             if miss_start < effective_end:
                 item = _covering_item(remote_index, miss_start)
@@ -1043,31 +1018,13 @@ class Cache:
                     seg_end = min(item.token_end, effective_end)
                     segments.append((miss_start, seg_end, layer.node_id, layer.name))
                     miss_start = seg_end
-                    self._touch(item, layer)
                     continue
             if miss_start < effective_end and s3_download_ok:
                 item = _covering_item(s3_index, miss_start)
                 if item is not None:
                     seg_end = min(item.token_end, effective_end)
-                    seg_tokens = seg_end - miss_start
                     segments.append((miss_start, seg_end, S3_NODE_ID, "S3"))
                     miss_start = seg_end
-                    self._touch(item, s3_layer)
-                    bytes_to_transfer = self.kv_size(self.model, seg_tokens)
-                    self.s3_download_requests += 1
-                    self.cost_usd += (
-                        float(bytes_to_transfer)
-                        / 1024
-                        / 1024
-                        / 1024
-                        * self.s3_spec.S3_DOWNLOAD_COST_GB
-                    )
-                    self.cost_usd += (
-                        self.s3_spec.S3_DOWNLOAD_REQ_COSTS
-                        / 1000
-                        * seg_tokens
-                        / CHUNK_SIZE
-                    )
                     continue
 
             break
@@ -1076,6 +1033,68 @@ class Cache:
             raise Exception(
                 f"{[(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in all_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in local_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in remote_items], [(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in s3_items], miss_start, effective_end}"
             )
+        return effective_end, segments, s3_download_ok
+
+    def _find_download_segments(
+        self, session_id: tuple[int, int], dest_node_id: int, required_end: int
+    ) -> tuple[int, list[tuple[int, int, int, str]]]:
+        """Find source segments needed to assemble [0, required_end) on ``dest_node_id``.
+
+        Returns ``(effective_end, segments)`` where each segment is
+        ``(start, end, source_node_id, source_layer_name)``.  ``effective_end``
+        is the largest token index that can actually be downloaded given the
+        globally cached contiguous prefix.  Local SSD items on ``dest_node_id``
+        are promoted; remote items and the shared S3 tier are copied.
+
+        This wrapper uses the read-only resolver and then applies cache side
+        effects (LRU touches and S3 cost accounting) so callers stay simple.
+        """
+        effective_end, segments, _s3_download_ok = (
+            self._find_download_segments_read_only(
+                session_id, dest_node_id, required_end
+            )
+        )
+
+        # Ensure layer back-pointers are populated for touching below.
+        s3_layer = self._s3_layer()
+        for start, end, source_node_id, source_layer_name in segments:
+            if source_layer_name == "S3":
+                if s3_layer is None:
+                    continue
+                # Touch the S3 item covering [start, end).
+                s3_dict = s3_layer.content.get(session_id)
+                if s3_dict is None:
+                    continue
+                for item in s3_dict.values():
+                    if item.token_start <= start and item.token_end >= end:
+                        self._touch(item, s3_layer)
+                        seg_tokens = end - start
+                        bytes_to_transfer = self.kv_size(self.model, seg_tokens)
+                        self.s3_download_requests += 1
+                        self.cost_usd += (
+                            float(bytes_to_transfer)
+                            / 1024
+                            / 1024
+                            / 1024
+                            * self.s3_spec.S3_DOWNLOAD_COST_GB
+                        )
+                        self.cost_usd += (
+                            self.s3_spec.S3_DOWNLOAD_REQ_COSTS
+                            / 1000
+                            * seg_tokens
+                            / CHUNK_SIZE
+                        )
+                        break
+            else:
+                layer = self.get_layer(source_node_id, source_layer_name)
+                item_dict = layer.content.get(session_id)
+                if item_dict is None:
+                    continue
+                for item in item_dict.values():
+                    if item.token_start <= start and item.token_end >= end:
+                        self._touch(item, layer)
+                        break
+
         return effective_end, segments
 
     def insert_cache_item(self, item: CacheItem, node_id: int) -> list[TransferLeg]:

@@ -201,6 +201,7 @@ class DecodeInstance:
             )
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
+            self.current_batch = None
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
 
             if request.prefilled_tokens < request.isl:

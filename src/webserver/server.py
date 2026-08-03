@@ -780,19 +780,9 @@ def _build_results_page_hardware_economics(
         price = row.get("price_per_user", float("inf"))
         total = row.get("total_cost_usd_per_hour", 0.0)
         color = row.get("color", "#58a6ff")
-        seed_info = ""
-        seed_results = row.get("seed_results")
-        if isinstance(seed_results, list) and len(seed_results) > 1:
-            users_list = [int(r.get("max_users", 0)) for r in seed_results]
-            prices_list = [float(r.get("price_per_user", 0)) for r in seed_results]
-            seed_info = (
-                f"<br><span style='font-size:0.75rem;color:var(--text-secondary);'>"
-                f"seeds: users {users_list}, prices {[f'${p:.2f}' for p in prices_list]}"
-                f"</span>"
-            )
         body += (
             f'<tr><td><span class="legend-color" style="background:{color}"></span></td>'
-            f"<td>{row['label']}{seed_info}</td><td>{focus}</td><td>{ttft:g}s</td><td>{delay_min}</td>"
+            f"<td>{row['label']}</td><td>{focus}</td><td>{ttft:g}s</td><td>{delay_min}</td>"
             f"<td>{users}</td><td>${price:.4f}</td><td>${total:.2f}</td></tr>"
         )
     body += "</tbody></table></div>\n"
@@ -886,35 +876,36 @@ def _extract_ttft_ms(row: dict[str, Any]) -> float | None:
     return None
 
 
-def _aggregate_seed_results(row: dict[str, Any]) -> dict[str, Any] | None:
-    """Return mean/min/max/std of seed_results if multiple seeds are present."""
-    seed_results = row.get("seed_results")
-    if not isinstance(seed_results, list) or len(seed_results) < 2:
-        return None
-    users = [
-        int(r.get("max_users", 0))
-        for r in seed_results
-        if int(r.get("max_users", 0)) > 0
-    ]
-    prices = [
-        float(r.get("price_per_user", 0))
-        for r in seed_results
-        if r.get("price_per_user") is not None
-    ]
-    if not users:
-        return None
-    return {
-        "users_mean": sum(users) / len(users),
-        "users_min": min(users),
-        "users_max": max(users),
-        "users_std": math.sqrt(
-            sum((u - sum(users) / len(users)) ** 2 for u in users) / len(users)
-        ),
-        "price_mean": sum(prices) / len(prices) if prices else 0.0,
-        "price_min": min(prices) if prices else 0.0,
-        "price_max": max(prices) if prices else 0.0,
-        "n": len(users),
-    }
+def _aggregate_by_scenario(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, float, float, str, str], list[dict[str, Any]]]:
+    """Group rows that share the same scenario (label, ttft, delay, focus).
+
+    The runner now emits one row per seed, all sharing the same label.  This
+    function returns a mapping from a normalized scenario key to the list of
+    seed rows so the webserver can reconstruct mean/min/max without needing any
+    ``seed_results`` field in the JSON.
+    """
+    grouped: dict[tuple[str, float, float, str, str], list[dict[str, Any]]] = (
+        defaultdict(list)
+    )
+    for row in rows:
+        if row.get("has_error"):
+            continue
+        ttft_ms = _extract_ttft_ms(row)
+        delay_ms = _extract_user_delay_ms(row)
+        focus = str(row.get("focus") or "default")
+        focus_value = str(row.get("focus_value") or "")
+        label = str(row.get("label", ""))
+        if ttft_ms is None or delay_ms is None:
+            continue
+        key = (label, round(ttft_ms, 6), round(delay_ms, 6), focus, focus_value)
+        grouped[key].append(row)
+    return grouped
+
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
 
 
 def _build_ttft_economics_plots_by_delay(
@@ -923,11 +914,15 @@ def _build_ttft_economics_plots_by_delay(
     """Generate dual-y-axis plots per (TTFT, user_delay, focus) bucket.
 
     For every focus value on the x-axis the plot shows:
-      * a bar for the mean max_users across seeds, with vertical error bars
+      * a point for the mean max_users across seeds, with vertical error bars
         spanning [min, max] when multiple seeds are present;
       * a diamond point on the right y-axis for the mean price_per_user;
       * a line connecting the price points to highlight the cost trend;
       * numeric labels for both the mean max users and the mean price.
+
+    Aggregation is done on the fly from rows that share the same scenario
+    label (i.e. the same config/TTFT/delay).  The output JSON no longer needs
+    to carry a ``seed_results`` field.
 
     Each focus category (e.g., NVLink, SSD, RAM) gets its own plot so the
     x-axis stays readable and comparisons within a category are meaningful.
@@ -935,26 +930,35 @@ def _build_ttft_economics_plots_by_delay(
     one URL per (user-delay, focus) combination.
     """
     valid_rows = [row for row in results if not row.get("has_error")]
+    scenario_groups = _aggregate_by_scenario(valid_rows)
 
-    # Group by (ttft_key, delay_ms, focus, focus_value).  When multiple seeds
-    # were requested, the runner emits one row per seed, but every row carries
-    # the full ``seed_results`` aggregate.  We therefore deduplicate on
-    # focus_value and keep only the first representative row per value.
-    seen: dict[tuple[str, float, str, str], dict[str, Any]] = {}
-    for row in valid_rows:
-        ttft_ms = _extract_ttft_ms(row)
-        delay_ms = _extract_user_delay_ms(row)
-        focus = str(row.get("focus") or "default")
-        focus_value = str(row.get("focus_value") or "")
-        if ttft_ms is None or delay_ms is None:
-            continue
+    # Build representative per-focus rows by aggregating seeds in memory.
+    aggregated_rows: dict[tuple[str, float, str, str], dict[str, Any]] = {}
+    for (
+        _label,
+        ttft_ms,
+        delay_ms,
+        focus,
+        focus_value,
+    ), seed_rows in scenario_groups.items():
         ttft_key = f"TTFT={ttft_ms / 1000:g}s"
-        key = (ttft_key, round(delay_ms, 6), focus, focus_value)
-        if key not in seen:
-            seen[key] = row
+        bucket_key = (ttft_key, round(delay_ms, 6), focus, focus_value)
+        users = [float(r.get("users", 0)) for r in seed_rows]
+        prices = [float(r.get("price_per_user", 0)) for r in seed_rows]
+        representative = dict(seed_rows[0])
+        representative["users_mean"] = _mean(users)
+        representative["users_min"] = min(users)
+        representative["users_max"] = max(users)
+        representative["price_mean"] = _mean(prices)
+        representative["price_min"] = min(prices) if prices else 0.0
+        representative["price_max"] = max(prices) if prices else 0.0
+        representative["seed_count"] = len(seed_rows)
+        representative["_seed_rows"] = seed_rows
+        aggregated_rows[bucket_key] = representative
 
+    # Group by (ttft_key, delay_ms, focus).
     buckets: dict[tuple[str, float, str], list[dict[str, Any]]] = defaultdict(list)
-    for (ttft_key, delay_ms, focus, _focus_value), row in seen.items():
+    for (ttft_key, delay_ms, focus, _focus_value), row in aggregated_rows.items():
         buckets[(ttft_key, delay_ms, focus)].append(row)
 
     def _sort_key(row: dict[str, Any]) -> tuple[float, str, str]:
@@ -981,18 +985,20 @@ def _build_ttft_economics_plots_by_delay(
         has_multi_seed = False
 
         for row in rows:
-            stats = _aggregate_seed_results(row)
-            multi_seed = stats is not None
+            seed_count = int(row.get("seed_count", 1))
+            multi_seed = seed_count > 1
             if multi_seed:
                 has_multi_seed = True
-                assert stats is not None
-                users_means.append(stats["users_mean"])
-                users_mins.append(stats["users_min"])
-                users_maxs.append(stats["users_max"])
-                price_means.append(stats["price_mean"])
-                price_mins.append(stats["price_min"])
-                price_maxs.append(stats["price_max"])
-                seed_users.append([int(r["max_users"]) for r in row["seed_results"]])
+                users_means.append(float(row["users_mean"]))
+                users_mins.append(float(row["users_min"]))
+                users_maxs.append(float(row["users_max"]))
+                price_means.append(float(row["price_mean"]))
+                price_mins.append(float(row["price_min"]))
+                price_maxs.append(float(row["price_max"]))
+                # Raw per-seed values are reconstructed from the grouped rows.
+                seed_users.append([
+                    int(r.get("users", 0)) for r in row.get("_seed_rows", [])
+                ])
             else:
                 users_means.append(float(row.get("users", 0)))
                 users_mins.append(float(row.get("users", 0)))
@@ -1000,7 +1006,7 @@ def _build_ttft_economics_plots_by_delay(
                 price_means.append(float(row.get("price_per_user", 0)))
                 price_mins.append(float(row.get("price_per_user", 0)))
                 price_maxs.append(float(row.get("price_per_user", 0)))
-                seed_users.append([int(row.get("users", 0))])
+                seed_users.append([])
 
             focus_value = str(row.get("focus_value") or "")
             focus_labels.append(focus_value if focus_value else focus)
@@ -1012,7 +1018,6 @@ def _build_ttft_economics_plots_by_delay(
 
         users_color = "#58a6ff"
         price_color = "#f0883e"
-        seed_color = "#1f2328"
 
         # Mean max users as errorbar points with [min, max] caps.
         users_lower = [
@@ -1039,21 +1044,6 @@ def _build_ttft_economics_plots_by_delay(
             label="Max users (mean)",
             zorder=4,
         )
-
-        # Individual seed dots for users.
-        if has_multi_seed:
-            for i, dot_users in enumerate(seed_users):
-                for seed_idx, du in enumerate(dot_users):
-                    offset = (seed_idx - len(dot_users) / 2) * 0.05
-                    ax_users.scatter(
-                        i + offset,
-                        du,
-                        s=25,
-                        color=seed_color,
-                        edgecolors="none",
-                        alpha=0.6,
-                        zorder=3,
-                    )
 
         # Mean price per user as a simple diamond point (no error bars).
         ax_price.plot(
@@ -1116,6 +1106,22 @@ def _build_ttft_economics_plots_by_delay(
             title += " (mean ± range over seeds)"
         ax_users.set_title(title)
         ax_users.grid(True, alpha=0.3, axis="y")
+
+        # Individual seed dots for users.
+        seed_color = "#1f2328"
+        if has_multi_seed:
+            for i, dot_users in enumerate(seed_users):
+                for seed_idx, du in enumerate(dot_users):
+                    offset = (seed_idx - len(dot_users) / 2) * 0.05
+                    ax_users.scatter(
+                        i + offset,
+                        du,
+                        s=25,
+                        color=seed_color,
+                        edgecolors="none",
+                        alpha=0.6,
+                        zorder=3,
+                    )
 
         # Combined legend.
         legend_handles = [
