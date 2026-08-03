@@ -55,25 +55,27 @@ class TestDecodeBatchLifecycle:
         inst = fake_decode_instance
 
         with patch.object(
-            inst, "calculate_decode_time", side_effect=[5.0, 5.0]
+            inst, "calculate_decode_time", side_effect=[5.0, 5.0, 5.0]
         ) as mock_calc:
             inst.add_request(Request(10, 5, 0))
             inst.add_request(Request(10, 5, 0))
 
-            # time_to_next_completion now returns 5 * 5 = 25 ms (lowball until
-            # the first request with 5 remaining tokens finishes).
+            # time_to_next_completion reports the full committed-stride time.
             assert inst.time_to_next_completion() == pytest.approx(25.0)
 
             # A new request arrives mid-token.
             inst.queue.append((Request(10, 5, 0), -1))
 
-            # The batch should still be the first two requests.
+            # The frozen batch should still be the first two requests.
             assert inst.current_batch is not None
             assert len(inst.current_batch) == 2
             inst.process_queue(5.0)
 
-            # After the token, the new request should join the next batch.
-            assert inst.current_batch is None
+            # The batch is unfrozen only after its token commitment is
+            # exhausted (or the batch empties), not after a single token.
+            assert inst.current_batch is not None
+            assert len(inst.current_batch) == 2
+            # The new arrival is queued but has not joined the frozen batch.
             assert len(inst.queue) == 3
             mock_calc.assert_called()
 
@@ -82,7 +84,7 @@ class TestDecodeBatchLifecycle:
 
         with patch.object(inst, "calculate_decode_time", return_value=5.0):
             inst.add_request(Request(10, 5, 0))
-            # time_to_next_completion lowballs: 5 ms/token * 5 tokens left.
+            # time_to_next_completion reports the full committed-stride time.
             assert inst.time_to_next_completion() == pytest.approx(25.0)
 
             # Step of 2 ms: no token completed, 3 ms left.
@@ -90,9 +92,11 @@ class TestDecodeBatchLifecycle:
             assert inst.remaining_batch_time_ms == pytest.approx(3.0)
             assert inst.current_batch[0].decoded_tokens == 0
 
-            # Step of 3 ms: token completes.
+            # Step of 3 ms: one token completes. The batch remains frozen
+            # because the fixed token commitment has not been exhausted.
             inst.process_queue(3.0)
-            assert inst.remaining_batch_time_ms is None
+            assert inst.remaining_batch_time_ms is not None
+            assert inst.current_batch is not None
             assert inst.queue[0][0].decoded_tokens == 1
 
     def test_full_token_step_advances_all_requests(
@@ -105,7 +109,10 @@ class TestDecodeBatchLifecycle:
             inst.add_request(Request(10, 5, 0))
             inst.process_queue(4.0)
 
-            assert inst.current_batch is None
+            # One token completed for all requests, but the batch stays frozen
+            # for the remainder of the fixed token commitment.
+            assert inst.current_batch is not None
+            assert len(inst.current_batch) == 2
             assert inst.queue[0][0].decoded_tokens == 1
             assert inst.queue[1][0].decoded_tokens == 1
 
@@ -215,17 +222,19 @@ class TestDecodeTimeRecalculation:
     ):
         inst = fake_decode_instance
 
-        # Latency grows as sequences get longer.
+        # Latency grows as sequences get longer.  Provide enough values for the
+        # fixed token commitment: initial batch decode time plus one recompute
+        # per token generated before the request finishes.
         with patch.object(
             inst, "calculate_decode_time", side_effect=[2.0, 3.0, 4.0]
         ) as mock_calc:
             inst.add_request(Request(10, 3, 0))
 
-            # time_to_next_completion lowballs: 2 ms/token * 3 tokens left.
+            # time_to_next_completion reports the full committed-stride time.
             assert inst.time_to_next_completion() == pytest.approx(6.0)
+            # A 5 ms step completes the first token (using 2 ms), banks 3 ms,
+            # and completes the second token (using 3 ms).
             inst.process_queue(5.0)
 
-            # Should have recalculated twice (first token done, then second
-            # token's budget loaded).
             assert mock_calc.call_count == 3
             assert inst.queue[0][0].decoded_tokens == 2

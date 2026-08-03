@@ -16,6 +16,12 @@ from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 from src.utils.utils import calculate_flops, calculate_memory
 
 
+# Number of decode tokens a frozen batch commits to generate before the batch
+# is recomputed.  Using a fixed commitment prevents background transfer events
+# from breaking the stride apart and perturbing decode timing.
+BATCH_TOKEN_COMMITMENT = 32
+
+
 class DecodeInstance:
     node_id: int
     hardware: GPUHardwareSpec
@@ -30,11 +36,12 @@ class DecodeInstance:
     cache: Cache | None
     scheduler: BandwidthScheduler | None
 
-    # Decode runs in frozen batches of exactly one token. These fields track
-    # the instance-level progress for the current batch.
+    # Decode runs in frozen batches that commit to a fixed number of tokens.
+    # These fields track the instance-level progress for the current batch.
     current_batch: list[Request] | None
     remaining_batch_time_ms: float | None
     current_batch_decode_time_ms: float | None
+    current_batch_tokens_remaining: int | None
 
     def __init__(
         self, node_id: int, hardware: GPUHardwareSpec, max_batch_size: int, model: Model
@@ -53,6 +60,7 @@ class DecodeInstance:
         self.current_batch = None
         self.remaining_batch_time_ms = None
         self.current_batch_decode_time_ms = None
+        self.current_batch_tokens_remaining = None
         self._kv_cache_bytes: int = 0
 
         # system_name, backend_version = get_meta(
@@ -105,32 +113,54 @@ class DecodeInstance:
                 request.decode_start_ms = now
             self.queue.append((request, -1))
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
-            # New arrivals cannot join a frozen batch mid-token; the current
-            # batch remains valid until the next token boundary.
+            # New arrivals cannot join a frozen batch mid-commitment; they will
+            # be picked up when the current batch finishes its committed tokens.
+
+    def _reset_batch_state(self) -> None:
+        """Unfreeze the current batch and clear all batch progress state."""
+        self.current_batch = None
+        self.remaining_batch_time_ms = None
+        self.current_batch_decode_time_ms = None
+        self.current_batch_tokens_remaining = None
 
     def _ensure_batch(self) -> None:
         """Freeze a new batch from the head of the queue when none is active."""
-        if not self.current_batch:
-            self.current_batch = [req for req, _ in self.queue[: self.max_batch_size]]
-            self.remaining_batch_time_ms = None
-            self.current_batch_decode_time_ms = None
-            now = self._global_time_ms()
-            for req in self.current_batch:
-                if req.decode_start_ms is None:
-                    req.decode_start_ms = now
-                if req.decode_queue_start_ms is None:
-                    req.decode_queue_start_ms = now
+        if self.current_batch is not None:
+            return
+
+        batch = [req for req, _ in self.queue[: self.max_batch_size]]
+        if not batch:
+            return
+
+        now = self._global_time_ms()
+        for req in batch:
+            if req.decode_start_ms is None:
+                req.decode_start_ms = now
+            if req.decode_queue_start_ms is None:
+                req.decode_queue_start_ms = now
+
+        self.current_batch = batch
+        self.current_batch_decode_time_ms = self.calculate_decode_time([
+            (r, 0) for r in batch
+        ])
+        self.remaining_batch_time_ms = self.current_batch_decode_time_ms
+
+        # Commit to a fixed number of tokens before recomputing the batch.
+        # If any request can finish sooner, cap the commitment so the batch
+        # is recomputed as soon as that request leaves.
+        min_remaining_tokens = min(r.osl - r.decoded_tokens for r in batch)
+        self.current_batch_tokens_remaining = min(
+            BATCH_TOKEN_COMMITMENT, max(1, min_remaining_tokens)
+        )
 
     def time_to_next_completion(self) -> float:
-        """Return a lower-bound time until one request in the batch finishes.
+        """Return time until the current frozen batch completes its commitment.
 
-        This is intentionally a lowball estimate: remaining time for the current
-        in-flight token plus the current per-token decode latency multiplied by
-        the smallest number of remaining output tokens (minus the current one)
-        for any request in the batch.
-
-        Transfer completion times are handled globally by the
-        ``BandwidthScheduler``; this method only reports compute events.
+        A batch commits to generating a fixed number of tokens before it is
+        recomputed.  This method reports the full time until that commitment is
+        fulfilled, allowing the event loop to stride multiple tokens at once.
+        Background transfer events that occur before the commitment completes
+        do not change the batch.
 
         If the head download in the queue has no active legs (e.g. a zero-byte
         download for a prefix that is already local), return 0 so the event
@@ -150,9 +180,12 @@ class DecodeInstance:
         if self.remaining_batch_time_ms is None:
             self.remaining_batch_time_ms = self.current_batch_decode_time_ms
 
-        remaining_tokens = min(r.osl - r.decoded_tokens for r in self.current_batch)
+        assert self.current_batch_tokens_remaining is not None
+        assert self.current_batch_tokens_remaining > 0
+
+        # Time for the in-flight token plus the remaining committed tokens.
         return self.remaining_batch_time_ms + self.current_batch_decode_time_ms * (
-            remaining_tokens - 1
+            self.current_batch_tokens_remaining - 1
         )
 
     def process_queue(self, time_ms: float) -> list[Request]:
@@ -194,8 +227,9 @@ class DecodeInstance:
         finished_requests: list[Request] = []
 
         # Drain completed decode downloads.  Only the data tracks (not the
-        # background eviction tracks) gate decode start; evictions are kept in
-        # the scheduler and finish asynchronously.
+        # background eviction tracks) gate decode start.  Completed downloads
+        # are appended to the queue but do NOT interrupt a frozen batch; they
+        # will join the next batch once the current commitment is fulfilled.
         while self.download_queue and self.download_queue[0][0].is_download_done():
             download_request, _ = self.download_queue.pop(0)
             request = download_request.request
@@ -205,7 +239,6 @@ class DecodeInstance:
             )
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
-            self.current_batch = None
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
             # Keep the DownloadRequest around so the full background eviction
             # duration can be captured once every track is exhausted.
@@ -259,27 +292,26 @@ class DecodeInstance:
                 still_running.append(upload_request)
         self.background_upload_queue = still_running
 
-        # Active decode batch
+        # Active decode batch.  A frozen batch commits to a fixed number of
+        # tokens; it is only unfrozen when that commitment is exhausted or
+        # the batch becomes empty.
         self._ensure_batch()
-        finished_in_batch: list[Request] = []
         if self.current_batch:
-            if self.current_batch_decode_time_ms is None:
-                self.current_batch_decode_time_ms = self.calculate_decode_time([
-                    (r, 0) for r in self.current_batch
-                ])
-
-            if self.remaining_batch_time_ms is None:
-                self.remaining_batch_time_ms = self.current_batch_decode_time_ms
+            assert self.current_batch_tokens_remaining is not None
+            assert self.current_batch_decode_time_ms is not None
+            assert self.remaining_batch_time_ms is not None
 
             self.remaining_batch_time_ms -= time_ms
 
-            # Count how many full tokens completed in this step. Recalculate
-            # the per-token decode time each time a token completes, because
-            # the average ISL in the batch grows by one.
-            tokens_done = 0
-            while self.remaining_batch_time_ms <= 0 and self.current_batch:
+            # Consume tokens until the commitment is fulfilled or there is no
+            # more time budget.  Per-token decode time is recomputed each time
+            # a token completes because the average ISL grows by one.
+            while (
+                self.remaining_batch_time_ms <= 0
+                and self.current_batch
+                and self.current_batch_tokens_remaining > 0
+            ):
                 old_decode_time = self.current_batch_decode_time_ms
-                # Recompute per-token time for the now-longer sequences.
                 next_decode_time = self.calculate_decode_time([
                     (r, 0) for r in self.current_batch
                 ])
@@ -294,27 +326,26 @@ class DecodeInstance:
                 if remaining_tokens <= 0:
                     break
 
-                # Try to stride multiple completed tokens at once, but only
-                # when the decode time is stable.  If the per-token latency
-                # changed, striding with the old rate would miscount how many
-                # tokens actually fit in the surplus time.
+                # Stride multiple tokens when the decode time is stable, but
+                # never beyond the batch's token commitment.
                 if old_decode_time and abs(next_decode_time - old_decode_time) < 1e-9:
                     stride = int(-self.remaining_batch_time_ms / next_decode_time) + 1
-                    stride = min(32, remaining_tokens, max(1, stride))
-                    # Charge all strided tokens at the stable per-token rate.
+                    stride = min(
+                        self.current_batch_tokens_remaining,
+                        remaining_tokens,
+                        max(1, stride),
+                    )
                     self.remaining_batch_time_ms += next_decode_time * stride
                 else:
-                    # Decode time changed (or this is the first token in the
-                    # batch).  Complete exactly one token at the old rate and
-                    # let the next iteration re-evaluate with the new rate.
                     stride = 1
                     self.remaining_batch_time_ms += old_decode_time or next_decode_time
 
                 for req in self.current_batch:
                     req.decoded_tokens += stride
-                tokens_done += stride
+                self.current_batch_tokens_remaining -= stride
 
             # Mark requests that finished decoding in this step.
+            finished_in_batch: list[Request] = []
             for request in self.current_batch:
                 if request.decoded_tokens >= request.osl:
                     if should_log(LOG_INSTANCE):
@@ -352,12 +383,10 @@ class DecodeInstance:
                 ]
                 self._kv_cache_bytes -= removed_cache_bytes
 
-            # If we completed one or more tokens, or the batch is empty,
-            # unfreeze so a new batch can be formed for the next token step.
-            if tokens_done > 0 or not self.current_batch:
-                self.current_batch = None
-                self.remaining_batch_time_ms = None
-                self.current_batch_decode_time_ms = None
+            # Unfreeze only when the commitment is exhausted or no requests are
+            # left in the batch.
+            if self.current_batch_tokens_remaining <= 0 or not self.current_batch:
+                self._reset_batch_state()
 
         return finished_requests
 
