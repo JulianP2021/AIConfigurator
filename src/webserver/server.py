@@ -279,13 +279,13 @@ def _run_single_config(
     )
     router_cost_config = RouterCostConfig(
         prefill_load_scale=router_prefill_load_scale,
+        active_work_scale=0.001,
         device_credit=router_device_credit,
         remote_ram_credit=router_remote_ram_credit,
         remote_ssd_credit=router_remote_ssd_credit,
         s3_credit=router_s3_credit,
-        active_work_scale=0.001,
-        # @TODO add as input
     )
+
     with io.StringIO() as buf, redirect_stdout(buf):
         try:
             print(f"Simulating scenario: {scenario}")
@@ -302,7 +302,6 @@ def _run_single_config(
                 user_delay_max_ms=user_delay_max_ms,
                 startup_arrival_mean_ms=startup_arrival_mean_ms,
                 random_seed=random_seed,
-                bandwidth_aware_routing=False,
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")

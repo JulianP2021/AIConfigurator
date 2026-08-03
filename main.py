@@ -29,6 +29,7 @@ from src.hardware.scraper import (
 )
 from src.node.node import Node
 from src.request.request import RequestScenario, TokenDistribution
+from src.router.router import RouterCostConfig
 from src.simulations.simulation_distributed import (
     DistributedScenario,
     simulate_run_distributed,
@@ -195,6 +196,15 @@ def main():
         eviction_time_ms=args.s3_eviction_time_ms,
     )
 
+    router_cost_config = RouterCostConfig(
+        prefill_load_scale=args.router_prefill_load_scale,
+        active_work_scale=args.router_active_work_scale,
+        device_credit=args.router_device_credit,
+        remote_ram_credit=args.router_remote_ram_credit,
+        remote_ssd_credit=args.router_remote_ssd_credit,
+        s3_credit=args.router_s3_credit,
+    )
+
     result = simulate_run_distributed(
         scenario,
         ram_usage_fraction=args.ram_usage_fraction,
@@ -206,7 +216,7 @@ def main():
         user_delay_max_ms=args.user_delay_max_ms,
         startup_arrival_mean_ms=args.startup_arrival_mean_ms,
         random_seed=args.random_seed,
-        bandwidth_aware_routing=args.bandwidth_aware_routing,
+        router_cost_config=router_cost_config,
     )
     # CLI-only: average prompt size accounting for cumulative ISL growth
     # across session turns.  The first turn has ISL tokens; each subsequent

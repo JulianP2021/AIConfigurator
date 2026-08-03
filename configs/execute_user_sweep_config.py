@@ -329,10 +329,9 @@ def _run_single_config(
     router_cost_config: RouterCostConfig,
 ) -> SimulationResult:
     """Top-level worker function suitable for process-pool pickling."""
-    bandwidth_aware_routing = bool(common.get("bandwidth_aware_routing", True))
     scenario = build_scenario(common, cfg)
     sla = common.get("sla")
-    result = simulate_run_distributed(
+    return simulate_run_distributed(
         scenario,
         ram_usage_fraction=ram_usage_fraction,
         ssd_usage_fraction=ssd_usage_fraction,
@@ -347,11 +346,7 @@ def _run_single_config(
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
-        bandwidth_aware_routing=bandwidth_aware_routing,
     )
-    result.router_active_work_scale = router_cost_config.active_work_scale
-    result.router_device_credit = router_cost_config.device_credit
-    return result
 
 
 def _collect_future_results(
@@ -1294,12 +1289,6 @@ def main() -> None:
         default=None,
         help="If set, dump cProfile stats for this process to the given path",
     )
-    parser.add_argument(
-        "--bandwidth-aware-routing",
-        type=lambda s: str(s).strip().lower() in {"true", "1", "t", "yes", "y"},
-        default=None,
-        help="Enable bandwidth-aware routing (true/false). Defaults to env/config.",
-    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -1337,13 +1326,6 @@ def main() -> None:
             "startup_arrival_mean_ms", env.startup_arrival_mean_ms
         ),
         "random_seed": config.get("random_seed", env.random_seed),
-        "bandwidth_aware_routing": (
-            args.bandwidth_aware_routing
-            if args.bandwidth_aware_routing is not None
-            else bool(
-                config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
-            )
-        ),
         "sla": sla,
     }
     ram_usage_fraction = float(config.get("ram_usage_fraction", env.ram_usage_fraction))
@@ -1485,8 +1467,6 @@ def main() -> None:
         if args.timeout is not None
         else float(config.get("timeout_s", 240.0))
     )
-
-    bool(common["bandwidth_aware_routing"])
 
     def _run_all_configs(
         run_all: bool,

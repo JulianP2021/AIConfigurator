@@ -33,8 +33,8 @@ _GB = 1024**3
 _G = 1e9
 
 # Fixed component prices considered ground truth.
-_RAM_PRICE = 0.0089
-_SSD_PRICE = 0.00037
+_RAM_PRICE = 0.001
+_SSD_PRICE = 0.00025
 _INTER_NODE_UP_PRICE = 0.006
 _INTER_NODE_DOWN_PRICE = 0.006
 _NVLINK_BW_PRICE = 0.003

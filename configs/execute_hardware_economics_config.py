@@ -192,8 +192,6 @@ def _run_single_config_for_users(
             s3_spec,
             effective_router_config,
         )
-        result.router_active_work_scale = effective_router_config.active_work_scale
-        result.router_device_credit = effective_router_config.device_credit
         if should_log(LOG_CONFIG_EXECUTOR):
             log(
                 LOG_CONFIG_EXECUTOR,
@@ -442,9 +440,6 @@ def _run_sweep(
         s3_credit=float(config.get("router_s3_credit", env.router_s3_credit)),
     )
 
-    bandwidth_aware_routing = bool(
-        config.get("bandwidth_aware_routing", env.bandwidth_aware_routing)
-    )
     _common, expanded_runs = _expand_run_specs(
         config,
         ttft_values,
@@ -452,7 +447,6 @@ def _run_sweep(
         user_delay_fraction,
         router_cost_config=router_cost_config,
     )
-    _common["bandwidth_aware_routing"] = bandwidth_aware_routing
 
     base_seed = int(config.get("random_seed", env.random_seed or 0))
     seeds = [base_seed + i for i in range(max(1, num_seeds))]

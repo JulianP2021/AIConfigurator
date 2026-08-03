@@ -79,10 +79,6 @@ class EnvConfig:
     router_remote_ssd_credit: float = 0.3
     router_s3_credit: float = 0.1
 
-    # When true, use the bandwidth-aware completion-time router (no tunable
-    # parameters).  When false, use the Dynamo-style cost model.
-    bandwidth_aware_routing: bool = True
-
     log_mask: int = 0
     debug: bool = False
 
@@ -124,11 +120,10 @@ _DEFAULTS = {
     "INTER_NODE_NETWORK_DOWN_GBPS": "100.0",
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
     "ROUTER_ACTIVE_WORK_SCALE": "0.001",
-    "ROUTER_DEVICE_CREDIT": "1.0",
+    "ROUTER_DEVICE_CREDIT": "0.8",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
     "ROUTER_REMOTE_SSD_CREDIT": "0.3",
     "ROUTER_S3_CREDIT": "0.1",
-    "BANDWIDTH_AWARE_ROUTING": "true",
     "LOG_MASK": "15",
     "DEBUG": "false",
     "MACHINE_HARDWARE": "AWS p5en.48xlarge (H200 x8)",

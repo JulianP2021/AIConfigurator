@@ -213,7 +213,6 @@ def simulate_run_distributed(
     user_delay_max_ms: float = 0.0,
     startup_arrival_mean_ms: float = 0.0,
     random_seed: int | None = None,
-    bandwidth_aware_routing: bool = True,
 ) -> SimulationResult:
     prefill_instances: list[PrefillInstance] = []
     decode_instances: list[DecodeInstance] = []
@@ -255,7 +254,7 @@ def simulate_run_distributed(
         cache=cache,
         cost_config=router_cost_config,
         random_seed=random_seed,
-        bandwidth_aware_routing=bandwidth_aware_routing,
+        bandwidth_aware_routing=False,
         model=model,
     )
 
