@@ -21,6 +21,7 @@ class DecodeInstance:
     hardware: GPUHardwareSpec
     queue: list[tuple[Request, float]]
     download_queue: list[tuple[DownloadRequest, float]]
+    background_download_queue: list[DownloadRequest]
     upload_queue: list[tuple[UploadRequest, float]]
     background_upload_queue: list[UploadRequest]
     max_batch_size: int
@@ -42,6 +43,7 @@ class DecodeInstance:
         self.hardware = hardware
         self.queue = []
         self.download_queue = []
+        self.background_download_queue = []
         self.upload_queue = []
         self.background_upload_queue = []
         self.max_batch_size = max_batch_size
@@ -134,7 +136,7 @@ class DecodeInstance:
         download for a prefix that is already local), return 0 so the event
         loop drains it immediately.
         """
-        if self.download_queue and not self.download_queue[0][0].active_legs:
+        if self.download_queue and self.download_queue[0][0].is_download_done():
             return 0.0
         self._ensure_batch()
         if not self.current_batch:
@@ -191,23 +193,40 @@ class DecodeInstance:
 
         finished_requests: list[Request] = []
 
-        # Drain completed decode downloads.
-        while self.download_queue and not self.download_queue[0][0].active_legs:
+        # Drain completed decode downloads.  Only the data tracks (not the
+        # background eviction tracks) gate decode start; evictions are kept in
+        # the scheduler and finish asynchronously.
+        while self.download_queue and self.download_queue[0][0].is_download_done():
             download_request, _ = self.download_queue.pop(0)
             request = download_request.request
             request.decode_download_end_ms = now
             request.decode_download_active_ms = (
-                download_request.active_transfer_duration_ms
+                download_request.download_active_duration_ms()
             )
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
             self.current_batch = None
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
+            # Keep the DownloadRequest around so the full background eviction
+            # duration can be captured once every track is exhausted.
+            self.background_download_queue.append(download_request)
 
             if request.prefilled_tokens < request.isl:
                 raise KVStoreTooSmallError(
                     "KV download did not return all prefilles tokens"
                 )
+
+        # Drain completed background downloads and record their eviction duration.
+        still_running: list[DownloadRequest] = []
+        for download_request in self.background_download_queue:
+            if download_request.is_complete():
+                request = download_request.request
+                request.decode_download_background_active_ms = (
+                    download_request.download_background_active_duration_ms()
+                )
+            else:
+                still_running.append(download_request)
+        self.background_download_queue = still_running
 
         # Drain completed decode uploads.  The actual upload is the last track;
         # once it finishes the request is done, while any eviction tracks keep

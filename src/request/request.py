@@ -222,9 +222,55 @@ class UploadRequest(_MultiTrackTransfer):
 
 
 class DownloadRequest(_MultiTrackTransfer):
-    """Tracks for a download.  Eviction and per-source data tracks run in parallel."""
+    """Tracks for a download.  Eviction and per-source data tracks run in parallel.
 
-    __slots__ = ()
+    The first ``eviction_track_count`` tracks are background work (e.g. moving
+    evicted data to SSD/S3) that is triggered by making room for the download.
+    They must not block the request from entering the decode queue: the request
+    is considered downloaded once all non-eviction tracks finish.
+    """
+
+    __slots__ = ("eviction_track_count",)
+
+    def __init__(
+        self,
+        request: Request,
+        tracks: list[list[TransferLeg]],
+        eviction_track_count: int = 0,
+    ):
+        super().__init__(request, tracks)
+        self.eviction_track_count = eviction_track_count
+
+    def is_download_done(self) -> bool:
+        """True when all data tracks (non-eviction) are exhausted."""
+        first_data_idx = self.eviction_track_count
+        for track_idx in range(first_data_idx, len(self.tracks)):
+            if self.current_legs[track_idx] < len(self.tracks[track_idx]):
+                return False
+        return True
+
+    def download_active_duration_ms(self) -> float:
+        """Wall-clock duration of the data tracks only.
+
+        Because data tracks run in parallel, this is the maximum sum of
+        processed times across the non-eviction tracks.
+        """
+        first_data_idx = self.eviction_track_count
+        if first_data_idx >= len(self.tracks):
+            return 0.0
+        return max(
+            sum(leg.processed_time_ms for leg in track)
+            for track in self.tracks[first_data_idx:]
+        )
+
+    def download_background_active_duration_ms(self) -> float:
+        """Wall-clock duration of the background eviction tracks only."""
+        if self.eviction_track_count == 0:
+            return 0.0
+        return max(
+            sum(leg.processed_time_ms for leg in track)
+            for track in self.tracks[: self.eviction_track_count]
+        )
 
 
 class Request:
@@ -234,6 +280,7 @@ class Request:
         "clean_latency_ms",
         "clean_ttft_ms",
         "decode_download_active_ms",
+        "decode_download_background_active_ms",
         "decode_download_end_ms",
         "decode_download_start_ms",
         "decode_download_wait_ms",
@@ -256,6 +303,7 @@ class Request:
         "kv_upload_time_ms",
         "osl",
         "prefill_download_active_ms",
+        "prefill_download_background_active_ms",
         "prefill_download_end_ms",
         "prefill_download_start_ms",
         "prefill_download_wait_ms",
@@ -319,9 +367,11 @@ class Request:
 
         for name in (
             "prefill_download_active_ms",
+            "prefill_download_background_active_ms",
             "prefill_upload_active_ms",
             "prefill_upload_background_active_ms",
             "decode_download_active_ms",
+            "decode_download_background_active_ms",
             "decode_upload_active_ms",
             "decode_upload_background_active_ms",
             "prefill_time_ms",

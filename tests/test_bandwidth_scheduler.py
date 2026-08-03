@@ -296,3 +296,48 @@ class TestBandwidthScheduler:
         )
         expected_ms = 1_000_000_000 / (expected_bw / 8000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
+
+    def test_s3_and_network_are_independent(self, tiny_hardware: Hardware):
+        """S3 transfers must not reduce the inter-node NETWORK bandwidth share."""
+        s3_spec = S3Spec.from_gbps(enabled=True, up_gbps=25.0, down_gbps=25.0)
+        scheduler = BandwidthScheduler(
+            [FakeNode(0, tiny_hardware), FakeNode(1, tiny_hardware)],
+            s3_spec=s3_spec,
+        )
+
+        # A node-to-node transfer from node 0 to node 1.
+        net_req = FakeRequest()
+        net_dr = DownloadRequest(net_req, [[TransferLeg(100_000_000, 0, 1, "NETWORK")]])
+        scheduler.register(net_dr)
+
+        # An independent S3 upload from the same source node 0.
+        s3_req = FakeRequest()
+        s3_ur = UploadRequest(
+            s3_req, [[TransferLeg(1_000_000_000, 0, -1, "S3_UPLOAD")]]
+        )
+        scheduler.register(s3_ur)
+
+        # S3 latency is 50 ms, but the NETWORK leg has no latency.
+        scheduler.update_shares()
+        # The NETWORK leg must get the full inter-node up bandwidth of node 0,
+        # unthrottled by the coexisting S3 upload.
+        expected_network_bw = tiny_hardware.spec.network_inter_node_up / 8000.0
+        assert net_dr.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
+            expected_network_bw, rel=1e-3
+        )
+        expected_network_ms = 100_000_000 / expected_network_bw
+        assert scheduler.next_event_ms() == pytest.approx(
+            min(expected_network_ms, 50.0), rel=1e-3
+        )
+
+        # Advance past the NETWORK transfer and confirm S3 still has a fair
+        # share of the inet uplink.
+        scheduler.advance_time(expected_network_ms)
+        scheduler.update_shares()
+        expected_s3_bw = min(
+            s3_spec.up_bw_bytes_per_s,
+            tiny_hardware.spec.network_inet_up,
+        )
+        assert s3_ur.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
+            expected_s3_bw / 8000.0, rel=1e-3
+        )

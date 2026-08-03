@@ -649,6 +649,11 @@ def simulate_run_distributed(
         decode_upload_wait_arr[i] = req.decode_upload_wait_ms
         osl_arr[i] = req.osl
 
+        # Capture background download durations in per-request stats only;
+        # they are not on the request-critical path.
+        _ = req.prefill_download_background_active_ms
+        _ = req.decode_download_background_active_ms
+
         log(
             LOG_SIMULATION,
             f"Request {req.id} TTFT: {req.wait_inclusive_ttft_ms:.3f} ms (clean {req.clean_ttft_ms:.3f}), "
@@ -669,6 +674,7 @@ def simulate_run_distributed(
             "prefill_upload_active_ms": req.prefill_upload_active_ms,
             "prefill_upload_background_active_ms": req.prefill_upload_background_active_ms,
             "prefill_upload_wait_ms": req.prefill_upload_wait_ms,
+            "prefill_download_background_active_ms": req.prefill_download_background_active_ms,
             "decode_download_active_ms": req.decode_download_active_ms,
             "decode_download_wait_ms": req.decode_download_wait_ms,
             "decode_time_ms": req.decode_time_ms,
@@ -676,6 +682,7 @@ def simulate_run_distributed(
             "decode_upload_active_ms": req.decode_upload_active_ms,
             "decode_upload_background_active_ms": req.decode_upload_background_active_ms,
             "decode_upload_wait_ms": req.decode_upload_wait_ms,
+            "decode_download_background_active_ms": req.decode_download_background_active_ms,
             "kv_upload_time_ms": req.kv_upload_time_ms,
             "kv_download_time_ms": req.kv_download_time_ms,
             "clean_ttft_ms": req.clean_ttft_ms,

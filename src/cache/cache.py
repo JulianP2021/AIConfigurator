@@ -1314,8 +1314,10 @@ class Cache:
             )
 
         tracks: list[list[TransferLeg]] = []
+        eviction_track_count = 0
         if eviction_legs:
             tracks.append(eviction_legs)
+            eviction_track_count = 1
         for start, end, source_node_id, source_layer_name in segments:
             if source_layer_name == "RAM":
                 self.ram_download_requests += 1
@@ -1347,7 +1349,9 @@ class Cache:
                 f"segments: {segments}, "
                 f"tracks: {[[leg.bottleneck for leg in track] for track in tracks]}",
             )
-        return DownloadRequest(request, tracks)
+        return DownloadRequest(
+            request, tracks, eviction_track_count=eviction_track_count
+        )
 
     def kv_size(self, model: Model, tokens: int) -> int:
         return model.kv_size_per_token * tokens
