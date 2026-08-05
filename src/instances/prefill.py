@@ -16,7 +16,11 @@ from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 from src.utils.utils import calculate_flops, calculate_memory
 
 
+decode_id_counter: int = 0
+
+
 class PrefillInstance:
+    instance_id: int
     node_id: int
     hardware: GPUHardwareSpec
     queue: list[tuple[Request, float]]
@@ -49,6 +53,10 @@ class PrefillInstance:
         self.scheduler = None
         self.model = model
         self.max_batch_size = max_batch_size
+
+        global decode_id_counter
+        self.instance_id = decode_id_counter
+        decode_id_counter += 1
 
         # system_name, backend_version = get_meta(
         #     backend_version="",

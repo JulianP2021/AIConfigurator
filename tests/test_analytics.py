@@ -40,6 +40,7 @@ def fake_prefill_instance():
     hardware.gpu_bw = 1_000_000_000
     hardware.flops = 1_000_000_000_000
     instance = PrefillInstance.__new__(PrefillInstance)
+    instance.instance_id = 0
     instance.node_id = 0
     instance.hardware = hardware
     instance.queue = []
@@ -71,6 +72,7 @@ def fake_decode_instance():
     hardware.gpu_bw = 1_000_000_000
     hardware.flops = 1_000_000_000_000
     instance = DecodeInstance.__new__(DecodeInstance)
+    instance.instance_id = 0
     instance.node_id = 1
     instance.hardware = hardware
     instance.max_batch_size = 4
@@ -178,7 +180,7 @@ class TestDecodeTiming:
             inst.process_queue(4.0)
             assert req_a.decode_end_ms == pytest.approx(8.0)
             assert req_b.decode_end_ms == pytest.approx(8.0)
-            assert req_c.decode_start_ms is None
+            assert req_c.decode_start_ms == pytest.approx(8.0)
             assert req_c.decode_queue_start_ms == pytest.approx(4.0)
 
             # Re-form the next batch at t=8 (mimics the main simulation loop).

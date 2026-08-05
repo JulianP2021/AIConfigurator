@@ -19,11 +19,15 @@ def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> in
     return int(embedding + per_layer_flops * c["num_hidden_layers"] + output_proj)
 
 
-def calculate_flops(model: Model, batch: list[tuple[Request, float]], mode: str) -> int:
+def calculate_flops(
+    model: Model, batch: list[tuple[Request, float]], mode: str, token_offset: int = 0
+) -> int:
     total_flops = 0
     for request, _ in batch:
         tokens_to_process = request.remaining_tokens_prefill if mode == "prefill" else 1
-        total_flops += _calculate_flops(model, tokens_to_process, request.cache_length)
+        total_flops += _calculate_flops(
+            model, tokens_to_process, request.cache_length + token_offset
+        )
     return int(total_flops)
 
 
@@ -61,13 +65,13 @@ def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> i
 
 
 def calculate_memory(
-    model: Model, batch: list[tuple[Request, float]], mode: str
+    model: Model, batch: list[tuple[Request, float]], mode: str, token_offset: int = 0
 ) -> int:
     total_memory = _mem_model(model)
     for request, _ in batch:
         tokens_to_process = request.remaining_tokens_prefill if mode == "prefill" else 1
         total_memory += _calculate_memory(
-            model, tokens_to_process, request.cache_length
+            model, tokens_to_process, request.cache_length + token_offset
         )
     return total_memory
 

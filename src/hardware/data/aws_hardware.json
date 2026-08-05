@@ -694,7 +694,7 @@
       "cpu_ram": 17179869184,
       "dph_base": 0.7582
     },
-    "AWS inf2.8xlarge (INF2 x2)": {
+    "AWS inf2.8xlarge (INF2 x1)": {
       "name": "AWS inf2.8xlarge (INF2 x1)",
       "gpu_name": "INF2",
       "num_gpus": 1,

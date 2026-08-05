@@ -130,6 +130,10 @@ class Router:
                 active_prefill[node_id] = active_prefill.get(
                     node_id, 0.0
                 ) + self._prefill_compute_time_ms(req, node_id)
+                log(
+                    LOG_ROUTER,
+                    f"Routed request {req.id} with stage {req.stage} to PREFILL {instance.instance_id}",
+                )
             else:
                 instance = self._choose_decode_instance(
                     req, active_prefill, active_decode
@@ -137,6 +141,10 @@ class Router:
                 node_id = self._node_id(instance)
                 active_decode[node_id] = (
                     active_decode.get(node_id, 0.0) + req.isl + req.osl
+                )
+                log(
+                    LOG_ROUTER,
+                    f"Routed request {req.id} with stage {req.stage} to DECODE {instance.instance_id}",
                 )
             instance.add_request(req)
 

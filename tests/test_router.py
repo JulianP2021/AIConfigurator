@@ -10,10 +10,11 @@ from src.request.request import Request
 from src.router.router import Router, RouterCostConfig
 
 
-def _make_prefill_instance(node_id: int) -> PrefillInstance:
+def _make_prefill_instance(node_id: int, instance_id: int) -> PrefillInstance:
     from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
     inst = PrefillInstance.__new__(PrefillInstance)
+    inst.instance_id = instance_id
     inst.node_id = node_id
     inst.queue = []
     inst.download_queue = []
@@ -74,10 +75,11 @@ def _make_test_model() -> Model:
     return model
 
 
-def _make_decode_instance(node_id: int) -> DecodeInstance:
+def _make_decode_instance(node_id: int, instance_id: int) -> DecodeInstance:
     from src.hardware.hardware import GPUHardwareSpec, Hardware, HardwareSpec
 
     inst = DecodeInstance.__new__(DecodeInstance)
+    inst.instance_id = instance_id
     inst.node_id = node_id
     inst.queue = []
     inst.download_queue = []
@@ -205,10 +207,10 @@ class TestRouterCostFunction:
             1: [CacheLayer(1, "RAM")],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -234,10 +236,10 @@ class TestRouterCostFunction:
             1: [CacheLayer(1, "RAM")],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -251,10 +253,10 @@ class TestRouterCostFunction:
         assert chosen.node_id == 0
 
     def test_prefill_load_balances_when_no_cache(self):
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         # Put one active prefill request on node 0.
         prefill_0.queue.append((Request(isl=500, osl=10), -1))
@@ -273,9 +275,9 @@ class TestRouterCostFunction:
     def test_prefill_picks_least_loaded_instance_by_tokens(self):
         # Two instances on the same node: same queue depth but very different
         # token loads. The router should pick the one with fewer tokens.
-        prefill_a = _make_prefill_instance(0)
-        prefill_b = _make_prefill_instance(0)
-        decode_0 = _make_decode_instance(0)
+        prefill_a = _make_prefill_instance(0, 0)
+        prefill_b = _make_prefill_instance(0, 1)
+        decode_0 = _make_decode_instance(0, 0)
 
         # Both queues have one request, but instance a has far more tokens.
         prefill_a.queue.append((Request(isl=5000, osl=10), -1))
@@ -302,10 +304,10 @@ class TestRouterCostFunction:
             1: [CacheLayer(1, "RAM")],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -328,10 +330,10 @@ class TestRouterCostFunction:
             1: [layer_1],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -347,10 +349,10 @@ class TestRouterCostFunction:
         assert chosen.node_id == 1
 
     def test_decode_load_balances_when_no_cache(self):
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         # Node 0 is already decoding one request.
         decode_0.queue.append((Request(isl=1000, osl=100), -1))
@@ -366,10 +368,10 @@ class TestRouterCostFunction:
         assert chosen.node_id == 1
 
     def test_route_requests_routes_by_stage(self):
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         # Patch add_request to record routed requests without hitting instance logic.
         prefill_calls: list[tuple[int, Request]] = []
@@ -415,10 +417,10 @@ class TestRouterTieBreaking:
         """When two prefill nodes have identical cost, the chosen node is a
         deterministic function of the supplied seed.
         """
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         def sequence(seed: int | None) -> list[int]:
             router = _make_router(
@@ -446,10 +448,10 @@ class TestRouterTieBreaking:
         """When two decode nodes have identical cost, the chosen node is a
         deterministic function of the supplied seed.
         """
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         def sequence(seed: int | None) -> list[int]:
             router = _make_router(
@@ -478,10 +480,10 @@ class TestRouterTieBreaking:
         """
 
         def sequence(seed: int) -> list[int]:
-            prefill_0 = _make_prefill_instance(0)
-            prefill_1 = _make_prefill_instance(1)
-            decode_0 = _make_decode_instance(0)
-            decode_1 = _make_decode_instance(1)
+            prefill_0 = _make_prefill_instance(0, 0)
+            prefill_1 = _make_prefill_instance(1, 0)
+            decode_0 = _make_decode_instance(0, 0)
+            decode_1 = _make_decode_instance(1, 0)
 
             routed: list[int] = []
 
@@ -515,10 +517,10 @@ class TestRouterTieBreaking:
         """
 
         def sequence(seed: int) -> list[int]:
-            prefill_0 = _make_prefill_instance(0)
-            prefill_1 = _make_prefill_instance(1)
-            decode_0 = _make_decode_instance(0)
-            decode_1 = _make_decode_instance(1)
+            prefill_0 = _make_prefill_instance(0, 0)
+            prefill_1 = _make_prefill_instance(1, 0)
+            decode_0 = _make_decode_instance(0, 0)
+            decode_1 = _make_decode_instance(1, 0)
 
             routed: list[int] = []
 
@@ -558,10 +560,10 @@ class TestBandwidthAwareRouter:
 
     def test_prefill_prefers_node_with_shorter_compute_time(self):
         """Bandwidth-aware router picks the node with the lower completion-time estimate."""
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         # Node 0 already has a large prefill queued, node 1 is idle.
         prefill_0.queue.append((Request(isl=50000, osl=10), -1))
@@ -578,9 +580,9 @@ class TestBandwidthAwareRouter:
 
     def test_prefill_prefers_colocated_decode_node(self):
         """Bandwidth-aware router rewards colocated decode to avoid cross-node KV transfer."""
-        prefill_0 = _make_prefill_instance(0)
-        decode_0 = _make_decode_instance(0)
-        prefill_1 = _make_prefill_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
         # Node 1 has no decode instance, so node 0's colocation bonus should win.
 
         router = _make_router(
@@ -604,10 +606,10 @@ class TestBandwidthAwareRouter:
             1: [CacheLayer(1, "RAM")],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -631,10 +633,10 @@ class TestBandwidthAwareRouter:
             1: [layer_1],
         }
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         # With bandwidth-aware routing, the remote-download penalty should keep
         # the request on the prefix owner (node 1) regardless of Dynamo credits.
@@ -656,10 +658,10 @@ class TestBandwidthAwareRouter:
 
     def test_tie_breaking_deterministic_with_seed(self):
         """Bandwidth-aware tie-breaking is deterministic for a fixed seed."""
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         def sequence(seed: int | None) -> list[int]:
             router = _make_router(
@@ -693,10 +695,10 @@ class TestRouterRamTieBreaking:
         cache.ram_usage_bytes[0] = cache.ram_capacity_bytes[0] // 2
         cache.ram_usage_bytes[1] = 0
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
@@ -729,10 +731,10 @@ class TestRouterRamTieBreaking:
         cache.ram_usage_bytes[0] = cache.ram_capacity_bytes[0] // 4
         cache.ram_usage_bytes[1] = cache.ram_capacity_bytes[1] // 4
 
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         def sequence(seed: int | None) -> list[int]:
             router = _make_router(
@@ -756,10 +758,10 @@ class TestRouterRamTieBreaking:
 
     def test_ram_tie_break_ignores_cache_when_no_cache_set(self):
         """Without a cache, the router uses the old random tie-breaker."""
-        prefill_0 = _make_prefill_instance(0)
-        prefill_1 = _make_prefill_instance(1)
-        decode_0 = _make_decode_instance(0)
-        decode_1 = _make_decode_instance(1)
+        prefill_0 = _make_prefill_instance(0, 0)
+        prefill_1 = _make_prefill_instance(1, 0)
+        decode_0 = _make_decode_instance(0, 0)
+        decode_1 = _make_decode_instance(1, 0)
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
