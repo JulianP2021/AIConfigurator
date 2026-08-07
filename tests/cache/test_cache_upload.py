@@ -75,9 +75,9 @@ class TestCacheUpload:
             cache.upload_kv(0, req)
 
     def test_upload_includes_eviction_track(self, small_cache: Cache):
-        req = Request(1024, 8, 0, 1)
+        req = Request(512, 8, 0, 1)
         req.id = 23
-        req.prefilled_tokens = 1024
+        req.prefilled_tokens = 512
         req.decoded_tokens = 0
 
         # Force eviction by inserting another item first. The eviction legs are

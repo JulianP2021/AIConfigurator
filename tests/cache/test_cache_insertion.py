@@ -142,3 +142,33 @@ class TestCacheInsertion:
         assert len(ssd_items) == 1
         assert ram_items[0].token_start == 0
         assert ram_items[0].token_end == 512
+
+    def test_insert_item_larger_than_ram_fails(
+        self, fake_model: Model, small_hardware: Hardware
+    ):
+        """Inserting an item larger than total RAM capacity raises RuntimeError.
+
+        The cache validates at construction that RAM can hold a minimal 512-token
+        item, but a user could still try to insert an item larger than the total
+        RAM capacity. In that case all existing items are evicted, then the loop
+        fails to find a victim and raises.
+        """
+        cache = Cache(
+            layers={},
+            node_hardware={0: small_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+        )
+        # RAM capacity is ~240KB (0.8 * 300KB). Create an item > RAM capacity.
+        # Each token is 100 bytes, so 3000 tokens = 300KB > 240KB.
+        large_item = CacheItem((1, 0), 0, 3000)
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Item size \(300000 bytes\) exceeds node 0 RAM capacity \(240000 bytes\) even after full eviction",
+        ):
+            cache.insert_cache_item(large_item, 0)
+
+        # The large item should NOT be in RAM (insertion failed)
+        assert (1, 0) not in cache._ram_layer(0).content

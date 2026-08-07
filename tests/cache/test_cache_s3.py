@@ -149,7 +149,8 @@ class TestCacheS3:
             ssd_usage_fraction=0.8,
             s3_spec=s3_enabled,
         )
-        cache.insert_cache_item(CacheItem((1, 0), 0, 8192), 0)
+        # s3_tiny_hardware RAM = 65000 * 0.8 = 52000 bytes (fits one 512-token item = 51200 bytes)
+        cache.insert_cache_item(CacheItem((1, 0), 0, 512), 0)
         cache.insert_cache_item(CacheItem((2, 0), 0, 512), 0)
         cache.insert_cache_item(CacheItem((3, 0), 0, 512), 0)
 

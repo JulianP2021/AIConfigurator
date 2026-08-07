@@ -76,6 +76,12 @@ def _parse_args(env) -> argparse.Namespace:
         help=f"Think time between requests in ms (default: {env.think_time_ms})",
     )
     parser.add_argument(
+        "--startup-arrival-mean-ms",
+        type=float,
+        default=env.startup_arrival_mean_ms,
+        help=f"Mean startup arrival offset per user in ms (exponential distribution, default: {env.startup_arrival_mean_ms})",
+    )
+    parser.add_argument(
         "--isl",
         type=int,
         default=env.isl,
@@ -157,6 +163,7 @@ def build_schedule(args: argparse.Namespace) -> list[dict]:
         delay_max_ms=args.user_delay_max_ms,
         ttft_sla_ms=args.ttft_ms,
         tpot_sla_ms=args.tpot_ms,
+        startup_arrival_mean_ms=args.startup_arrival_mean_ms,
     )
 
     scenario = RequestScenario(
@@ -207,10 +214,10 @@ def build_schedule(args: argparse.Namespace) -> list[dict]:
 def _auto_time_unit(max_time_s: float) -> tuple[float, str]:
     """Return a divisor and label for the x-axis based on the total span."""
     if max_time_s < 120:
-        return max_time_s, "s"
+        return round(max_time_s, 1), "s"
     if max_time_s < 7200:
-        return max_time_s / 60.0, "min"
-    return max_time_s / 3600, "h"
+        return round(max_time_s / 60.0, 1), "min"
+    return round(max_time_s / 3600, 1), "h"
 
 
 def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:
@@ -267,11 +274,12 @@ def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:
     tpot = _auto_time_unit(args.tpot_ms / 1000)
     user_delay = _auto_time_unit(args.user_delay_max_ms / 1000)
     think_time = _auto_time_unit(args.think_time_ms / 1000)
+    startup_arrival = _auto_time_unit(args.startup_arrival_mean_ms / 1000)
 
     ax.set_title(
         f"Request schedule: {args.users} users, {args.sessions_per_user} sessions/user, "
         f"{args.max_session_turns} turns, seed={args.seed}, "
-        f" ttft: {ttft[0]}{ttft[1]}, tpot: {tpot[0]}{tpot[1]}, user delay: {user_delay[0]}{user_delay[1]} * {args.user_delay_fraction}, thinking time: {think_time[0]}{think_time[1]} "
+        f" ttft: {ttft[0]}{ttft[1]}, tpot: {tpot[0]}{tpot[1]}, user delay: {user_delay[0]}{user_delay[1]} * {args.user_delay_fraction}, thinking time: {think_time[0]}{think_time[1]}, startup arrival: {startup_arrival[0]}{startup_arrival[1]}"
     )
 
     # Legend for sessions, but keep it compact for many sessions.
