@@ -31,7 +31,6 @@ from src.instances.prefill import PrefillInstance
 from src.logger import LOG_ROUTER, log, should_log
 from src.model.model import Model
 from src.request.request import Request
-from src.utils.utils import calculate_flops, calculate_memory
 
 
 # Hard-coded constants used to bias the bandwidth-aware router.
@@ -169,84 +168,6 @@ class Router:
             return self.model
         return self._infer_model()
 
-    def _prefill_compute_time_ms(self, req: Request, node_id: int) -> float:
-        """Estimate prefill compute time on a node (no queuing)."""
-        spec = self._node_spec(node_id)
-        model = self._model()
-        if spec is None or model is None:
-            return 0.0
-        # Use a batch of one; the router does not know future batching.
-        batch = [(req, 0.0)]
-        flops = calculate_flops(model, batch, "prefill")
-        memory = calculate_memory(model, batch, "prefill")
-        return (
-            max(
-                float(flops) / spec.gpu_hardware.flops,
-                float(memory) / spec.gpu_hardware.gpu_bw,
-            )
-            * 1000.0
-        )
-
-    def _decode_token_compute_time_ms(
-        self, req: Request, node_id: int, batch_size: int = 1
-    ) -> float:
-        """Estimate per-token decode compute time on a node (no queuing)."""
-        spec = self._node_spec(node_id)
-        model = self._model()
-        if spec is None or model is None:
-            return 0.0
-        batch = [(req, 0.0)] * batch_size
-        flops = calculate_flops(model, batch, "decode")
-        memory = calculate_memory(model, batch, "decode")
-        return (
-            max(
-                float(flops) / spec.gpu_hardware.flops,
-                float(memory) / spec.gpu_hardware.gpu_bw,
-            )
-            * 1000.0
-        )
-
-    def _download_time_ms(self, req: Request, node_id: int) -> float:
-        """Estimate KV download time to ``node_id`` using full bandwidth.
-
-        In bandwidth-aware mode this uses the cache's own optimistic download
-        estimator, which resolves the true location of every prefix segment
-        (local RAM, local SSD, remote RAM/SSD, or S3) and sums the unshared
-        leg times.  This makes the router sensitive to actual hardware bandwidths
-        instead of the previous arbitrary 0.1 ms/byte penalty.
-        """
-        if self.cache is None:
-            return 0.0
-        return self.cache.estimated_download_time_ms(
-            (req.user_id, req.session_id), node_id, req.isl
-        )
-
-    def _prefill_remaining_time_ms(self, inst: PrefillInstance) -> float:
-        """Sum of remaining prefill compute time for requests on one instance."""
-        total = 0.0
-        for req, _ in inst.queue:
-            remaining = req.remaining_prefill_time_ms
-            if remaining < 0:
-                remaining = self._prefill_compute_time_ms(req, inst.node_id)
-            total += max(0.0, remaining)
-        for download_req, _ in inst.download_queue:
-            req = download_req.request
-            remaining = req.remaining_prefill_time_ms
-            if remaining < 0:
-                remaining = self._prefill_compute_time_ms(req, inst.node_id)
-            total += max(0.0, remaining)
-        return total
-
-    def _compute_active_prefill_time_ms(self) -> dict[int, float]:
-        """Return per-node remaining prefill compute time totals by scanning once."""
-        totals: dict[int, float] = {}
-        for inst in self.prefill_instances:
-            node_id = inst.node_id
-            totals[node_id] = totals.get(
-                node_id, 0.0
-            ) + self._prefill_remaining_time_ms(inst)
-        return totals
-
     def _compute_active_prefill_tokens(self) -> dict[int, float]:
         """Return per-node uncached prefill token totals by scanning once (for Dynamo-style cost)."""
         totals: dict[int, float] = {}
@@ -321,18 +242,22 @@ class Router:
             raise ValueError("Cannot tie-break an empty node list")
         if len(node_ids) == 1:
             return node_ids[0]
-        if self.cache is None:
-            return self._rng.choice(node_ids)
         by_fill = sorted(
             node_ids,
-            key=lambda nid: (self._has_decode_on_node(nid), self._ram_fill_factor(nid)),
+            key=lambda nid: self._ram_fill_factor(nid),
+        )
+        log(
+            LOG_ROUTER,
+            f"{by_fill}, {node_ids}, {[(self._has_decode_on_node(nid), self._ram_fill_factor(nid)) for nid in node_ids]}",
         )
         lowest_fill = self._ram_fill_factor(by_fill[0])
         # Include every node that shares the lowest fill factor.
         tied = [nid for nid in by_fill if self._ram_fill_factor(nid) == lowest_fill]
-        if len(tied) == 1:
-            return tied[0]
-        return self._rng.choice(tied)
+        tied = sorted(
+            tied,
+            key=lambda nid: self._has_decode_on_node(nid),
+        )
+        return tied[0]
 
     def _overlap_credit(self, req: Request, node_id: int) -> float:
         """Return the weighted cache-overlap credit for routing ``req`` to ``node_id``."""
@@ -475,7 +400,6 @@ class Router:
                 best_nodes = [node_id]
             elif cost == best_cost:
                 best_nodes.append(node_id)
-
         best_node_id = self._tiebreak_by_ram_fill(best_nodes)
 
         # Pick the least-loaded prefill instance on the chosen node by remaining
@@ -485,13 +409,7 @@ class Router:
         assert all(isinstance(inst, PrefillInstance) for inst in node_instances), (
             "All instances must be PrefillInstance"
         )
-        return min(
-            node_instances,
-            key=lambda inst: (
-                self._prefill_remaining_time_ms(inst),
-                len(inst.queue),
-            ),
-        )
+        return min(node_instances, key=lambda inst: len(inst.queue))
 
     def _choose_decode_instance(
         self,

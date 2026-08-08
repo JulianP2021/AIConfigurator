@@ -268,8 +268,8 @@ class TestRouterCostFunction:
         chosen = router._choose_prefill_instance(req)
         assert chosen.node_id == 1
 
-    def test_prefill_picks_least_loaded_instance_by_tokens(self):
-        # Two instances on the same node: same queue depth but very different
+    def test_prefill_picks_least_loaded_instance_by_queue_length(self):
+        # Two instances on the same node: different queue depth and very different
         # token loads. The router should pick the one with fewer tokens.
         prefill_a = _make_prefill_instance(0, 0)
         prefill_b = _make_prefill_instance(0, 1)
@@ -278,7 +278,7 @@ class TestRouterCostFunction:
         # Both queues have one request, but instance a has far more tokens.
         prefill_a.queue.append((Request(isl=5000, osl=10), -1))
         prefill_b.queue.append((Request(isl=10, osl=10), -1))
-
+        prefill_b.queue.append((Request(isl=20, osl=10), -1))
         router = _make_router(
             prefill_instances=[prefill_a, prefill_b],
             decode_instances=[decode_0],
@@ -288,7 +288,7 @@ class TestRouterCostFunction:
 
         req = Request(isl=100, osl=100)
         chosen = router._choose_prefill_instance(req)
-        assert chosen is prefill_b
+        assert chosen is prefill_a
 
     def test_decode_prefers_node_with_full_kv(self):
         cache = _make_cache()
@@ -407,155 +407,8 @@ class TestRouterCostFunction:
         assert prefill_calls[0][1] is prefill_req
         assert decode_calls[0][1] is decode_req
 
-
-class TestRouterTieBreaking:
-    def test_prefill_tie_breaking_deterministic_with_seed(self):
-        """When two prefill nodes have identical cost, the chosen node is a
-        deterministic function of the supplied seed.
-        """
-        prefill_0 = _make_prefill_instance(0, 0)
-        prefill_1 = _make_prefill_instance(1, 0)
-        decode_0 = _make_decode_instance(0, 0)
-        decode_1 = _make_decode_instance(1, 0)
-
-        def sequence(seed: int | None) -> list[int]:
-            router = _make_router(
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=None,
-                random_seed=seed,
-            )
-            active_prefill = {0: 100.0, 1: 100.0}
-            active_decode = {0: 100.0, 1: 100.0}
-            req = Request(isl=1000, osl=100)
-            return [
-                router._choose_prefill_instance(
-                    req, active_prefill, active_decode
-                ).node_id
-                for _ in range(20)
-            ]
-
-        assert sequence(42) == sequence(42)
-        assert sequence(0) == sequence(0)
-        # Different seeds should usually produce different sequences.
-        assert sequence(42) != sequence(43)
-
-    def test_decode_tie_breaking_deterministic_with_seed(self):
-        """When two decode nodes have identical cost, the chosen node is a
-        deterministic function of the supplied seed.
-        """
-        prefill_0 = _make_prefill_instance(0, 0)
-        prefill_1 = _make_prefill_instance(1, 0)
-        decode_0 = _make_decode_instance(0, 0)
-        decode_1 = _make_decode_instance(1, 0)
-
-        def sequence(seed: int | None) -> list[int]:
-            router = _make_router(
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=None,
-                random_seed=seed,
-            )
-            active_prefill = {0: 100.0, 1: 100.0}
-            active_decode = {0: 100.0, 1: 100.0}
-            req = Request(isl=1000, osl=100)
-            req.prefilled_tokens = 1000
-            return [
-                router._choose_decode_instance(
-                    req, active_prefill, active_decode
-                ).node_id
-                for _ in range(20)
-            ]
-
-        assert sequence(42) == sequence(42)
-        assert sequence(42) != sequence(43)
-
-    def test_route_requests_prefill_tie_breaking_is_seeded(self):
-        """At the public route_requests level, prefill tie-breaking follows
-        the configured seed.
-        """
-
-        def sequence(seed: int) -> list[int]:
-            prefill_0 = _make_prefill_instance(0, 0)
-            prefill_1 = _make_prefill_instance(1, 0)
-            decode_0 = _make_decode_instance(0, 0)
-            decode_1 = _make_decode_instance(1, 0)
-
-            routed: list[int] = []
-
-            def make_add(inst):
-                def _add(_req: Request):
-                    routed.append(inst.node_id)
-
-                return _add
-
-            for inst in (prefill_0, prefill_1):
-                inst.add_request = make_add(inst)  # type: ignore[method-assign]
-            for inst in (decode_0, decode_1):
-                inst.add_request = make_add(inst)  # type: ignore[method-assign]
-
-            router = Router(
-                queue=[Request(isl=1000, osl=100) for _ in range(10)],
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=None,
-                random_seed=seed,
-            )
-            router.route_requests()
-            return routed
-
-        assert sequence(42) == sequence(42)
-        assert sequence(42) != sequence(43)
-
-    def test_route_requests_decode_tie_breaking_is_seeded(self):
-        """At the public route_requests level, decode tie-breaking follows
-        the configured seed.
-        """
-
-        def sequence(seed: int) -> list[int]:
-            prefill_0 = _make_prefill_instance(0, 0)
-            prefill_1 = _make_prefill_instance(1, 0)
-            decode_0 = _make_decode_instance(0, 0)
-            decode_1 = _make_decode_instance(1, 0)
-
-            routed: list[int] = []
-
-            def make_add(inst):
-                def _add(_req: Request):
-                    routed.append(inst.node_id)
-
-                return _add
-
-            for inst in (prefill_0, prefill_1):
-                inst.add_request = make_add(inst)  # type: ignore[method-assign]
-            for inst in (decode_0, decode_1):
-                inst.add_request = make_add(inst)  # type: ignore[method-assign]
-
-            requests: list[Request] = []
-            for _ in range(10):
-                req = Request(isl=1000, osl=100)
-                req.prefilled_tokens = 1000
-                requests.append(req)
-
-            router = Router(
-                queue=requests,
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=None,
-                random_seed=seed,
-            )
-            router.route_requests()
-            return routed
-
-        assert sequence(42) == sequence(42)
-        assert sequence(42) != sequence(43)
-
-
-class TestBandwidthAwareRouter:
-    """Tests for the bandwidth-aware completion-time router."""
-
     def test_prefill_prefers_node_with_shorter_compute_time(self):
-        """Bandwidth-aware router picks the node with the lower completion-time estimate."""
+        """Router picks the node with the lower completion-time estimate."""
         prefill_0 = _make_prefill_instance(0, 0)
         prefill_1 = _make_prefill_instance(1, 0)
         decode_0 = _make_decode_instance(0, 0)
@@ -574,23 +427,28 @@ class TestBandwidthAwareRouter:
         assert chosen.node_id == 1
 
     def test_prefill_prefers_colocated_decode_node(self):
-        """Bandwidth-aware router rewards colocated decode to avoid cross-node KV transfer."""
+        """Router rewards colocated decode to avoid cross-node KV transfer."""
+        cache = _make_cache()
         prefill_0 = _make_prefill_instance(0, 0)
+        prefill_0.cache = cache
         decode_0 = _make_decode_instance(0, 0)
+        decode_0.cache = cache
         prefill_1 = _make_prefill_instance(1, 0)
+        prefill_1.cache = cache
+
         # Node 1 has no decode instance, so node 0's colocation bonus should win.
 
         router = _make_router(
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0],
-            cache=None,
+            cache=cache,
         )
         req = Request(isl=1000, osl=100)
         chosen = router._choose_prefill_instance(req)
         assert chosen.node_id == 0
 
     def test_decode_prefers_node_with_cached_prefix(self):
-        """Bandwidth-aware decode routes to the node holding the KV prefix locally."""
+        """Decode routes to the node holding the KV prefix locally."""
         cache = _make_cache()
         item_0_1000 = CacheItem((1, 0), 0, 1000)
         layer_0 = CacheLayer(0, "RAM")
@@ -614,33 +472,6 @@ class TestBandwidthAwareRouter:
         req.prefilled_tokens = 1000
         chosen = router._choose_decode_instance(req)
         assert chosen.node_id == 0
-
-    def test_tie_breaking_deterministic_with_seed(self):
-        """Bandwidth-aware tie-breaking is deterministic for a fixed seed."""
-        prefill_0 = _make_prefill_instance(0, 0)
-        prefill_1 = _make_prefill_instance(1, 0)
-        decode_0 = _make_decode_instance(0, 0)
-        decode_1 = _make_decode_instance(1, 0)
-
-        def sequence(seed: int | None) -> list[int]:
-            router = _make_router(
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=None,
-                random_seed=seed,
-            )
-            active_prefill = {0: 0.0, 1: 0.0}
-            active_decode = {0: 0.0, 1: 0.0}
-            req = Request(isl=1000, osl=100)
-            return [
-                router._choose_prefill_instance(
-                    req, active_prefill, active_decode
-                ).node_id
-                for _ in range(20)
-            ]
-
-        assert sequence(42) == sequence(42)
-        assert sequence(42) != sequence(43)
 
 
 class TestRouterRamTieBreaking:
@@ -680,39 +511,6 @@ class TestRouterRamTieBreaking:
             decode_req, active_prefill, active_decode
         )
         assert chosen_decode.node_id == 1
-
-    def test_ram_tie_break_falls_back_to_random_when_fill_equal(self):
-        """When RAM fill is also tied, the router falls back to the seeded
-        random choice.
-        """
-        cache = _make_cache()
-        cache.ram_usage_bytes[0] = cache.ram_capacity_bytes[0] // 4
-        cache.ram_usage_bytes[1] = cache.ram_capacity_bytes[1] // 4
-
-        prefill_0 = _make_prefill_instance(0, 0)
-        prefill_1 = _make_prefill_instance(1, 0)
-        decode_0 = _make_decode_instance(0, 0)
-        decode_1 = _make_decode_instance(1, 0)
-
-        def sequence(seed: int | None) -> list[int]:
-            router = _make_router(
-                prefill_instances=[prefill_0, prefill_1],
-                decode_instances=[decode_0, decode_1],
-                cache=cache,
-                random_seed=seed,
-            )
-            active_prefill = {0: 100.0, 1: 100.0}
-            active_decode = {0: 100.0, 1: 100.0}
-            req = Request(isl=1000, osl=100)
-            return [
-                router._choose_prefill_instance(
-                    req, active_prefill, active_decode
-                ).node_id
-                for _ in range(20)
-            ]
-
-        assert sequence(42) == sequence(42)
-        assert sequence(42) != sequence(43)
 
     def test_ram_tie_break_ignores_cache_when_no_cache_set(self):
         """Without a cache, the router uses the old random tie-breaker."""
