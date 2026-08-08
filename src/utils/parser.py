@@ -268,6 +268,15 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.router_s3_credit,
         help=f"Credit for S3 KV hits (default: {env.router_s3_credit})",
     )
+    parser.add_argument(
+        "--bandwidth-aware-routing",
+        action="store_true",
+        default=env.bandwidth_aware_routing,
+        help=(
+            "Use bandwidth-aware completion-time router instead of Dynamo-style "
+            f"cost model (default: {env.bandwidth_aware_routing})"
+        ),
+    )
     return parser
 
 

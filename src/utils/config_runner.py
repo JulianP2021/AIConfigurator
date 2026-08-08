@@ -90,6 +90,9 @@ def build_common_config(
         "random_seed": config.get("random_seed", env.random_seed),
         "sla": sla,
         "router_cost_config": router_cost_config,
+        "bandwidth_aware_routing": config.get(
+            "bandwidth_aware_routing", env.bandwidth_aware_routing
+        ),
     }
 
 
@@ -260,6 +263,7 @@ def run_single_config(
         random_seed=int(str(common["random_seed"]), 0)
         if common.get("random_seed") is not None
         else None,
+        bandwidth_aware_routing=common.get("bandwidth_aware_routing", False),
     )
 
 

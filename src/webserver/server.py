@@ -226,6 +226,7 @@ def _run_single_config(
     router_remote_ram_credit: float,
     router_remote_ssd_credit: float,
     router_s3_credit: float,
+    bandwidth_aware_routing: bool = False,
     user_delay_fraction: float = 0.0,
     user_delay_min_ms: float = 0.0,
     user_delay_max_ms: float = 0.0,
@@ -302,6 +303,7 @@ def _run_single_config(
                 user_delay_max_ms=user_delay_max_ms,
                 startup_arrival_mean_ms=startup_arrival_mean_ms,
                 random_seed=random_seed,
+                bandwidth_aware_routing=bandwidth_aware_routing,
             )
         except Exception as exc:
             print(f"Error during simulation for config '{label}': {exc}")
@@ -1549,6 +1551,7 @@ async def simulate(
     router_remote_ram_credit: float = Form(_env.router_remote_ram_credit),
     router_remote_ssd_credit: float = Form(_env.router_remote_ssd_credit),
     router_s3_credit: float = Form(_env.router_s3_credit),
+    bandwidth_aware_routing: bool = Form(_env.bandwidth_aware_routing),
     user_delay_fraction: float = Form(_env.user_delay_fraction),
     user_delay_min_ms: float = Form(_env.user_delay_min_ms),
     user_delay_max_ms: float = Form(_env.user_delay_max_ms),
@@ -1604,6 +1607,7 @@ async def simulate(
             "router_remote_ram_credit": router_remote_ram_credit,
             "router_remote_ssd_credit": router_remote_ssd_credit,
             "router_s3_credit": router_s3_credit,
+            "bandwidth_aware_routing": bandwidth_aware_routing,
             "user_delay_fraction": user_delay_fraction,
             "user_delay_min_ms": user_delay_min_ms,
             "user_delay_max_ms": user_delay_max_ms,

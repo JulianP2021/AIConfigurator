@@ -41,6 +41,7 @@ def build_base_config(
         "router_remote_ram_credit": args.router_remote_ram_credit,
         "router_remote_ssd_credit": args.router_remote_ssd_credit,
         "router_s3_credit": args.router_s3_credit,
+        "bandwidth_aware_routing": args.bandwidth_aware_routing,
         "s3_enabled": args.s3_enabled,
         "s3_up_bw_gbps": args.s3_up_bw_gbps,
         "s3_down_bw_gbps": args.s3_down_bw_gbps,

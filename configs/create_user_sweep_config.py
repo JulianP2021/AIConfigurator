@@ -89,7 +89,7 @@ if __name__ == "__main__":
     max_num_nodes = max(colocated_nodes_values)
     prefill_node_values = [1, 2, 4, 8, 12, 14]
     decode_node_values = [1, 2, 4, 8]
-    batch_size_values = [64, 128]
+    batch_size_values = [64]
 
     mixed_gpu_donor_pool = sorted({name for name, _ in sorted_possible_machines})
 

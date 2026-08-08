@@ -79,6 +79,9 @@ class EnvConfig:
     router_remote_ssd_credit: float = 0.3
     router_s3_credit: float = 0.1
 
+    # Router mode: True = bandwidth-aware completion-time router, False = Dynamo-style cost model
+    bandwidth_aware_routing: bool = False
+
     log_mask: int = 0
     debug: bool = False
 
@@ -124,6 +127,7 @@ _DEFAULTS = {
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
     "ROUTER_REMOTE_SSD_CREDIT": "0.3",
     "ROUTER_S3_CREDIT": "0.1",
+    "BANDWIDTH_AWARE_ROUTING": "false",
     "LOG_MASK": "15",
     "DEBUG": "false",
     "MACHINE_HARDWARE": "AWS p5en.48xlarge (H200 x8)",
@@ -264,6 +268,7 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         router_remote_ram_credit=float(merged["ROUTER_REMOTE_RAM_CREDIT"]),
         router_remote_ssd_credit=float(merged["ROUTER_REMOTE_SSD_CREDIT"]),
         router_s3_credit=float(merged["ROUTER_S3_CREDIT"]),
+        bandwidth_aware_routing=_parse_bool(merged["BANDWIDTH_AWARE_ROUTING"]),
         log_mask=int(merged["LOG_MASK"], 0),
         debug=_parse_bool(merged["DEBUG"]),
         machine_hardware=str(merged["MACHINE_HARDWARE"]),
