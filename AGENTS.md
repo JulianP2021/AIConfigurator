@@ -39,8 +39,29 @@ Other key modules:
 No build step is required. Use the local `.venv` for every Python command.
 
 ```bash
-# CLI
+# CLI - basic usage (uses .env defaults)
 .venv/bin/python main.py
+
+# CLI - separate prefill/decode nodes with different hardware
+.venv/bin/python main.py \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --decode-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --num-prefill-nodes 2 \
+  --num-decode-nodes 31
+
+# CLI - colocated mode (prefill and decode on same nodes)
+.venv/bin/python main.py \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --prefill-gpus-per-node 4 \
+  --num-prefill-nodes 8
+
+# CLI - mixed GPU mode (different GPU types for prefill/decode)
+.venv/bin/python main.py \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --mixed-gpu-donor "AWS p4d.24xlarge (A100 40GB x8)" \
+  --prefill-gpus-per-node 4 \
+  --mixed-gpu-count 4 \
+  --num-prefill-nodes 8
 
 # Web server
 .venv/bin/python -m uvicorn src.webserver.server:app --reload

@@ -48,7 +48,6 @@ class TestTTFTExpansion:
             random_seed=42,
             sla_ttft_ms=30000.0,
             sla_tpot_ms=100.0,
-            bandwidth_aware_routing=False,
         )
         monkeypatch.setattr(
             "configs.execute_hardware_economics_config.load_env", lambda: fake_env

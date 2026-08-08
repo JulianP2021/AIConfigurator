@@ -79,6 +79,12 @@ def apply_logging_args(args: argparse.Namespace) -> None:
 
 def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Distributed LLM inference simulator")
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        default=None,
+        help="Path to a custom .env file to load configuration from (overrides default .env)",
+    )
     _add_logging_args(parser, env)
     parser.add_argument(
         "--model",
@@ -268,15 +274,6 @@ def _base_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.router_s3_credit,
         help=f"Credit for S3 KV hits (default: {env.router_s3_credit})",
     )
-    parser.add_argument(
-        "--bandwidth-aware-routing",
-        action="store_true",
-        default=env.bandwidth_aware_routing,
-        help=(
-            "Use bandwidth-aware completion-time router instead of Dynamo-style "
-            f"cost model (default: {env.bandwidth_aware_routing})"
-        ),
-    )
     return parser
 
 
@@ -302,22 +299,33 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=f"Number of distinct decode nodes (default: {env.num_decode_nodes})",
     )
     parser.add_argument(
-        "--colocated",
-        action="store_true",
-        default=env.colocated,
-        help=(
-            "Run colocated nodes that host both prefill and decode instances "
-            f"(default: {env.colocated})"
-        ),
-    )
-    parser.add_argument(
         "--prefill-gpus-per-node",
         type=int,
         default=env.prefill_gpus_per_node,
         help=(
             "GPUs on each node to use as prefill instances. "
-            "In --colocated mode the remaining GPUs become decode instances. "
+            "In colocated mode the remaining GPUs become decode instances. "
             f"(default: {env.prefill_gpus_per_node})"
+        ),
+    )
+    parser.add_argument(
+        "--prefill-hardware",
+        type=str,
+        default=env.prefill_hardware,
+        help=(
+            f"Prefill hardware preset key from the machine database (default: {env.prefill_hardware}). "
+            "Quote values containing spaces/hash, e.g. "
+            '"H200 x8 #692c33bd"'
+        ),
+    )
+    parser.add_argument(
+        "--decode-hardware",
+        type=str,
+        default=env.decode_hardware,
+        help=(
+            f"Decode hardware preset key from the machine database (default: {env.decode_hardware}). "
+            "Quote values containing spaces/hash, e.g. "
+            '"H200 x8 #692c33bd"'
         ),
     )
     parser.add_argument(
@@ -326,18 +334,9 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         default=env.machine_hardware,
         help=(
             f"Hardware preset key from the machine database (default: {env.machine_hardware}). "
+            "Used when --prefill-hardware/--decode-hardware are not set (for colocated mode). "
             "Quote values containing spaces/hash, e.g. "
             '"H200 x8 #692c33bd"'
-        ),
-    )
-    parser.add_argument(
-        "--mixed",
-        action="store_true",
-        default=env.mixed,
-        help=(
-            "Build a mixed-GPU colocated node: the base machine provides "
-            "prefill GPUs and the donor machine provides decode GPUs "
-            f"(default: {env.mixed})"
         ),
     )
     parser.add_argument(
@@ -345,8 +344,9 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         type=str,
         default=env.mixed_gpu_donor,
         help=(
-            "Machine name to use as the decode GPU donor in --mixed mode. "
-            "If omitted and --mixed is set, falls back to the decode hardware "
+            "Machine name to use as the decode GPU donor in mixed mode. "
+            "Used when --prefill-hardware is set but --decode-hardware is different, "
+            f"or when using --machine-hardware with mixed GPU types. "
             f"(default: {env.mixed_gpu_donor!r})"
         ),
     )
@@ -367,7 +367,7 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         help=(
             "Fraction of a GPU slot's all-in cost attributed to GPU compute. "
             "The remaining fraction is attributed to RAM, SSD, and bandwidth. "
-            "Used both for mixed-GPU swaps and for pricing custom/focused machines. "
+            "Used for mixed-GPU swaps and for pricing custom/focused machines. "
             f"(default: {env.gpu_compute_fraction})"
         ),
     )

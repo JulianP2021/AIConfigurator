@@ -43,12 +43,23 @@ The project uses a local virtual environment under `.venv`.
 # Run one scenario from the .env defaults
 .venv/bin/python main.py
 
-# Override a few parameters on the CLI
+# Override a few parameters on the CLI - separate prefill/decode mode
 .venv/bin/python main.py \
   --model Qwen/Qwen3-8B \
   --isl 1000 --osl 100 \
   --sessions-per-user 1 --users 10 \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --decode-hardware "AWS p5en.48xlarge (H200 x8)" \
   --num-prefill-nodes 1 --num-decode-nodes 1
+
+# Colocated mode (prefill and decode on same nodes)
+.venv/bin/python main.py \
+  --model Qwen/Qwen3-8B \
+  --isl 1000 --osl 100 \
+  --sessions-per-user 1 --users 10 \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --prefill-gpus-per-node 4 \
+  --num-prefill-nodes 8
 
 # Generate and run a swept config matrix
 .venv/bin/python configs/create_user_sweep_config.py --config-name config.json
@@ -104,9 +115,11 @@ Key CLI flags:
 | `--isl` / `--osl` | Fixed input / output sequence length |
 | `--users` / `--sessions-per-user` / `--max-session-turns` | User pool and session shape |
 | `--think-time-ms` | Idle time between a user's requests |
-| `--num-prefill-nodes` / `--num-decode-nodes` | Topology size |
-| `--colocated` | Share nodes between prefill and decode |
-| `--machine-hardware` | Hardware preset from the machine DB |
+| `--num-prefill-nodes` / `--num-decode-nodes` | Topology size (separate mode) |
+| `--prefill-hardware` / `--decode-hardware` | Hardware preset for prefill/decode nodes (separate mode) |
+| `--prefill-gpus-per-node` | GPUs per node for prefill (colocated/mixed mode) |
+| `--machine-hardware` | Hardware preset from the machine DB (colocated/mixed mode) |
+| `--mixed-gpu-donor` | Donor machine for decode GPUs (mixed GPU mode) |
 | `--batch-size` | Decode batch size |
 | `--ram-usage-fraction` / `--ssd-usage-fraction` | Cache capacity fractions |
 | `--s3-enabled` / `--s3-*` | Shared S3 tier settings |
@@ -114,16 +127,32 @@ Key CLI flags:
 | `--log-mask` | Component logging bitmask |
 | `--debug` | Enable all logging |
 
-Example:
+Example (separate prefill/decode mode):
 
 ```bash
 .venv/bin/python main.py \
   --model Qwen/Qwen3-8B \
   --isl 30000 --osl 2000 \
   --sessions-per-user 20 --users 40 --max-session-turns 7 \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --decode-hardware "AWS p5en.48xlarge (H200 x8)" \
   --num-prefill-nodes 2 --num-decode-nodes 31 \
   --batch-size 100 \
-  --machine-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --ram-usage-fraction 0.1 --ssd-usage-fraction 0.1 \
+  --s3-enabled --s3-up-bw-gbps 25.0 --s3-down-bw-gbps 25.0
+```
+
+Example (colocated mode):
+
+```bash
+.venv/bin/python main.py \
+  --model Qwen/Qwen3-8B \
+  --isl 30000 --osl 2000 \
+  --sessions-per-user 20 --users 40 --max-session-turns 7 \
+  --prefill-hardware "AWS p5en.48xlarge (H200 x8)" \
+  --prefill-gpus-per-node 4 \
+  --num-prefill-nodes 8 \
+  --batch-size 100 \
   --ram-usage-fraction 0.1 --ssd-usage-fraction 0.1 \
   --s3-enabled --s3-up-bw-gbps 25.0 --s3-down-bw-gbps 25.0
 ```

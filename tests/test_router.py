@@ -177,13 +177,10 @@ def _make_router(
     cache=None,
     cost_config=None,
     random_seed=None,
-    bandwidth_aware_routing=False,
 ):
     """Create a Router with a deterministic default mode for the test suite.
 
-    The existing tests are written for the Dynamo-style cost model, so this
-    helper defaults to ``bandwidth_aware_routing=False``.  New bandwidth-aware
-    tests opt in explicitly.
+    The existing tests are written for the Dynamo-style cost mode.
     """
     return Router(
         queue=[],
@@ -192,7 +189,6 @@ def _make_router(
         cache=cache,
         cost_config=cost_config,
         random_seed=random_seed,
-        bandwidth_aware_routing=bandwidth_aware_routing,
     )
 
 
@@ -572,7 +568,6 @@ class TestBandwidthAwareRouter:
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=None,
-            bandwidth_aware_routing=True,
         )
         req = Request(isl=1000, osl=100)
         chosen = router._choose_prefill_instance(req)
@@ -589,7 +584,6 @@ class TestBandwidthAwareRouter:
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0],
             cache=None,
-            bandwidth_aware_routing=True,
         )
         req = Request(isl=1000, osl=100)
         chosen = router._choose_prefill_instance(req)
@@ -615,46 +609,11 @@ class TestBandwidthAwareRouter:
             prefill_instances=[prefill_0, prefill_1],
             decode_instances=[decode_0, decode_1],
             cache=cache,
-            bandwidth_aware_routing=True,
         )
         req = Request(isl=1000, osl=100, user_id=1, session_id=0)
         req.prefilled_tokens = 1000
         chosen = router._choose_decode_instance(req)
         assert chosen.node_id == 0
-
-    def test_bandwidth_aware_ignores_dynamo_credits(self):
-        """The bandwidth-aware path does not use credit-based overlap scoring."""
-        cache = _make_cache()
-        item_0_1000 = CacheItem((1, 0), 0, 1000)
-        layer_1 = CacheLayer(1, "RAM")
-        layer_1._add_item(item_0_1000)
-        cache.layers = {
-            0: [CacheLayer(0, "RAM")],
-            1: [layer_1],
-        }
-
-        prefill_0 = _make_prefill_instance(0, 0)
-        prefill_1 = _make_prefill_instance(1, 0)
-        decode_0 = _make_decode_instance(0, 0)
-        decode_1 = _make_decode_instance(1, 0)
-
-        # With bandwidth-aware routing, the remote-download penalty should keep
-        # the request on the prefix owner (node 1) regardless of Dynamo credits.
-        router = _make_router(
-            prefill_instances=[prefill_0, prefill_1],
-            decode_instances=[decode_0, decode_1],
-            cache=cache,
-            cost_config=RouterCostConfig(device_credit=1.0, remote_ram_credit=1.0),
-            bandwidth_aware_routing=True,
-        )
-        req = Request(isl=1000, osl=100, user_id=1, session_id=0)
-        chosen_prefill = router._choose_prefill_instance(req)
-        assert chosen_prefill.node_id == 1
-
-        decode_req = Request(isl=1000, osl=100, user_id=1, session_id=0)
-        decode_req.prefilled_tokens = 1000
-        chosen_decode = router._choose_decode_instance(decode_req)
-        assert chosen_decode.node_id == 1
 
     def test_tie_breaking_deterministic_with_seed(self):
         """Bandwidth-aware tie-breaking is deterministic for a fixed seed."""
@@ -668,7 +627,6 @@ class TestBandwidthAwareRouter:
                 prefill_instances=[prefill_0, prefill_1],
                 decode_instances=[decode_0, decode_1],
                 cache=None,
-                bandwidth_aware_routing=True,
                 random_seed=seed,
             )
             active_prefill = {0: 0.0, 1: 0.0}
