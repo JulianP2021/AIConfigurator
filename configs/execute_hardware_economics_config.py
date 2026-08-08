@@ -98,6 +98,8 @@ def _resolve_tpot_ms(config: dict[str, Any], env: EnvConfig) -> float:
         raise ValueError(
             f"tpot_ms must be a finite positive number for scheduled arrivals, got {value}"
         )
+
+    print(value)
     return value
 
 
@@ -302,62 +304,6 @@ def _find_max_users(
     return lo, lo_result  # type: ignore[return-value]
 
 
-def _estimate_max_users(
-    run_spec: dict[str, Any],
-    config: dict[str, Any],
-    env: EnvConfig,
-    s3_spec: S3Spec,
-    router_cost_config: RouterCostConfig,
-    timeout_s: float,
-) -> int:
-    """Quickly estimate the feasible user count with a short timeout.
-
-    Doubles ``users`` until the config fails or the timeout expires, then
-    returns the last successful value. This is intentionally coarse: it is
-    used only to pick router-tuning budgets, not as the final max-users result.
-    """
-
-    def _is_valid(value: SimulationResult | Exception) -> bool:
-        return isinstance(value, SimulationResult)
-
-    start_time = time.monotonic()
-
-    def _remaining() -> float:
-        return max(0.0, timeout_s - (time.monotonic() - start_time))
-
-    lo_result = _run_single_config_for_users(
-        run_spec, 1, config, env, s3_spec, router_cost_config
-    )
-    if not _is_valid(lo_result):
-        return 0
-
-    lo = 1
-    hi = 2
-    while _remaining() > 0.0:
-        hi_result = _run_single_config_for_users(
-            run_spec, hi, config, env, s3_spec, router_cost_config
-        )
-        if not _is_valid(hi_result):
-            break
-        lo = hi
-        hi *= 2
-        if hi > 1_000_000:
-            return hi
-
-    # If we have an upper bound, do a quick binary search to tighten it.
-    while hi - lo > 1 and _remaining() > 0.0:
-        mid = lo + (hi - lo) // 2
-        mid_result = _run_single_config_for_users(
-            run_spec, mid, config, env, s3_spec, router_cost_config
-        )
-        if _is_valid(mid_result):
-            lo = mid
-        else:
-            hi = mid
-
-    return lo
-
-
 # ---------------------------------------------------------------------------
 # Worker entry point for the process pool.
 # ---------------------------------------------------------------------------
@@ -540,7 +486,7 @@ def _run_sweep(
                         extra_fields={
                             "benchmark_mode": "hardware_economics",
                             "ttft_sla_ms": run_spec["ttft_ms"],
-                            "tpot_sla_ms": float("inf"),
+                            "tpot_sla_ms": run_spec["common"]["sla"]["tpot_ms"],
                             "user_delay_ms": run_spec["user_delay_ms"],
                             "user_delay_fraction": user_delay_fraction,
                             "focus": focus,
@@ -553,11 +499,9 @@ def _run_sweep(
                     results.append(row)
                 except Exception as exc:
                     failed[(id(run_spec), seed)] = exc
-                    if should_log(LOG_CONFIG_EXECUTOR):
-                        log(
-                            LOG_CONFIG_EXECUTOR,
-                            f"Config '{run_spec['cfg']['label']}' seed={seed} failed: {exc}",
-                        )
+                    print(
+                        f"Config '{run_spec['cfg']['label']}' seed={seed} failed: {exc}"
+                    )
 
     return results
 

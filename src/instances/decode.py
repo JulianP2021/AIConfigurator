@@ -243,9 +243,7 @@ class DecodeInstance:
         if self.download_queue and self.download_queue[0][0].is_download_done():
             return 0.0
         if self.remaining_batch_time_ms == 0.0 or self.remaining_batch_time_ms is None:
-            print("Build new batch")
             self._ensure_batch(True)
-            print(self.current_batch, self.queue)
         if (
             self.current_batch_decode_time_ms is None
             or self.remaining_batch_time_ms is None
