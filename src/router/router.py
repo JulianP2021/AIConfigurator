@@ -114,6 +114,8 @@ class Router:
         that the cost of each successive route reflects requests already routed
         in this batch.
         """
+        if not self.queue:
+            return
         active_prefill: dict[int, float] = self._compute_active_prefill_tokens()
         active_decode: dict[int, float] = self._compute_active_decode_tokens()
         while self.queue:
@@ -169,41 +171,43 @@ class Router:
         return self._infer_model()
 
     def _compute_active_prefill_tokens(self) -> dict[int, float]:
-        """Return per-node uncached prefill token totals by scanning once (for Dynamo-style cost)."""
+        """Return per-node uncached prefill token totals.
+
+        Uses each instance's maintained ``active_prefill_tokens`` counter so the
+        router avoids scanning queues for every routing decision.  Instances
+        built without ``__init__`` (e.g. test doubles) fall back to scanning.
+        """
         totals: dict[int, float] = {}
         for inst in self.prefill_instances:
             node_id = inst.node_id
-            total = 0.0
-            for req, _ in inst.queue:
-                total += max(0.0, req.isl - req.prefilled_tokens)
-            for download_req, _ in inst.download_queue:
-                req = download_req.request
-                total += max(0.0, req.isl - req.prefilled_tokens)
+            total = getattr(inst, "active_prefill_tokens", None)
+            if total is None:
+                total = 0.0
+                for req, _ in inst.queue:
+                    total += max(0.0, req.isl - req.prefilled_tokens)
+                for download_req, _ in inst.download_queue:
+                    req = download_req.request
+                    total += max(0.0, req.isl - req.prefilled_tokens)
             totals[node_id] = totals.get(node_id, 0.0) + total
         return totals
 
     def _compute_active_decode_tokens(self) -> dict[int, float]:
-        """Return per-node remaining decode token totals by scanning once.
+        """Return per-node queued decode token totals.
 
-        The full sequence length (ISL + remaining OSL) is counted so that decode
-        routing is aware of both the input context and the output tokens yet to
-        be generated.
+        Uses each instance's maintained ``active_decode_tokens`` counter so the
+        router avoids scanning queues for every routing decision.  Instances
+        built without ``__init__`` (e.g. test doubles) fall back to scanning.
         """
         totals: dict[int, float] = {}
         for inst in self.decode_instances:
             node_id = inst.node_id
-            total = 0.0
-            for req, _ in inst.queue:
-                total += req.isl + req.osl - req.decoded_tokens
-            for download_req, _ in inst.download_queue:
-                total += (
-                    download_req.request.isl
-                    + download_req.request.osl
-                    - download_req.request.decoded_tokens
-                )
-            if inst.current_batch:
-                for req in inst.current_batch:
-                    total += req.isl + req.osl - req.decoded_tokens
+            total = getattr(inst, "active_decode_tokens", None)
+            if total is None:
+                total = 0.0
+                for req, _ in inst.queue:
+                    total += req.isl + req.osl
+                for download_req, _ in inst.download_queue:
+                    total += download_req.request.isl + download_req.request.osl
             totals[node_id] = totals.get(node_id, 0.0) + total
         return totals
 

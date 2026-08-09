@@ -464,11 +464,9 @@ def _run_sweep(
                         failed[(id(run_spec), seed)] = RuntimeError(
                             "failed during max-users search"
                         )
-                        if should_log(LOG_CONFIG_EXECUTOR):
-                            log(
-                                LOG_CONFIG_EXECUTOR,
-                                f"Config '{run_spec['cfg']['label']}' seed={seed} failed max-users search: {result}",
-                            )
+                        print(
+                            f"Config '{run_spec['cfg']['label']}' seed={seed} failed max-users search: {result}"
+                        )
                         continue
                     row = result.to_dict()
                     focus, focus_value = _run_focus(run_spec["cfg"])

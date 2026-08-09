@@ -1,6 +1,8 @@
 import logging
 import os
 
+from functools import cache
+
 
 # Component bit masks for selective logging.
 # LOG_MASK is an integer built by OR-ing the desired components.
@@ -74,6 +76,8 @@ def set_log_mask(mask: int) -> None:
     _log_mask = mask
     # Ensure the underlying logger is at DEBUG so our filter controls output.
     logger.setLevel(logging.DEBUG)
+    # Invalidate cached should_log() results (the mask changed).
+    should_log.cache_clear()
 
 
 def set_min_level(level: int) -> None:
@@ -81,6 +85,8 @@ def set_min_level(level: int) -> None:
     global _min_level
     _min_level = level
     logger.setLevel(level)
+    # Invalidate cached should_log() results (the level threshold changed).
+    should_log.cache_clear()
 
 
 def set_debug(enabled: bool) -> None:
@@ -98,10 +104,17 @@ def get_log_mask() -> int:
     return _log_mask
 
 
+@cache
 def should_log(component: int, level: int = logging.DEBUG) -> bool:
     """Return True if messages for ``component`` at ``level`` would be emitted.
 
     Use this to guard expensive log message construction in hot paths.
+
+    The result is cached on ``(component, level)`` because the component mask
+    and minimum level change rarely (only at startup or when explicitly
+    reconfigured), while this function is called millions of times in hot
+    loops.  ``set_log_mask`` / ``set_min_level`` clear the cache so a runtime
+    reconfiguration is picked up immediately.
     """
     return bool(component & _log_mask and level >= _min_level)
 

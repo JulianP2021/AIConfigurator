@@ -14,6 +14,7 @@ def _parse_sla(value: str) -> dict[str, float]:
     ``ttft_ms`` and ``tpot_ms`` must be finite positive numbers because the
     request generator builds a deterministic arrival schedule from them.
     """
+    print(value)
     value = value.strip()
     if value.lower() in {"inf", "infinity", "none", "null"}:
         raise argparse.ArgumentTypeError(

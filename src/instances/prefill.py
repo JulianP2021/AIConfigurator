@@ -35,6 +35,14 @@ class PrefillInstance:
     session: Any
     max_batch_size: int
 
+    # Maintained total of uncached prefill tokens across ``queue`` and
+    # ``download_queue`` (max(0, isl - prefilled_tokens) per request).  Updated
+    # incrementally on add/finish so the router does not have to scan the
+    # queues for every routing decision.  ``None`` means the counter has not
+    # been initialized (e.g. test doubles built via __new__), in which case the
+    # router falls back to scanning.
+    active_prefill_tokens: float | None = None
+
     def __init__(
         self,
         node_id: int,
@@ -53,6 +61,7 @@ class PrefillInstance:
         self.scheduler = None
         self.model = model
         self.max_batch_size = max_batch_size
+        self.active_prefill_tokens = 0.0
 
         global decode_id_counter
         self.instance_id = decode_id_counter
@@ -108,6 +117,10 @@ class PrefillInstance:
             if request.remaining_prefill_time_ms == -1:
                 request.remaining_prefill_time_ms = self.calculate_prefill_time(request)
             self.queue.append((request, -1))
+        if self.active_prefill_tokens is not None:
+            self.active_prefill_tokens += max(
+                0.0, float(request.isl) - float(request.prefilled_tokens)
+            )
 
     def time_to_next_completion(self) -> float:
         """Return the remaining time until the active prefill finishes.
@@ -129,6 +142,17 @@ class PrefillInstance:
         return float("inf")
 
     def process_queue(self, time_ms: float) -> list[Request]:
+        # Fast path: nothing to do for an idle instance.  Skip the per-call
+        # bookkeeping (clock read, log guards, empty drain loops) so the event
+        # loop pays almost nothing for instances with no pending work.
+        if not (
+            self.queue
+            or self.download_queue
+            or self.background_download_queue
+            or self.upload_queue
+            or self.background_upload_queue
+        ):
+            return []
         # Allow the prefill queue to grow to a multiple of the decode batch size
         # plus a small headroom; small batch sizes keep the original floor of 10.
         queue_limit = max(10, self.max_batch_size * 2)
@@ -233,6 +257,11 @@ class PrefillInstance:
             request.remaining_prefill_time_ms -= time_ms
             if request.remaining_prefill_time_ms <= 0:
                 request.remaining_prefill_time_ms = 0
+                if self.active_prefill_tokens is not None:
+                    self.active_prefill_tokens -= max(
+                        0.0,
+                        float(request.isl) - float(request.prefilled_tokens),
+                    )
                 request.prefilled_tokens += request.remaining_tokens_prefill
                 request.decoded_tokens = 1
                 request.prefill_end_ms = now

@@ -222,33 +222,12 @@ def main():
                     )
                 )
         else:
-            prefill_instances_per_node = total_gpus
-            decode_instances_per_node = total_gpus
-            for _ in range(args.num_prefill_nodes):
-                nodes.append(
-                    Node(
-                        hardware=hardware,
-                        model_name=args.model,
-                        batch_size=args.batch_size,
-                        prefill_instances=prefill_instances_per_node,
-                        decode_instances=0,
-                    )
-                )
-            for _ in range(args.num_decode_nodes):
-                nodes.append(
-                    Node(
-                        hardware=hardware,
-                        model_name=args.model,
-                        batch_size=args.batch_size,
-                        prefill_instances=0,
-                        decode_instances=decode_instances_per_node,
-                    )
-                )
-            print(
-                f"Non-colocated mode: {args.num_prefill_nodes} prefill-only node(s) "
-                f"({prefill_instances_per_node} GPU(s) each), "
-                f"{args.num_decode_nodes} decode-only node(s) "
-                f"({decode_instances_per_node} GPU(s) each)."
+            raise ValueError(
+                "Mode could not be inferred.\n"
+                "Infer mode from flags:\n"
+                " - separate: --prefill-hardware and --decode-hardware both set → separate prefill/decode nodes\n"
+                " - mixed: --mixed-gpu-donor set with --prefill-hardware → colocated nodes, different GPU types\n"
+                " - colocated: --prefill-gpus-per-node >= 0 with --prefill-hardware → colocated nodes, same GPU type\n"
             )
 
     scenario = DistributedScenario(

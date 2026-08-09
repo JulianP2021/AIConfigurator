@@ -44,6 +44,13 @@ class DecodeInstance:
     batch_step: int = 16
     _kv_cache_bytes: int = 0
 
+    # Maintained total of queued decode tokens across ``queue`` and
+    # ``download_queue`` (full isl + osl per request).  Updated incrementally on
+    # add/remove so the router does not have to scan the queues for every
+    # routing decision.  ``None`` means uninitialized (e.g. test doubles built
+    # via __new__), in which case the router falls back to scanning.
+    active_decode_tokens: float | None = None
+
     def __init__(
         self, node_id: int, hardware: GPUHardwareSpec, max_batch_size: int, model: Model
     ):
@@ -62,6 +69,8 @@ class DecodeInstance:
 
         self.remaining_batch_time_ms = None
         self.current_batch_decode_time_ms = None
+
+        self.active_decode_tokens = 0.0
 
         global decode_id_counter
         self.instance_id = decode_id_counter
@@ -224,6 +233,8 @@ class DecodeInstance:
             self.queue.append((request, -1))
             self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
             self.refresh_batch = True
+        if self.active_decode_tokens is not None:
+            self.active_decode_tokens += float(request.isl) + float(request.osl)
 
     def time_to_next_completion(self) -> float:
         """Return a lower-bound time until one request in the batch finishes.
@@ -260,6 +271,23 @@ class DecodeInstance:
         assert self.scheduler is not None, (
             "Scheduler must be set before processing queue"
         )
+
+        # Fast path: nothing to do for an idle instance.  Skip the per-call
+        # bookkeeping (clock read, log guards, empty drain loops) so the event
+        # loop pays almost nothing for instances with no pending work.  When
+        # every queue is empty ``_kv_cache_bytes`` is 0, so the GPU-memory check
+        # below could never fire.
+        if (
+            not (
+                self.queue
+                or self.download_queue
+                or self.background_download_queue
+                or self.upload_queue
+                or self.background_upload_queue
+            )
+            and not self.current_batch
+        ):
+            return []
 
         now = self._global_time_ms()
         log(
@@ -394,6 +422,9 @@ class DecodeInstance:
         # Remove finished requests from the queue and the frozen batch.
         if finished_in_batch:
             finished_set = {id(r) for r in finished_in_batch}
+            if self.active_decode_tokens is not None:
+                for r in finished_in_batch:
+                    self.active_decode_tokens -= float(r.isl) + float(r.osl)
             removed_cache_bytes = 0
             new_queue: list[tuple[Request, float]] = []
             for r, t in self.queue:
