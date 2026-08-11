@@ -40,6 +40,15 @@ class Node:
         assert prefill_instances + decode_instances == hardware.spec.num_gpus, (
             "Total instances must be equal to number of GPUs"
         )
+        gpu_mem = max(
+            (prefill_gpu_hardware or hardware.spec.gpu_hardware).gpu_mem,
+            (decode_gpu_hardware or hardware.spec.gpu_hardware).gpu_mem,
+        )
+        assert hardware.spec.cpu_ram >= hardware.spec.num_gpus * gpu_mem, (
+            f"Node {hardware.name} RAM ({hardware.spec.cpu_ram} bytes) must be "
+            f"larger than num_gpus ({hardware.spec.num_gpus}) * max GPU memory "
+            f"({gpu_mem} bytes) = {hardware.spec.num_gpus * gpu_mem} bytes"
+        )
 
         self.prefill_instances = [
             PrefillInstance(
