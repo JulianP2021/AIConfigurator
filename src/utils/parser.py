@@ -14,15 +14,24 @@ def _parse_sla(value: str) -> dict[str, float]:
     ``ttft_ms`` and ``tpot_ms`` must be finite positive numbers because the
     request generator builds a deterministic arrival schedule from them.
     """
-    print(value)
     value = value.strip()
     if value.lower() in {"inf", "infinity", "none", "null"}:
         raise argparse.ArgumentTypeError(
             "SLA values must be finite positive numbers; 'inf'/'none'/'null' are not allowed"
         )
-    parsed = json.loads(value)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Invalid --sla value {value!r}: {exc.msg}. "
+            "Pass a JSON object and quote it so your shell does not "
+            "brace-expand it, e.g. "
+            '--sla \'{"ttft_ms":20000,"tpot_ms":300}\''
+        ) from exc
     if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("SLA must be a JSON object")
+        raise argparse.ArgumentTypeError(
+            'SLA must be a JSON object, e.g. --sla \'{"ttft_ms":20000,"tpot_ms":300}\''
+        )
     for key in ("ttft_ms", "tpot_ms"):
         if key not in parsed:
             raise argparse.ArgumentTypeError(f"SLA must include '{key}'")

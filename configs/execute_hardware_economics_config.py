@@ -336,6 +336,14 @@ def _run_spec_worker(
     if isinstance(common.get("router_cost_config"), RouterCostConfig):
         effective_router_config = common["router_cost_config"]
 
+    if should_log(LOG_CONFIG_EXECUTOR):
+        seed_note = f" seed={seed_override}" if seed_override is not None else ""
+        log(
+            LOG_CONFIG_EXECUTOR,
+            f"Starting job for '{run_spec['cfg']['label']}'{seed_note} "
+            f"(timeout={timeout_s}s)",
+        )
+
     max_users, result = _find_max_users(
         run_spec,
         config,
@@ -435,8 +443,12 @@ def _run_sweep(
         successful: dict[tuple[int, int], tuple[dict[str, Any], SimulationResult]] = {}
         failed: dict[tuple[int, int], Exception] = {}
         pending = dict(futures)
+        total_jobs = len(expanded_runs) * len(seeds)
+        completed = 0
+        start_time = time.monotonic()
+        last_heartbeat = start_time
 
-        end_time = time.monotonic() + timeout_s * len(expanded_runs) * len(seeds)
+        end_time = start_time + timeout_s * len(expanded_runs) * len(seeds)
         while pending:
             wait_s = max(0.0, min(end_time - time.monotonic(), 1.0))
             done, _ = concurrent.futures.wait(
@@ -444,19 +456,30 @@ def _run_sweep(
                 timeout=wait_s,
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
+            if not done and time.monotonic() - last_heartbeat >= 60.0:
+                last_heartbeat = time.monotonic()
+                print(
+                    f"[{completed}/{total_jobs} done] {len(pending)} jobs still "
+                    f"running ({time.monotonic() - start_time:.0f}s elapsed)",
+                    file=sys.stdout,
+                    flush=True,
+                )
             if not done and time.monotonic() >= end_time:
                 for future, (run_spec, seed) in pending.items():
                     future.cancel()
                     failed[(len(successful) + len(failed), seed)] = RuntimeError(
                         f"timed out after {timeout_s}s"
                     )
+                    completed += 1
                     print(
-                        f"Config '{run_spec['cfg']['label']}' seed={seed} timed out after {timeout_s}s",
+                        f"[{completed}/{total_jobs}] Config '{run_spec['cfg']['label']}' "
+                        f"seed={seed} timed out after {timeout_s}s",
                         file=sys.stderr,
                     )
                 break
             for future in done:
                 run_spec, seed = pending.pop(future)
+                completed += 1
                 try:
                     worker_meta, result = future.result()
                     max_users = int(worker_meta.get("max_users", 0))
@@ -465,7 +488,8 @@ def _run_sweep(
                             "failed during max-users search"
                         )
                         print(
-                            f"Config '{run_spec['cfg']['label']}' seed={seed} failed max-users search: {result}"
+                            f"[{completed}/{total_jobs}] Config '{run_spec['cfg']['label']}' "
+                            f"seed={seed} failed max-users search: {result}"
                         )
                         continue
                     row = result.to_dict()
@@ -495,11 +519,26 @@ def _run_sweep(
                         },
                     )
                     results.append(row)
+                    print(
+                        f"[{completed}/{total_jobs}] Config '{run_spec['cfg']['label']}' "
+                        f"seed={seed} max_users={max_users} "
+                        f"price_per_user={price_per_user:.4f}",
+                        file=sys.stdout,
+                        flush=True,
+                    )
                 except Exception as exc:
                     failed[(id(run_spec), seed)] = exc
                     print(
-                        f"Config '{run_spec['cfg']['label']}' seed={seed} failed: {exc}"
+                        f"[{completed}/{total_jobs}] Config '{run_spec['cfg']['label']}' "
+                        f"seed={seed} failed: {exc}"
                     )
+
+        print(
+            f"Sweep finished: {len(results)}/{total_jobs} jobs produced results "
+            f"({len(failed)} failed) in {time.monotonic() - start_time:.0f}s",
+            file=sys.stdout,
+            flush=True,
+        )
 
     return results
 

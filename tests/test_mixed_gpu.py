@@ -57,7 +57,7 @@ def _make_hardware(
         network_inet_down=10_000_000_000,
         network_inter_node_up=10_000_000_000,
         network_inter_node_down=10_000_000_000,
-        cpu_ram=1_000_000_000,
+        cpu_ram=25_000_000_000,
         dph_base=node_price,
         pcie_bw=1_000_000_000_000,
     )
@@ -160,7 +160,7 @@ def test_node_uses_distinct_gpu_specs():
         network_inet_down=1,
         network_inter_node_up=1,
         network_inter_node_down=1,
-        cpu_ram=1,
+        cpu_ram=250,
         dph_base=1,
         pcie_bw=1.0,
     )

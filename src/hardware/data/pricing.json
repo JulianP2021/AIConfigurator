@@ -1,7 +1,7 @@
 {
   "_pricing": {
-    "cpu_ram_usd_per_gb_hour": 0.001,
-    "ssd_usd_per_gb_hour": 0.00025,
+    "cpu_ram_usd_per_gb_hour": 0.005,
+    "ssd_usd_per_gb_hour": 0.000125,
     "inter_node_up_usd_per_gbps_hour": 0.006,
     "inter_node_down_usd_per_gbps_hour": 0.006,
     "pcie_bw_usd_per_gb_s_hour": 0.004,

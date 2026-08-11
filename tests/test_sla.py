@@ -35,7 +35,7 @@ def _tiny_hardware() -> Hardware:
         network_inet_down=10_000_000_000,
         network_inter_node_up=10_000_000_000,
         network_inter_node_down=10_000_000_000,
-        cpu_ram=1_000_000_000,
+        cpu_ram=25_000_000_000,
         dph_base=1.0,
         pcie_bw=1_000_000_000_000,
     )

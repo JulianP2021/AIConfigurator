@@ -133,7 +133,7 @@ class Router:
                 )
                 log(
                     LOG_ROUTER,
-                    f"Routed request {req.id} with stage {req.stage} to PREFILL {instance.instance_id}",
+                    f"Routed request {req.id} with stage {req.stage} to PREFILL {instance.instance_id} (node {node_id})",
                 )
             else:
                 instance = self._choose_decode_instance(
@@ -145,7 +145,7 @@ class Router:
                 )
                 log(
                     LOG_ROUTER,
-                    f"Routed request {req.id} with stage {req.stage} to DECODE {instance.instance_id}",
+                    f"Routed request {req.id} with stage {req.stage} to DECODE {instance.instance_id} (node {node_id})",
                 )
             instance.add_request(req)
 
@@ -346,7 +346,10 @@ class Router:
         overlap = self._overlap_credit(req, node_id)
         adjusted_prefill = max(0.0, req.isl - overlap)
         return (
-            cfg.active_work_scale * active_decode.get(node_id, 0.0)
+            cfg.active_work_scale
+            * cfg.active_work_scale
+            * cfg.active_work_scale
+            * active_decode.get(node_id, 0.0)
             + adjusted_prefill
             + req.osl
         )
@@ -413,7 +416,10 @@ class Router:
         assert all(isinstance(inst, PrefillInstance) for inst in node_instances), (
             "All instances must be PrefillInstance"
         )
-        return min(node_instances, key=lambda inst: len(inst.queue))
+        return min(
+            node_instances,
+            key=lambda inst: len(inst.queue) + len(inst.download_queue),
+        )
 
     def _choose_decode_instance(
         self,
@@ -460,7 +466,10 @@ class Router:
         assert all(isinstance(inst, DecodeInstance) for inst in node_instances), (
             "All instances must be DecodeInstance"
         )
-        return min(node_instances, key=lambda inst: len(inst.queue))
+        return min(
+            node_instances,
+            key=lambda inst: len(inst.queue) + len(inst.download_queue),
+        )
 
     def log(self):
         if should_log(LOG_ROUTER):

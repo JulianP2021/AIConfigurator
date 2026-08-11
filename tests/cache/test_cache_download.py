@@ -449,3 +449,62 @@ class TestCacheDownload:
         assert [bottleneck_names([track]) for track in dr.tracks] == [["SSD_LOCAL"]]
         assert cache_with_fake_model.ssd_usage_bytes[0] == 0
         assert (1, 90) not in ssd_layer.content
+
+    def test_download_full_node_ssd_prefix_ram_suffix(
+        self, fake_model: Model, tiny_hardware: Hardware
+    ):
+        """Two filler RAM items are both evicted to SSD by a full-RAM download.
+
+        One instance on one node where both RAM and SSD tiers are full.  The
+        session's prefix [0, 140000) lives on SSD and the suffix [140000, 250000)
+        lives on RAM; the rest of RAM is occupied by two smaller filler sessions.
+        A download must merge the two session items into one contiguous RAM item,
+        which evicts both filler RAM items to SSD.
+        """
+        cache = Cache(
+            layers={},
+            node_hardware={0: tiny_hardware},
+            model=fake_model,
+            ram_usage_fraction=0.8,
+            ssd_usage_fraction=0.8,
+        )
+        # RAM fits the merged 250000-token item (25MB) and is full with the
+        # suffix (11MB) plus two 70000-token fillers (7MB each).  SSD is full
+        # with the prefix.
+        cache.ram_capacity_bytes[0] = 25_000_000
+        cache.ssd_capacity_bytes[0] = 14_000_000
+
+        cache.insert_cache_item(CacheItem((1, 1), 140000, 250000), 0)
+        cache.insert_cache_item(CacheItem((99, 0), 0, 70000), 0)
+        cache.insert_cache_item(CacheItem((98, 0), 0, 70000), 0)
+
+        ssd_layer = cache._ssd_layer(0)
+        ssd_item = CacheItem((1, 1), 0, 140000)
+        ssd_layer._add_item(ssd_item)
+        ssd_layer.touch(ssd_item, 1)
+        cache.ssd_usage_bytes[0] += cache._item_size(ssd_item)
+
+        req = Request(250000, 8, user_id=1, session_id=1)
+        dr = cache.download_kv(0, req)
+
+        assert len(dr.tracks) == 3
+        assert dr.eviction_track_count == 1
+        assert len(dr.tracks[0]) == 2
+
+        # Both filler items must be evicted from RAM to SSD.
+        ram_layer = cache._ram_layer(0)
+        ssd_layer = cache._ssd_layer(0)
+        assert (99, 0) not in ram_layer.content
+        assert (98, 0) not in ram_layer.content
+        assert (99, 0) in ssd_layer.content
+        assert (98, 0) in ssd_layer.content
+        assert cache.ssd_usage_bytes[0] == 14_000_000
+        # The session itself is one contiguous RAM item.
+        session_items = cache.find_cache((1, 1), node_id=0)
+        assert len(session_items) == 1
+        assert session_items[0].token_start == 0
+        assert session_items[0].token_end == 250000
+        # The SSD prefix read must count as an SSD download; the RAM suffix as a
+        # RAM download.
+        assert cache.ssd_download_requests == 1
+        assert cache.ram_download_requests == 1
