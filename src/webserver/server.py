@@ -14,6 +14,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, redirect_stdout, suppress
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.hardware.hardware import S3Spec
 from src.hardware.scraper import (
     fetch_machine_hardware,
-    load_combined_machine_db,
+    load_aws_hardware_db,
     parse_gpu_count,
     resolve_machine_name,
 )
@@ -485,7 +486,7 @@ def _results_inner_html(
     """Inner HTML for results (used when injecting via JS)."""
     html = ""
     if error:
-        html += f'<div class="error">{error}</div>\n'
+        html += f'<div class="error">{escape(str(error))}</div>\n'
 
     if results:
         # ---- Best config metric card ----
@@ -572,7 +573,7 @@ def _results_inner_html(
                 html += (
                     f"<tr>"
                     f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
-                    f'<td colspan="17" style="text-align:center;color:var(--danger);">Simulation failed — see error banner above</td>'
+                    f'<td colspan="17" style="text-align:center;color:var(--danger);">{escape(str(row.get("error", "Simulation failed")))}</td>'
                     f"</tr>"
                 )
                 continue
@@ -612,7 +613,7 @@ def _results_inner_html(
                 html += (
                     f'<tr style="opacity:0.7;">'
                     f'<td><span class="legend-color" style="background:{row.get("color", "#58a6ff")}"></span>{row["label"]} <span style="color:var(--danger);font-size:0.75rem;">(failed)</span></td>'
-                    f'<td colspan="17" style="text-align:center;color:var(--danger);">Simulation failed</td>'
+                    f'<td colspan="17" style="text-align:center;color:var(--danger);">{escape(str(row.get("error", "Simulation failed")))}</td>'
                     f"</tr>"
                 )
                 continue
@@ -743,22 +744,41 @@ def _build_results_page_hardware_economics(
 """
 
     ttft_keys = sorted(economics_plots.keys())
-    selector = '<div class="card"><h2>Select TTFT</h2><select id="ttftSelector" onchange="showTTFT(this.value)">'
+    delay_keys: list[str] = []
+    for key in ttft_keys:
+        for dk in economics_plots.get(key, {}):
+            if dk not in delay_keys:
+                delay_keys.append(dk)
+
+    selector = '<div class="card"><h2>Select TTFT</h2><select id="ttftSelector" onchange="updatePlots()">'
     for key in ttft_keys:
         selector += f'<option value="{key}">{key}</option>'
     selector += "</select></div>\n"
 
-    body = selector
+    delay_selector = (
+        '<div class="card"><h2>Select user delay</h2>'
+        '<select id="delaySelector" onchange="updatePlots()">'
+    )
+    for dk in delay_keys:
+        delay_selector += f'<option value="{dk}">{dk}</option>'
+    delay_selector += "</select></div>\n"
+
+    body = selector + delay_selector
     body += '<div id="plotContainer">\n'
     for key in ttft_keys:
-        body += f'<div class="plot-group" id="group-{key}" data-ttft="{key}">\n'
-        plot_urls = economics_plots.get(key, [])
-        if plot_urls:
-            body += '<div class="card plot-card"><h2>Max Users and Price per User vs Focus</h2><div class="plot-grid">\n'
-            for url in plot_urls:
-                body += f'<div><img src="{url}" class="plot-img" alt="Economics Plot"></div>\n'
-            body += "</div></div>\n"
-        body += "</div>\n"
+        for dk in delay_keys:
+            group_id = f"group-{key}-{dk}"
+            body += (
+                f'<div class="plot-group" id="{group_id}" '
+                f'data-ttft="{key}" data-delay="{dk}">\n'
+            )
+            plot_urls = economics_plots.get(key, {}).get(dk, [])
+            if plot_urls:
+                body += '<div class="card plot-card"><h2>Max Users and Price per User vs Focus</h2><div class="plot-grid">\n'
+                for url in plot_urls:
+                    body += f'<div><img src="{url}" class="plot-img" alt="Economics Plot"></div>\n'
+                body += "</div></div>\n"
+            body += "</div>\n"
     body += "</div>\n"
 
     # Comparison table (always shown, hidden by default would need a toggle; keep simple).
@@ -788,18 +808,26 @@ def _build_results_page_hardware_economics(
 
     script = """
     <script>
-        function showTTFT(ttft) {
+        function updatePlots() {
+            const ttft = document.getElementById('ttftSelector').value;
+            const delay = document.getElementById('delaySelector').value;
             document.querySelectorAll('.plot-group').forEach(g => g.classList.remove('active'));
-            const group = document.getElementById('group-' + ttft);
+            const group = document.getElementById('group-' + ttft + '-' + delay);
             if (group) group.classList.add('active');
             localStorage.setItem('hardware_economics_last_ttft', ttft);
+            localStorage.setItem('hardware_economics_last_delay', delay);
         }
-        const last = localStorage.getItem('hardware_economics_last_ttft');
-        const selector = document.getElementById('ttftSelector');
-        if (last && Array.from(selector.options).some(o => o.value === last)) {
-            selector.value = last;
+        const lastT = localStorage.getItem('hardware_economics_last_ttft');
+        const lastD = localStorage.getItem('hardware_economics_last_delay');
+        const tSelector = document.getElementById('ttftSelector');
+        const dSelector = document.getElementById('delaySelector');
+        if (lastT && Array.from(tSelector.options).some(o => o.value === lastT)) {
+            tSelector.value = lastT;
         }
-        showTTFT(selector.value);
+        if (lastD && Array.from(dSelector.options).some(o => o.value === lastD)) {
+            dSelector.value = lastD;
+        }
+        updatePlots();
     </script>
 """
 
@@ -907,9 +935,341 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+_FOCUS_LABEL_PATTERNS: dict[str, re.Pattern[str]] = {
+    "RAM": re.compile(r"\br(\d+)\b"),
+    "SSD": re.compile(r"\bs(\d+)\b"),
+    "NVLink": re.compile(r"\bnvl(\d+)\b"),
+    "SSD BW": re.compile(r"\bsbw(\d+(?:\.\d+)?)"),
+    "INET BW": re.compile(r"\binet(\d+(?:\.\d+)?)/"),
+    "INTER NODE BW": re.compile(r"\bin(\d+(?:\.\d+)?)/"),
+}
+
+
+def _extract_base_focus_value(label: str, focus: str) -> float | None:
+    """Extract a focused dimension's baseline value from a machine label.
+
+    Focused machine labels embed the baseline value for every dimension, e.g.
+    "Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0"
+    (r=RAM, s=SSD, nvl=NVLink, sbw=SSD BW, in=INTER NODE BW, inet=INET BW).
+    Returns the value matching ``focus`` or None when the token is absent.
+    """
+    pattern = _FOCUS_LABEL_PATTERNS.get(focus)
+    if pattern is None:
+        return None
+    match = pattern.search(label)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def _parse_focus_value(row: dict[str, Any]) -> float | None:
+    try:
+        return float(row.get("focus_value"))
+    except TypeError, ValueError:
+        return None
+
+
+def _format_focus_value(value: Any) -> str:
+    try:
+        return f"{float(value):g}"
+    except TypeError, ValueError:
+        return str(value)
+
+
+def _build_economics_series(rows: list[dict[str, Any]], focus: str) -> dict[str, Any]:
+    """Build the per-point plot series for one (ttft, delay, focus) bucket."""
+    focus_labels: list[str] = []
+    users_means: list[float] = []
+    users_mins: list[float] = []
+    users_maxs: list[float] = []
+    price_means: list[float] = []
+    price_mins: list[float] = []
+    price_maxs: list[float] = []
+    seed_users: list[list[int]] = []
+    is_base_flags: list[bool] = []
+    has_multi_seed = False
+
+    for row in rows:
+        is_base_flags.append(bool(row.get("_is_base")))
+        seed_count = int(row.get("seed_count", 1))
+        multi_seed = seed_count > 1
+        if multi_seed:
+            has_multi_seed = True
+            users_means.append(float(row["users_mean"]))
+            users_mins.append(float(row["users_min"]))
+            users_maxs.append(float(row["users_max"]))
+            price_means.append(float(row["price_mean"]))
+            price_mins.append(float(row["price_min"]))
+            price_maxs.append(float(row["price_max"]))
+            # Raw per-seed values are reconstructed from the grouped rows.
+            seed_users.append([
+                int(r.get("users", 0)) for r in row.get("_seed_rows", [])
+            ])
+        else:
+            users_means.append(float(row.get("users", 0)))
+            users_mins.append(float(row.get("users", 0)))
+            users_maxs.append(float(row.get("users", 0)))
+            price_means.append(float(row.get("price_per_user", 0)))
+            price_mins.append(float(row.get("price_per_user", 0)))
+            price_maxs.append(float(row.get("price_per_user", 0)))
+            seed_users.append([])
+
+        focus_value = row.get("focus_value")
+        focus_labels.append(
+            _format_focus_value(focus_value) if focus_value not in (None, "") else focus
+        )
+
+    numeric_values = [_parse_focus_value(row) for row in rows]
+    if all(v is not None for v in numeric_values):
+        x: list[Any] = numeric_values
+    else:
+        x = list(range(len(rows)))
+
+    return {
+        "focus_labels": focus_labels,
+        "users_means": users_means,
+        "users_mins": users_mins,
+        "users_maxs": users_maxs,
+        "price_means": price_means,
+        "price_mins": price_mins,
+        "price_maxs": price_maxs,
+        "seed_users": seed_users,
+        "is_base_flags": is_base_flags,
+        "has_multi_seed": has_multi_seed,
+        "x": x,
+        "users_max": max(users_maxs, default=0.0),
+        "price_max": max(price_maxs, default=0.0),
+    }
+
+
+def _render_economics_plot(
+    ttft_key: str,
+    delay_ms: float,
+    focus: str,
+    s: dict[str, Any],
+    users_scale_max: float,
+    price_scale_max: float,
+) -> str:
+    """Render one economics focus plot and return its URL."""
+    x = s["x"]
+    focus_labels = s["focus_labels"]
+    users_means = s["users_means"]
+    users_mins = s["users_mins"]
+    users_maxs = s["users_maxs"]
+    price_means = s["price_means"]
+    s["price_mins"]
+    s["price_maxs"]
+    seed_users = s["seed_users"]
+    is_base_flags = s["is_base_flags"]
+    has_multi_seed = s["has_multi_seed"]
+
+    fig, ax_users = plt.subplots(figsize=(8, 5))
+    ax_price = ax_users.twinx()
+
+    users_color = "#58a6ff"
+    price_color = "#f0883e"
+
+    # Mean max users as errorbar points with [min, max] caps.
+    users_lower = [
+        max(0, mean - min_val)
+        for mean, min_val in zip(users_means, users_mins, strict=False)
+    ]
+    users_upper = [
+        max_val - mean for mean, max_val in zip(users_means, users_maxs, strict=False)
+    ]
+    ax_users.plot(
+        x,
+        users_means,
+        color=users_color,
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.6,
+        zorder=2,
+    )
+    ax_users.errorbar(
+        x,
+        users_means,
+        yerr=[users_lower, users_upper],
+        fmt="o",
+        color=users_color,
+        ecolor=users_color,
+        elinewidth=2,
+        capsize=5,
+        capthick=1.5,
+        markersize=10,
+        markeredgecolor="white",
+        markeredgewidth=0.5,
+        label="Max users (mean)",
+        zorder=4,
+    )
+
+    # Mean price per user as a simple diamond point (no error bars).
+    ax_price.plot(
+        x,
+        price_means,
+        color=price_color,
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.6,
+        zorder=2,
+    )
+    ax_price.scatter(
+        x,
+        price_means,
+        s=120,
+        color=price_color,
+        marker="D",
+        edgecolors="white",
+        linewidths=0.5,
+        label="Price / user / h (mean)",
+        zorder=5,
+    )
+
+    # Numeric labels for mean values.
+    for i, (u_mean, p_mean) in enumerate(zip(users_means, price_means, strict=False)):
+        ax_users.annotate(
+            f"{u_mean:.1f}",
+            (x[i], u_mean),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+            fontsize=8,
+            color=users_color,
+            fontweight="bold",
+            zorder=6,
+        )
+        ax_price.annotate(
+            f"${p_mean:.2f}",
+            (x[i], p_mean),
+            textcoords="offset points",
+            xytext=(0, 10),
+            ha="center",
+            fontsize=8,
+            color=price_color,
+            zorder=6,
+        )
+
+    ax_users.set_xlabel("Focus value")
+    ax_users.set_ylabel("Max users (mean)", color=users_color)
+    ax_price.set_ylabel("Price per user ($ / h)", color=price_color)
+    ax_users.set_xticks(x)
+    ax_users.set_xticklabels(focus_labels, rotation=45, ha="right")
+    ax_users.tick_params(axis="y", labelcolor=users_color)
+    ax_price.tick_params(axis="y", labelcolor=price_color)
+    ax_users.set_ylim(0, users_scale_max)
+    ax_price.set_ylim(0, price_scale_max)
+
+    title = f"{focus} — Max Users and Price / User ({ttft_key}, delay {delay_ms / 1000 / 60:g} min)"
+    if has_multi_seed:
+        title += " (mean ± range over seeds)"
+    ax_users.set_title(title)
+    ax_users.grid(True, alpha=0.3, axis="y")
+
+    # Individual seed dots for users.
+    seed_color = "#1f2328"
+    if has_multi_seed:
+        for i, dot_users in enumerate(seed_users):
+            for seed_idx, du in enumerate(dot_users):
+                offset = (seed_idx - len(dot_users) / 2) * 0.05
+                ax_users.scatter(
+                    x[i] + offset,
+                    du,
+                    s=25,
+                    color=seed_color,
+                    edgecolors="none",
+                    alpha=0.6,
+                    zorder=3,
+                )
+
+    # Highlight the base machine with a distinct star marker.
+    base_color = "#8b5cf6"
+    base_indices = [i for i, flag in enumerate(is_base_flags) if flag]
+    for j, i in enumerate(base_indices):
+        base_legend_label = "Base machine" if j == 0 else None
+        ax_users.scatter(
+            x[i],
+            users_means[i],
+            marker="*",
+            s=340,
+            color=base_color,
+            edgecolors="white",
+            linewidths=0.6,
+            zorder=8,
+            label=base_legend_label,
+        )
+        ax_price.scatter(
+            x[i],
+            price_means[i],
+            marker="*",
+            s=340,
+            color=base_color,
+            edgecolors="white",
+            linewidths=0.6,
+            zorder=9,
+        )
+
+    # Combined legend.
+    legend_handles = [
+        plt.Line2D(
+            [],
+            [],
+            color=users_color,
+            marker="o",
+            linestyle="None",
+            markersize=8,
+            markeredgecolor="white",
+            label="Max users (mean)",
+        ),
+        plt.Line2D(
+            [],
+            [],
+            color=price_color,
+            marker="D",
+            linestyle="--",
+            markersize=8,
+            markeredgecolor="white",
+            label="Price / user / h (mean)",
+        ),
+    ]
+    if base_indices:
+        legend_handles.append(
+            plt.Line2D(
+                [],
+                [],
+                color=base_color,
+                marker="*",
+                linestyle="None",
+                markersize=14,
+                label="Base machine",
+            )
+        )
+    if has_multi_seed:
+        legend_handles.append(
+            plt.Line2D(
+                [],
+                [],
+                color=seed_color,
+                marker="o",
+                linestyle="None",
+                markersize=5,
+                label="Individual seed results",
+            )
+        )
+    ax_users.legend(handles=legend_handles, loc="upper left")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150)
+    plt.close(fig)
+    buf.seek(0)
+    pid = str(uuid.uuid4())
+    _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
+    return f"/plot/{pid}"
+
+
 def _build_ttft_economics_plots_by_delay(
     results: list[dict[str, float | int | str]],
-) -> dict[str, list[str]]:
+) -> dict[str, dict[str, list[str]]]:
     """Generate dual-y-axis plots per (TTFT, user_delay, focus) bucket.
 
     For every focus value on the x-axis the plot shows:
@@ -925,8 +1285,12 @@ def _build_ttft_economics_plots_by_delay(
 
     Each focus category (e.g., NVLink, SSD, RAM) gets its own plot so the
     x-axis stays readable and comparisons within a category are meaningful.
-    Returns a mapping from TTFT key (e.g. "TTFT=10s") to a list of plot URLs,
-    one URL per (user-delay, focus) combination.
+    Both y-axes are scaled from 0 to the maximum within each (TTFT, user_delay)
+    combination, so plots only share a scale with plots of the same TTFT and
+    user delay.
+
+    Returns a nested mapping TTFT key (e.g. "TTFT=10s") -> user-delay key
+    (e.g. "60 min") -> list of plot URLs, one URL per focus category.
     """
     valid_rows = [row for row in results if not row.get("has_error")]
     scenario_groups = _aggregate_by_scenario(valid_rows)
@@ -955,6 +1319,13 @@ def _build_ttft_economics_plots_by_delay(
         representative["_seed_rows"] = seed_rows
         aggregated_rows[bucket_key] = representative
 
+    # Base machine rows (focus "default") are injected into every focus plot so
+    # the sweeps always have a baseline reference point.
+    base_by_scenario: dict[tuple[str, float], dict[str, Any]] = {}
+    for (ttft_key, delay_ms, focus, _focus_value), row in aggregated_rows.items():
+        if focus == "default":
+            base_by_scenario[(ttft_key, delay_ms)] = row
+
     # Group by (ttft_key, delay_ms, focus).
     buckets: dict[tuple[str, float, str], list[dict[str, Any]]] = defaultdict(list)
     for (ttft_key, delay_ms, focus, _focus_value), row in aggregated_rows.items():
@@ -969,206 +1340,57 @@ def _build_ttft_economics_plots_by_delay(
         label = str(row.get("label", ""))
         return (numeric, focus_value, label)
 
-    plots_by_ttft: dict[str, list[str]] = defaultdict(list)
+    plot_specs: list[tuple[tuple[str, float, str], dict[str, Any]]] = []
     for (ttft_key, delay_ms, focus), rows in sorted(buckets.items()):
         rows = sorted(rows, key=_sort_key)
 
-        focus_labels: list[str] = []
-        users_means: list[float] = []
-        users_mins: list[float] = []
-        users_maxs: list[float] = []
-        price_means: list[float] = []
-        price_mins: list[float] = []
-        price_maxs: list[float] = []
-        seed_users: list[list[int]] = []
-        has_multi_seed = False
+        if focus != "default":
+            base_row = base_by_scenario.get((ttft_key, delay_ms))
+            if base_row is not None:
+                base_value = _extract_base_focus_value(
+                    str(base_row.get("label", "")), focus
+                )
+                if base_value is not None:
+                    base_point = dict(base_row)
+                    base_point["focus_value"] = base_value
+                    base_point["_is_base"] = True
+                    rows = sorted([*rows, base_point], key=_sort_key)
 
-        for row in rows:
-            seed_count = int(row.get("seed_count", 1))
-            multi_seed = seed_count > 1
-            if multi_seed:
-                has_multi_seed = True
-                users_means.append(float(row["users_mean"]))
-                users_mins.append(float(row["users_min"]))
-                users_maxs.append(float(row["users_max"]))
-                price_means.append(float(row["price_mean"]))
-                price_mins.append(float(row["price_min"]))
-                price_maxs.append(float(row["price_max"]))
-                # Raw per-seed values are reconstructed from the grouped rows.
-                seed_users.append([
-                    int(r.get("users", 0)) for r in row.get("_seed_rows", [])
-                ])
-            else:
-                users_means.append(float(row.get("users", 0)))
-                users_mins.append(float(row.get("users", 0)))
-                users_maxs.append(float(row.get("users", 0)))
-                price_means.append(float(row.get("price_per_user", 0)))
-                price_mins.append(float(row.get("price_per_user", 0)))
-                price_maxs.append(float(row.get("price_per_user", 0)))
-                seed_users.append([])
+        plot_specs.append((
+            (ttft_key, delay_ms, focus),
+            _build_economics_series(rows, focus),
+        ))
 
-            focus_value = str(row.get("focus_value") or "")
-            focus_labels.append(focus_value if focus_value else focus)
+    # Group series by (ttft, delay) so the y-scale is local to each combination.
+    specs_by_scenario: dict[tuple[str, float], list[tuple[str, dict[str, Any]]]] = (
+        defaultdict(list)
+    )
+    for (ttft_key, delay_ms, focus), s in plot_specs:
+        specs_by_scenario[(ttft_key, delay_ms)].append((focus, s))
 
-        x = list(range(len(rows)))
-
-        fig, ax_users = plt.subplots(figsize=(8, 5))
-        ax_price = ax_users.twinx()
-
-        users_color = "#58a6ff"
-        price_color = "#f0883e"
-
-        # Mean max users as errorbar points with [min, max] caps.
-        users_lower = [
-            max(0, mean - min_val)
-            for mean, min_val in zip(users_means, users_mins, strict=False)
-        ]
-        users_upper = [
-            max_val - mean
-            for mean, max_val in zip(users_means, users_maxs, strict=False)
-        ]
-        ax_users.errorbar(
-            x,
-            users_means,
-            yerr=[users_lower, users_upper],
-            fmt="o",
-            color=users_color,
-            ecolor=users_color,
-            elinewidth=2,
-            capsize=5,
-            capthick=1.5,
-            markersize=10,
-            markeredgecolor="white",
-            markeredgewidth=0.5,
-            label="Max users (mean)",
-            zorder=4,
-        )
-
-        # Mean price per user as a simple diamond point (no error bars).
-        ax_price.plot(
-            x,
-            price_means,
-            color=price_color,
-            linestyle="--",
-            linewidth=1.2,
-            alpha=0.6,
-            zorder=2,
-        )
-        ax_price.scatter(
-            x,
-            price_means,
-            s=120,
-            color=price_color,
-            marker="D",
-            edgecolors="white",
-            linewidths=0.5,
-            label="Price / user / h (mean)",
-            zorder=5,
-        )
-
-        # Numeric labels for mean values.
-        for i, (u_mean, p_mean) in enumerate(
-            zip(users_means, price_means, strict=False)
-        ):
-            ax_users.annotate(
-                f"{u_mean:.1f}",
-                (i, u_mean),
-                textcoords="offset points",
-                xytext=(0, 10),
-                ha="center",
-                fontsize=8,
-                color=users_color,
-                fontweight="bold",
-                zorder=6,
-            )
-            ax_price.annotate(
-                f"${p_mean:.2f}",
-                (i, p_mean),
-                textcoords="offset points",
-                xytext=(0, 10),
-                ha="center",
-                fontsize=8,
-                color=price_color,
-                zorder=6,
-            )
-
-        ax_users.set_xlabel("Focus value")
-        ax_users.set_ylabel("Max users (mean)", color=users_color)
-        ax_price.set_ylabel("Price per user ($ / h)", color=price_color)
-        ax_users.set_xticks(x)
-        ax_users.set_xticklabels(focus_labels, rotation=45, ha="right")
-        ax_users.tick_params(axis="y", labelcolor=users_color)
-        ax_price.tick_params(axis="y", labelcolor=price_color)
-
-        title = f"{focus} — Max Users and Price / User ({ttft_key}, delay {delay_ms / 1000 / 60:g} min)"
-        if has_multi_seed:
-            title += " (mean ± range over seeds)"
-        ax_users.set_title(title)
-        ax_users.grid(True, alpha=0.3, axis="y")
-
-        # Individual seed dots for users.
-        seed_color = "#1f2328"
-        if has_multi_seed:
-            for i, dot_users in enumerate(seed_users):
-                for seed_idx, du in enumerate(dot_users):
-                    offset = (seed_idx - len(dot_users) / 2) * 0.05
-                    ax_users.scatter(
-                        i + offset,
-                        du,
-                        s=25,
-                        color=seed_color,
-                        edgecolors="none",
-                        alpha=0.6,
-                        zorder=3,
-                    )
-
-        # Combined legend.
-        legend_handles = [
-            plt.Line2D(
-                [],
-                [],
-                color=users_color,
-                marker="o",
-                linestyle="None",
-                markersize=8,
-                markeredgecolor="white",
-                label="Max users (mean)",
-            ),
-            plt.Line2D(
-                [],
-                [],
-                color=price_color,
-                marker="D",
-                linestyle="--",
-                markersize=8,
-                markeredgecolor="white",
-                label="Price / user / h (mean)",
-            ),
-        ]
-        if has_multi_seed:
-            legend_handles.append(
-                plt.Line2D(
-                    [],
-                    [],
-                    color=seed_color,
-                    marker="o",
-                    linestyle="None",
-                    markersize=5,
-                    label="Individual seed results",
+    plots_by_ttft: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for (ttft_key, delay_ms), group in sorted(specs_by_scenario.items()):
+        # Both axes run from 0 to the maximum within this (ttft, delay) combo.
+        users_scale_max = max((s["users_max"] for _, s in group), default=0.0)
+        price_scale_max = max((s["price_max"] for _, s in group), default=0.0)
+        users_scale_max = users_scale_max * 1.05 if users_scale_max > 0 else 1.0
+        price_scale_max = price_scale_max * 1.05 if price_scale_max > 0 else 1.0
+        delay_key = f"{delay_ms / 1000 / 60:g} min"
+        for focus, s in group:
+            plots_by_ttft[ttft_key][delay_key].append(
+                _render_economics_plot(
+                    ttft_key,
+                    delay_ms,
+                    focus,
+                    s,
+                    users_scale_max,
+                    price_scale_max,
                 )
             )
-        ax_users.legend(handles=legend_handles, loc="upper left")
 
-        plt.tight_layout()
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150)
-        plt.close(fig)
-        buf.seek(0)
-        pid = str(uuid.uuid4())
-        _plot_store[pid] = base64.b64encode(buf.read()).decode("utf-8")
-        plots_by_ttft[ttft_key].append(f"/plot/{pid}")
-
-    return dict(plots_by_ttft)
+    return {key: dict(groups) for key, groups in plots_by_ttft.items()}
 
 
 def _load_results_from_dir(results_dir: Path) -> tuple[list[dict[str, Any]], str]:
@@ -1658,6 +1880,7 @@ async def simulate(
         results_data: list[dict[str, float | int | str]] = []
         skipped_labels: list[str] = []
         error_labels: list[str] = []
+        error_details: dict[str, str] = {}
         for (label, kwargs, i), result in zip(config_kwargs, results_raw, strict=False):
             if isinstance(
                 result, AssertionError
@@ -1667,6 +1890,7 @@ async def simulate(
                 continue
             if isinstance(result, BaseException):
                 error_labels.append(label)
+                error_details[label] = str(result)
                 print(f"Config '{label}' failed: {result}")
                 continue
 
@@ -1682,7 +1906,10 @@ async def simulate(
                 f"Skipped (too many requests in prefill queue): {', '.join(skipped_labels)}"
             )
         if error_labels:
-            errors.append(f"Failed: {', '.join(error_labels)}")
+            errors.extend(
+                f"{label} failed: {error_details.get(label, 'unknown error')}"
+                for label in error_labels
+            )
         if errors:
             error_msg = "; ".join(errors)
 
@@ -1713,6 +1940,7 @@ async def simulate(
                 "s3_storage_cost_usd_per_hour": 0.0,
                 "total_cost_usd_per_hour": 0.0,
                 "has_error": True,
+                "error": error_details.get(label, "Simulation failed"),
             })
 
         plot_urls = _build_comparison_plots(results_data)
@@ -1881,8 +2109,16 @@ async def import_results(
 
 @app.get("/api/hardware")
 async def hardware_options():
-    """Return the list of available hardware preset names."""
-    return {"hardware": list(load_combined_machine_db().keys())}
+    """Return the list of available hardware preset names.
+
+    Only AWS instances from ``aws_hardware.json`` are exposed.  Legacy Vast.ai
+    instances (``#<hash>`` machine keys) and the ``Focused ...`` custom presets
+    are intentionally omitted because their ``gpu_name`` values do not resolve
+    against the current GPU database.
+    """
+    _, aws_machines = load_aws_hardware_db()
+    names = [key for key in aws_machines if not key.startswith("Focused")]
+    return {"hardware": names}
 
 
 @app.get("/plot/{plot_id}")

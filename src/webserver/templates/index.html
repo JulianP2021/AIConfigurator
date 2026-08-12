@@ -104,19 +104,32 @@
             margin-bottom: 0.75rem;
             overflow: hidden;
         }
-        .config-row {
-            display: grid;
-            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.9fr 1.2fr auto;
+        .config-mode-row {
+            display: flex;
+            align-items: center;
             gap: 0.75rem;
-            align-items: end;
+            padding: 0.75rem 0.75rem 0;
+        }
+        .config-mode-row .field-label { margin-bottom: 0; }
+        .config-mode-row select { min-width: 220px; }
+        .config-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: flex-end;
             padding: 0.75rem;
         }
         .config-row.sub {
-            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.7fr 0.7fr 1.2fr auto;
             padding-top: 0;
             border-top: 1px dashed var(--border);
         }
         .config-row .field { min-width: 0; }
+        .config-row .field.hw { flex: 1.5 1 170px; }
+        .config-row .field.num { flex: 0.6 1 84px; }
+        .config-row .field.batchlabel { flex: 1.2 1 170px; }
+        .config-row .field.hint { flex: 2 1 220px; }
+        .config-row .field.remove { flex: 0 0 auto; }
+        .config-row .field[hidden] { display: none; }
         .config-row label.field-label {
             display: block;
             font-size: 0.7rem;
@@ -125,16 +138,6 @@
             text-transform: uppercase;
             letter-spacing: 0.03em;
         }
-        .config-header {
-            display: grid;
-            grid-template-columns: 1.5fr 1.5fr 0.7fr 0.7fr 0.9fr 1.2fr auto;
-            gap: 0.75rem;
-            padding: 0 0.75rem 0.4rem;
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            font-weight: 600;
-        }
-        .config-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .toolbar {
             display: flex;
             gap: 0.5rem;
@@ -185,7 +188,9 @@
             color: var(--accent);
         }
         @media (max-width: 900px) {
-            .config-row, .config-row.sub, .config-header { grid-template-columns: 1fr 1fr 1fr auto; }
+            .config-mode-row { flex-wrap: wrap; }
+            .config-row .field.hw { flex-basis: 140px; }
+            .config-row .field.num { flex-basis: 70px; }
         }
     </style>
 </head>
@@ -230,6 +235,36 @@
                 <div>
                     <label for="max_session_turns">Max Session Turns</label>
                     <input type="number" id="max_session_turns" name="max_session_turns" value="5" min="1" form="simForm" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Request Model Params</h2>
+            <p style="font-size:0.85rem;color:var(--text-secondary);margin-top:-0.5rem;margin-bottom:1rem;">
+                Model inter-arrival behavior: what fraction of users get an extra delay, the delay range,
+                and optional startup staggering.
+            </p>
+            <div class="form-grid">
+                <div>
+                    <label for="user_delay_fraction">User Delay Fraction (0-1)</label>
+                    <input type="number" id="user_delay_fraction" name="user_delay_fraction" value="0.0" step="0.05" min="0" max="1" form="simForm" required>
+                </div>
+                <div>
+                    <label for="user_delay_min_ms">User Delay Min (ms)</label>
+                    <input type="number" id="user_delay_min_ms" name="user_delay_min_ms" value="0.0" step="1" min="0" form="simForm" required>
+                </div>
+                <div>
+                    <label for="user_delay_max_ms">User Delay Max (ms)</label>
+                    <input type="number" id="user_delay_max_ms" name="user_delay_max_ms" value="0.0" step="1" min="0" form="simForm" required>
+                </div>
+                <div>
+                    <label for="startup_arrival_mean_ms">Startup Arrival Mean (ms)</label>
+                    <input type="number" id="startup_arrival_mean_ms" name="startup_arrival_mean_ms" value="0.0" step="1" min="0" form="simForm" required>
+                </div>
+                <div>
+                    <label for="random_seed">Random Seed</label>
+                    <input type="number" id="random_seed" name="random_seed" value="" step="1" placeholder="empty = non-deterministic" form="simForm">
                 </div>
             </div>
         </div>
@@ -287,69 +322,7 @@
                 <textarea id="importArea" placeholder="Paste JSON here…"></textarea>
                 <button type="button" class="btn btn-block" onclick="importConfig()" style="margin-top:0.5rem;">Apply JSON</button>
             </div>
-            <div class="config-header">
-                <span>Prefill HW</span>
-                <span>Decode HW</span>
-                <span title="Number of prefill nodes">Pre Nodes</span>
-                <span title="Number of decode nodes">Dec Nodes</span>
-                <span title="GPUs assigned to prefill / decode per node">GPU split</span>
-                <span>Batch / Label</span>
-                <span></span>
-            </div>
-            <div id="configList">
-                <div class="config-block" data-idx="0">
-                    <div class="config-row">
-                        <div class="field">
-                            <span class="field-label">Prefill HW</span>
-                            <select name="cfg_prefill_hardware" form="simForm" onchange="onHardwareChange(this)">
-                                <!-- populated dynamically -->
-                            </select>
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Decode HW</span>
-                            <select name="cfg_decode_hardware" form="simForm" onchange="onHardwareChange(this)">
-                                <!-- populated dynamically -->
-                            </select>
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Pre Nodes</span>
-                            <input type="number" name="cfg_prefill_nodes" value="1" min="0" form="simForm" oninput="syncPrefillNodes(this)">
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Dec Nodes</span>
-                            <input type="number" name="cfg_decode_nodes" value="1" min="0" form="simForm">
-                        </div>
-                        <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
-                            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
-                                <input type="checkbox" name="cfg_config_type" value="colocated" form="simForm" onchange="syncColocatedNodes(this)">
-                                same nodes
-                            </label>
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Batch / Label</span>
-                            <div style="display:flex;gap:0.4rem;">
-                                <input type="number" name="cfg_batch" value="10" min="1" form="simForm" style="width:55px;">
-                                <input type="text" name="cfg_label" value="Config 1" placeholder="Label" form="simForm" style="flex:1;">
-                            </div>
-                        </div>
-                        <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
-                    </div>
-                    <div class="config-row sub">
-                        <div class="field">
-                            <span class="field-label">Prefill GPUs / node</span>
-                            <input type="number" name="cfg_prefill_gpus" value="" min="0" placeholder="all" form="simForm" oninput="syncDecodeGpus(this)">
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Decode GPUs / node</span>
-                            <input type="number" name="cfg_decode_gpus" value="" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
-                        </div>
-                        <div class="field" style="grid-column: span 2; color:var(--text-secondary);font-size:0.75rem;align-self:center;">
-                            <span class="colocated-hint" style="display:none;">In colocated mode, prefill and decode share each node using the GPU split above.</span>
-                        </div>
-                        <div class="field" style="grid-column: span 3;"></div>
-                    </div>
-                </div>
-            </div>
+            <div id="configList"></div>
             <button type="button" class="btn btn-outline" onclick="addConfig()">+ Add Configuration</button>
         </div>
 
@@ -379,12 +352,13 @@
                 PRESETS = ['(none)'];
             }
             // Refresh any existing rows with the now-populated options
-            ['cfg_prefill_hardware', 'cfg_decode_hardware'].forEach(name => {
-                const selects = document.querySelectorAll(`select[name="${name}"]`);
-                selects.forEach(sel => {
-                    const current = sel.value;
-                    sel.innerHTML = PRESETS.map(p => `<option value="${p}"${p === current ? ' selected' : ''}>${p}</option>`).join('');
-                });
+            document.querySelectorAll('#configList select').forEach(sel => {
+                const current = sel.value;
+                let opts = PRESETS.map(p => `<option value="${p}"${p === current ? ' selected' : ''}>${p}</option>`).join('');
+                if (current && !PRESETS.includes(current)) {
+                    opts = `<option value="${current}" selected>${current}</option>` + opts;
+                }
+                sel.innerHTML = opts;
             });
         }
 
@@ -406,6 +380,11 @@
                 users: fd.get('users') || '',
                 think_time_ms: fd.get('think_time_ms') || '',
                 max_session_turns: fd.get('max_session_turns') || '',
+                user_delay_fraction: fd.get('user_delay_fraction') || '',
+                user_delay_min_ms: fd.get('user_delay_min_ms') || '',
+                user_delay_max_ms: fd.get('user_delay_max_ms') || '',
+                startup_arrival_mean_ms: fd.get('startup_arrival_mean_ms') || '',
+                random_seed: fd.get('random_seed') || '',
                 ram_usage_fraction: fd.get('ram_usage_fraction') || '',
                 ssd_usage_fraction: fd.get('ssd_usage_fraction') || '',
                 s3_enabled: (() => {
@@ -414,8 +393,8 @@
                     if (v === 'false' || v === false) return false;
                     return v;
                 })(),
-                s3_up_bw_gbps: fd.get('s3_up_bw_gbps') || '',
-                s3_down_bw_gbps: fd.get('s3_down_bw_gbps') || '',
+                s3_up_bw_gbps: (document.getElementById('s3_up_bw_gbps')?.value ?? fd.get('s3_up_bw_gbps')) || '',
+                s3_down_bw_gbps: (document.getElementById('s3_down_bw_gbps')?.value ?? fd.get('s3_down_bw_gbps')) || '',
                 inter_node_network_up_gbps: fd.get('inter_node_network_up_gbps') || '',
                 inter_node_network_down_gbps: fd.get('inter_node_network_down_gbps') || '',
                 configs: []
@@ -426,11 +405,11 @@
                 const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
                 const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
                 const preNodes = block.querySelector('[name="cfg_prefill_nodes"]')?.value || '1';
-                const decNodes = block.querySelector('[name="cfg_decode_nodes"]')?.value || '1';
+                const decNodes = block.querySelector('[name="cfg_decode_nodes"]')?.value || preNodes;
                 const preGpus = block.querySelector('[name="cfg_prefill_gpus"]')?.value || '';
                 const decGpus = block.querySelector('[name="cfg_decode_gpus"]')?.value || '';
                 const configTypeEl = block.querySelector('[name="cfg_config_type"]');
-                const config_type = configTypeEl?.checked ? 'colocated' : 'separate';
+                const config_type = configTypeEl?.value || 'separate';
                 const batch = block.querySelector('[name="cfg_batch"]')?.value || '10';
                 const label = block.querySelector('[name="cfg_label"]')?.value || ('Config ' + (state.configs.length + 1));
                 state.configs.push({
@@ -456,6 +435,7 @@
             document.getElementById('users').value = state.users || '10';
             document.getElementById('think_time_ms').value = state.think_time_ms || '0';
             document.getElementById('max_session_turns').value = state.max_session_turns || '5';
+            setRequestModelState(state);
             document.getElementById('ram_usage_fraction').value = state.ram_usage_fraction || '0.8';
             document.getElementById('ssd_usage_fraction').value = state.ssd_usage_fraction || '0.8';
             document.getElementById('s3_enabled').checked = state.s3_enabled === true || state.s3_enabled === 'true';
@@ -469,9 +449,20 @@
             list.innerHTML = '';
             const configs = state.configs || [];
             if (configs.length === 0) {
-                configs.push({ prefill_hardware: (PRESETS[0] || ''), decode_hardware: (PRESETS[0] || ''), prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', batch_size: '10', label: 'Config 1' });
+                configs.push({ prefill_hardware: (PRESETS[0] || ''), decode_hardware: (PRESETS[0] || ''), prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', config_type: 'separate', batch_size: '10', label: 'Config 1' });
             }
             configs.forEach((cfg, idx) => addConfigRow(cfg, idx));
+        }
+
+        function normalizeConfigType(raw) {
+            const value = String(raw || 'separate').trim().toLowerCase();
+            if (['colocated', 'true', '1', 'yes', 'on'].includes(value)) return 'colocated';
+            if (value === 'mixed') return 'mixed';
+            return 'separate';
+        }
+
+        function modeLabel(mode) {
+            return { separate: 'Separate (prefill + decode nodes)', colocated: 'Colocated (shared nodes)', mixed: 'Mixed GPUs (shared nodes)' }[mode] || 'Separate (prefill + decode nodes)';
         }
 
         function addConfigRow(cfg, idx) {
@@ -481,65 +472,75 @@
             block.dataset.idx = idx;
             const color = COLORS[idx % COLORS.length];
             block.style.borderLeft = `4px solid ${color}`;
-            const preHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.prefill_hardware ? ' selected' : ''}>${p}</option>`).join('');
-            const decHwOpts = PRESETS.map(p => `<option value="${p}"${p === cfg.decode_hardware ? ' selected' : ''}>${p}</option>`).join('');
-            const is_colocated = cfg.config_type === 'colocated';
+            const preHwOpts = (() => {
+                const inList = PRESETS.includes(cfg.prefill_hardware);
+                return (cfg.prefill_hardware && !inList ? `<option value="${cfg.prefill_hardware}" selected>${cfg.prefill_hardware}</option>` : '')
+                    + PRESETS.map(p => `<option value="${p}"${p === cfg.prefill_hardware ? ' selected' : ''}>${p}</option>`).join('');
+            })();
+            const decHwOpts = (() => {
+                const inList = PRESETS.includes(cfg.decode_hardware);
+                return (cfg.decode_hardware && !inList ? `<option value="${cfg.decode_hardware}" selected>${cfg.decode_hardware}</option>` : '')
+                    + PRESETS.map(p => `<option value="${p}"${p === cfg.decode_hardware ? ' selected' : ''}>${p}</option>`).join('');
+            })();
+            const mode = normalizeConfigType(cfg.config_type);
+            const modeOpts = ['separate', 'colocated', 'mixed'].map(m =>
+                `<option value="${m}"${m === mode ? ' selected' : ''}>${modeLabel(m)}</option>`
+            ).join('');
             block.innerHTML = `
+                <div class="config-mode-row">
+                    <span class="field-label">Mode</span>
+                    <select name="cfg_config_type" form="simForm" onchange="onModeChange(this)">
+                        ${modeOpts}
+                    </select>
+                </div>
                 <div class="config-row">
-                    <div class="field">
+                    <div class="field hw prefill-hw">
                         <span class="field-label">Prefill HW</span>
-                        <select name="cfg_prefill_hardware" form="simForm">${preHwOpts}</select>
+                        <select name="cfg_prefill_hardware" form="simForm" onchange="onHardwareChange(this)">${preHwOpts}</select>
                     </div>
-                    <div class="field">
+                    <div class="field hw decode-hw">
                         <span class="field-label">Decode HW</span>
-                        <select name="cfg_decode_hardware" form="simForm">${decHwOpts}</select>
+                        <select name="cfg_decode_hardware" form="simForm" onchange="onHardwareChange(this)">${decHwOpts}</select>
                     </div>
-                    <div class="field">
+                    <div class="field num prefill-nodes">
                         <span class="field-label">Pre Nodes</span>
                         <input type="number" name="cfg_prefill_nodes" value="${cfg.prefill_nodes || 1}" min="0" form="simForm" oninput="syncPrefillNodes(this)">
                     </div>
-                        <div class="field">
-                            <span class="field-label">Dec Nodes</span>
-                            <input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || 1}" min="0" form="simForm" oninput="syncDecodeNodes(this)">
-                        </div>
-                        <div class="field" style="display:flex;align-items:flex-end;padding-bottom:0.4rem;">
-                            <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.8rem;color:var(--text-secondary);">
-                                <input type="checkbox" name="cfg_config_type" value="colocated" form="simForm" ${is_colocated ? 'checked' : ''} onchange="syncColocatedNodes(this)">
-                                same nodes
-                            </label>
-                        </div>
-                    <div class="field">
+                    <div class="field num decode-nodes">
+                        <span class="field-label">Dec Nodes</span>
+                        <input type="number" name="cfg_decode_nodes" value="${cfg.decode_nodes || cfg.prefill_nodes || 1}" min="0" form="simForm" oninput="syncDecodeNodes(this)">
+                    </div>
+                    <div class="field batchlabel">
                         <span class="field-label">Batch / Label</span>
                         <div style="display:flex;gap:0.4rem;">
                             <input type="number" name="cfg_batch" value="${cfg.batch_size || 10}" min="1" form="simForm" style="width:55px;">
                             <input type="text" name="cfg_label" value="${cfg.label || ('Config ' + (idx + 1))}" placeholder="Label" form="simForm" style="flex:1;">
                         </div>
                     </div>
-                    <div class="field"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
+                    <div class="field remove"><button type="button" class="btn btn-danger btn-sm" onclick="removeConfig(this)">Remove</button></div>
                 </div>
-                    <div class="config-row sub">
-                        <div class="field">
-                            <span class="field-label">Prefill GPUs / node</span>
-                            <input type="number" name="cfg_prefill_gpus" value="${cfg.prefill_gpus_per_node || ''}" min="0" placeholder="all" form="simForm" oninput="syncDecodeGpus(this)">
-                        </div>
-                        <div class="field">
-                            <span class="field-label">Decode GPUs / node</span>
-                            <input type="number" name="cfg_decode_gpus" value="${cfg.decode_gpus_per_node || ''}" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
-                        </div>
-                    <div class="field" style="grid-column: span 2; color:var(--text-secondary);font-size:0.75rem;align-self:center;">
-                        <span class="colocated-hint" style="display:${is_colocated ? 'inline' : 'none'};">In colocated mode, prefill and decode share each node using the GPU split above.</span>
+                <div class="config-row sub">
+                    <div class="field num">
+                        <span class="field-label">Prefill GPUs / node</span>
+                        <input type="number" name="cfg_prefill_gpus" value="${cfg.prefill_gpus_per_node || ''}" min="0" placeholder="all" form="simForm" oninput="syncDecodeGpus(this)">
                     </div>
-                    <div class="field" style="grid-column: span 3;"></div>
+                    <div class="field num">
+                        <span class="field-label">Decode GPUs / node</span>
+                        <input type="number" name="cfg_decode_gpus" value="${cfg.decode_gpus_per_node || ''}" min="0" placeholder="auto" form="simForm" readonly style="opacity:0.7;">
+                    </div>
+                    <div class="field hint" style="color:var(--text-secondary);font-size:0.75rem;align-self:center;">
+                        <span class="mode-hint"></span>
+                    </div>
                 </div>
             `;
             list.appendChild(block);
-            syncColocatedNodes(block.querySelector('[name="cfg_config_type"]'));
+            applyMode(block);
         }
 
         function addConfig() {
             const list = document.getElementById('configList');
             const idx = list.children.length;
-            addConfigRow({ prefill_hardware: PRESETS[0] || '', decode_hardware: PRESETS[0] || '', prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', batch_size: '10', label: 'Config ' + (idx + 1) }, idx);
+            addConfigRow({ prefill_hardware: PRESETS[0] || '', decode_hardware: PRESETS[0] || '', prefill_nodes: '1', decode_nodes: '1', prefill_gpus_per_node: '', decode_gpus_per_node: '', config_type: 'separate', batch_size: '10', label: 'Config ' + (idx + 1) }, idx);
         }
 
         function removeConfig(btn) {
@@ -561,13 +562,57 @@
             return match ? parseInt(match[1], 10) : 1;
         }
 
+        function getMode(block) {
+            return normalizeConfigType(block.querySelector('[name="cfg_config_type"]')?.value);
+        }
+
+        function applyMode(block) {
+            const mode = getMode(block);
+            const decHwField = block.querySelector('.decode-hw');
+            const decNodesField = block.querySelector('.decode-nodes');
+            const gpuRow = block.querySelector('.config-row.sub');
+            const hintEl = block.querySelector('.mode-hint');
+            const modeHints = {
+                separate: '',
+                colocated: 'Prefill and decode share each node using the GPU split above.',
+                mixed: 'Each node mixes prefill and decode GPUs of different types.'
+            };
+            hintEl.textContent = modeHints[mode];
+            hintEl.style.display = mode === 'separate' ? 'none' : '';
+            if (mode === 'colocated' || mode === 'mixed') {
+                const preHw = block.querySelector('[name="cfg_prefill_hardware"]').value;
+                const decHw = block.querySelector('[name="cfg_decode_hardware"]');
+                if (mode === 'colocated') decHw.value = preHw;
+                const preNodes = block.querySelector('[name="cfg_prefill_nodes"]');
+                block.querySelector('[name="cfg_decode_nodes"]').value = preNodes.value;
+                if (mode === 'colocated') {
+                    decHwField.style.display = 'none';
+                    decNodesField.style.display = 'none';
+                } else {
+                    decHwField.style.display = '';
+                    decNodesField.style.display = 'none';
+                }
+                if (gpuRow) gpuRow.style.display = '';
+            } else {
+                block.querySelector('.decode-hw').style.display = '';
+                block.querySelector('.decode-nodes').style.display = '';
+                // GPU counts are inferred from the hardware in separate mode.
+                if (gpuRow) gpuRow.style.display = 'none';
+            }
+            updateDecodeGpus(block);
+        }
+
+        function onModeChange(el) {
+            applyMode(el.closest('.config-block'));
+        }
+
         function updateDecodeGpus(block) {
             const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
             const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
-            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
+            const mode = getMode(block);
             const preGpusEl = block.querySelector('[name="cfg_prefill_gpus"]');
             const decGpusEl = block.querySelector('[name="cfg_decode_gpus"]');
-            const totalGpus = is_colocated ? parseGpusFromKey(preHw) : parseGpusFromKey(decHw);
+            const totalGpus = (mode === 'colocated' || mode === 'mixed') ? parseGpusFromKey(preHw) : parseGpusFromKey(decHw);
             const preGpus = parseInt(preGpusEl.value, 10);
             if (!isNaN(preGpus) && preGpus > 0 && preGpus < totalGpus) {
                 decGpusEl.value = totalGpus - preGpus;
@@ -580,51 +625,23 @@
 
         function onHardwareChange(el) {
             const block = el.closest('.config-block');
-            const configType = block.querySelector('[name="cfg_config_type"]');
-            if (configType.checked) {
+            const mode = getMode(block);
+            if (mode === 'colocated') {
                 const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
                 const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
                 if (preHw !== decHw) {
                     showToast('Colocated mode requires identical prefill and decode hardware.', false);
-                    configType.checked = false;
-                    syncColocatedNodes(configType);
+                    block.querySelector('[name="cfg_decode_hardware"]').value = preHw;
                 }
-            }
-            updateDecodeGpus(block);
-        }
-
-        function syncColocatedNodes(el) {
-            const block = el.closest('.config-block');
-            const checked = el.checked;
-            const preHw = block.querySelector('[name="cfg_prefill_hardware"]')?.value || '';
-            const decHw = block.querySelector('[name="cfg_decode_hardware"]')?.value || '';
-            if (checked && preHw !== decHw) {
-                showToast('Colocated mode requires identical prefill and decode hardware.', false);
-                el.checked = false;
-                return;
-            }
-            const preNodes = block.querySelector('[name="cfg_prefill_nodes"]');
-            const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
-            const hint = block.querySelector('.colocated-hint');
-            if (checked) {
-                decNodes.value = preNodes.value;
-                decNodes.readOnly = true;
-                decNodes.style.opacity = '0.5';
-                hint.style.display = 'inline';
-            } else {
-                decNodes.readOnly = false;
-                decNodes.style.opacity = '1';
-                hint.style.display = 'none';
             }
             updateDecodeGpus(block);
         }
 
         function syncDecodeNodes(el) {
             const block = el.closest('.config-block');
-            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
-            if (is_colocated) {
-                const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
-                decNodes.value = el.value;
+            const mode = getMode(block);
+            if (mode === 'colocated' || mode === 'mixed') {
+                block.querySelector('[name="cfg_prefill_nodes"]').value = el.value;
             }
         }
 
@@ -635,10 +652,9 @@
 
         function syncPrefillNodes(el) {
             const block = el.closest('.config-block');
-            const is_colocated = block.querySelector('[name="cfg_config_type"]')?.checked;
-            if (is_colocated) {
-                const decNodes = block.querySelector('[name="cfg_decode_nodes"]');
-                decNodes.value = el.value;
+            const mode = getMode(block);
+            if (mode === 'colocated' || mode === 'mixed') {
+                block.querySelector('[name="cfg_decode_nodes"]').value = el.value;
             }
         }
 
@@ -660,9 +676,8 @@
 
         function toggleImport() {
             const box = document.getElementById('importBox');
-            const resBox = document.getElementById('importResultsBox');
-            resBox.style.display = 'none';
-            box.style.display = box.style.display === 'none' ? 'block' : 'none';
+            const hidden = box.style.display === 'none' || getComputedStyle(box).display === 'none';
+            box.style.display = hidden ? 'block' : 'none';
         }
 
         function importConfig() {
@@ -713,6 +728,16 @@
             document.getElementById('s3_down_bw_gbps').style.opacity = enabled ? '1' : '0.5';
         }
 
+        function setRequestModelState(state) {
+            document.getElementById('user_delay_fraction').value = state.user_delay_fraction || '0';
+            document.getElementById('user_delay_min_ms').value = state.user_delay_min_ms || '0';
+            document.getElementById('user_delay_max_ms').value = state.user_delay_max_ms || '0';
+            document.getElementById('startup_arrival_mean_ms').value = state.startup_arrival_mean_ms || '0';
+            const seed = state.random_seed;
+            document.getElementById('random_seed').value =
+                (seed === undefined || seed === null || seed === '') ? '' : String(seed);
+        }
+
         // ---- Auto-restore on page load ----
         window.addEventListener('DOMContentLoaded', async () => {
             await loadPresets();
@@ -724,10 +749,12 @@
                     const state = JSON.parse(raw);
                     setFormState(state);
                     showToast('Restored last comparison from browser', true);
+                    return;
                 } catch (e) {
                     console.warn('Failed to restore from localStorage:', e);
                 }
             }
+            addConfig();
         });
     </script>
 </body>

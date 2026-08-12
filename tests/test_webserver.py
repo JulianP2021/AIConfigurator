@@ -122,10 +122,17 @@ class TestTTFTDelayPlots:
 
         # With TTFT grouping the outer dict has one key per TTFT value.
         assert set(plots_by_ttft.keys()) == {"TTFT=0.025s", "TTFT=0.05s"}
-        all_urls = [url for urls in plots_by_ttft.values() for url in urls]
+        all_urls = [
+            url
+            for urls in plots_by_ttft.values()
+            for group in urls.values()
+            for url in group
+        ]
         # Two TTFTs, one plot per (ttft, delay, focus) bucket => 3 total.
         assert len(all_urls) == 3
         assert all(url.startswith("/plot/") for url in all_urls)
+        # The user-delay key nests under each TTFT.
+        assert plots_by_ttft["TTFT=0.025s"]["0 min"]
 
     def test_extract_user_delay_from_label(self, webserver_module):
         assert (
@@ -149,3 +156,70 @@ class TestTTFTDelayPlots:
         assert len(rows) == 1
         assert rows[0]["label"] == "cfg"
         assert benchmark == "hardware_economics"
+
+    def test_extract_base_focus_value_from_label(self, webserver_module):
+        label = (
+            "Colocated: Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 "
+            "in100.0/100.0 inet25.0/25.0 - 5 - 4 - batch 100 | "
+            "TTFT=15000ms | delay=3.6e+06ms"
+        )
+        assert webserver_module._extract_base_focus_value(label, "RAM") == 2200.0
+        assert webserver_module._extract_base_focus_value(label, "SSD") == 4080.0
+        assert webserver_module._extract_base_focus_value(label, "NVLink") == 450.0
+        assert webserver_module._extract_base_focus_value(label, "SSD BW") == 8.0
+        assert webserver_module._extract_base_focus_value(label, "INET BW") == 25.0
+        assert (
+            webserver_module._extract_base_focus_value(label, "INTER NODE BW") == 100.0
+        )
+        assert (
+            webserver_module._extract_base_focus_value(label, "unknown focus") is None
+        )
+
+    def test_build_ttft_plots_includes_base_machine(self, webserver_module):
+        base_label = (
+            "Colocated: Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 "
+            "in100.0/100.0 inet25.0/25.0 - 5 - 4 - batch 100 | "
+            "TTFT=25ms | delay=0ms"
+        )
+        ram_label = (
+            "Colocated: Focused H200 RAM 4400GB x8 r4400 s4080 p504 nvl450 "
+            "sbw8.0 in100.0/100.0 inet25.0/25.0 - 5 - 4 - batch 100 | "
+            "TTFT=25ms | delay=0ms"
+        )
+        rows = [
+            {
+                "label": base_label,
+                "users": 53,
+                "price_per_user": 6.68,
+                "user_delay_ms": 0.0,
+                "ttft_sla_ms": 25.0,
+                "has_error": False,
+                "focus": None,
+                "focus_value": None,
+            },
+            {
+                "label": ram_label,
+                "users": 60,
+                "price_per_user": 7.5,
+                "user_delay_ms": 0.0,
+                "ttft_sla_ms": 25.0,
+                "has_error": False,
+                "focus": "RAM",
+                "focus_value": "4400",
+            },
+        ]
+
+        plots_by_ttft = webserver_module._build_ttft_economics_plots_by_delay(rows)
+
+        # One plot for the "default" bucket and one for the "RAM" bucket.
+        all_urls = [
+            url
+            for urls in plots_by_ttft.values()
+            for group in urls.values()
+            for url in group
+        ]
+        assert len(all_urls) == 2
+        assert all(url.startswith("/plot/") for url in all_urls)
+        # Both buckets share the same TTFT/user-delay combination.
+        assert list(plots_by_ttft.keys()) == ["TTFT=0.025s"]
+        assert list(plots_by_ttft["TTFT=0.025s"].keys()) == ["0 min"]
