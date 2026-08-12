@@ -33,13 +33,6 @@ from src.model.model import Model
 from src.request.request import Request
 
 
-# Hard-coded constants used to bias the bandwidth-aware router.
-# A negative locality bonus is subtracted from the prefill completion time when
-# the candidate node also hosts decode instances, encouraging the router to
-# keep prefill and decode colocated.
-_LOCALITY_BONUS_MS = 5_000.0
-
-
 class RouterCostConfig:
     """Deprecated container kept for backward compatibility.
 

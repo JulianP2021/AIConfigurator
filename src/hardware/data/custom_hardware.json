@@ -45,12 +45,12 @@
       "network_inter_node_down": 12500000000,
       "dph_base": 101.51659791240692
     },
-    "Focused H200 NVLink 504GBps x8 r2200 s4080 p504 nvl504 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 NVLink 504GBps x8 r2200 s4080 p504 nvl504 sbw8.0 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in100.0/100.0 inet25.0/25.0": {
+      "name": "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in100.0/100.0 inet25.0/25.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
-      "nvlink_bw": 504000000000,
+      "nvlink_bw": 1008000000000,
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
@@ -58,7 +58,7 @@
       "network_inet_down": 25000000000,
       "network_inter_node_up": 12500000000,
       "network_inter_node_down": 12500000000,
-      "dph_base": 71.98994700679779
+      "dph_base": 83.25522486934662
     },
     "Focused H200 NVLink 2016GBps x8 r2200 s4080 p504 nvl2016 sbw8.0 in100.0/100.0 inet25.0/25.0": {
       "name": "Focused H200 NVLink 2016GBps x8 r2200 s4080 p504 nvl2016 sbw8.0 in100.0/100.0 inet25.0/25.0",
@@ -74,6 +74,21 @@
       "network_inter_node_up": 12500000000,
       "network_inter_node_down": 12500000000,
       "dph_base": 105.78578059444428
+    },
+    "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in100.0/100.0 inet25.0/25.0": {
+      "name": "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in100.0/100.0 inet25.0/25.0",
+      "gpu_name": "H200",
+      "num_gpus": 8,
+      "pcie_bw": 504000000000,
+      "nvlink_bw": 450000000000,
+      "cpu_ram": 2200000000000,
+      "nvme_mem": 16000000000000,
+      "nvme_bw": 31250000000,
+      "network_inet_up": 25000000000,
+      "network_inet_down": 25000000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 72.1706235862732
     },
     "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in100.0/100.0 inet25.0/25.0": {
       "name": "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in100.0/100.0 inet25.0/25.0",

@@ -219,7 +219,7 @@ def _find_max_users(
     s3_spec: S3Spec,
     router_cost_config: RouterCostConfig,
     timeout_s: float,
-) -> tuple[int, SimulationResult | None]:
+) -> tuple[int, SimulationResult | Exception | None]:
     """Exponential + binary search for the largest user count that succeeds.
 
     A "success" means ``run_single_config`` returns a ``SimulationResult``
@@ -227,8 +227,9 @@ def _find_max_users(
     until the first failure (or an internal ceiling), then binary-searches
     between the last known success and the first known failure.
 
-    Returns ``(max_users, result_at_max_users)``; ``result_at_max_users`` is
-    ``None`` if even ``users=1`` fails.
+    Returns ``(max_users, result_at_max_users)``; when even ``users=1`` fails,
+    ``result_at_max_users`` is the exception that caused the failure so callers
+    can surface the reason (e.g. an SLA that is too tight for the hardware).
     """
 
     def _is_valid(value: SimulationResult | Exception) -> bool:
@@ -248,7 +249,7 @@ def _find_max_users(
                 LOG_CONFIG_EXECUTOR,
                 f"Config '{run_spec['cfg']['label']}' failed even with users=1: {lo_result}",
             )
-        return 0, None
+        return 0, lo_result  # type: ignore[return-value]
 
     # Exponential search: find an upper bound where the config fails.
     lo = 1
@@ -489,7 +490,8 @@ def _run_sweep(
                         )
                         print(
                             f"[{completed}/{total_jobs}] Config '{run_spec['cfg']['label']}' "
-                            f"seed={seed} failed max-users search: {result}"
+                            f"seed={seed} failed max-users search: SLAs too tight "
+                            f"for this hardware (even users=1 fails): {result}"
                         )
                         continue
                     row = result.to_dict()
