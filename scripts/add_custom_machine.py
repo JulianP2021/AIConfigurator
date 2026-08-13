@@ -65,7 +65,7 @@ _NVLINK_CAPABLE_GPUS = {
 }
 
 
-def _gb_to_bytes(gb: float) -> int:
+def _GB_to_bytes(gb: float) -> int:
     return int(gb * _GB)
 
 
@@ -79,6 +79,10 @@ def _derive_nvme_bw_from_capacity(ssd_mem_gb: float) -> int:
     return int((ssd_mem_gb / 4096.0) * 8.0 * _GB)
 
 
+def _Gb_to_bytes(gb: float) -> int:
+    return int(gb * _GB)
+
+
 def _build_machine_config(settings: dict[str, Any]) -> dict:
     """Convert one combination of settings into a raw machine config dict."""
     inet_up_gbps = settings.get("inet_bw_gbps", settings["inet_up_gbps"])
@@ -88,13 +92,13 @@ def _build_machine_config(settings: dict[str, Any]) -> dict:
         "name": settings["machine_name"],
         "gpu_name": settings["gpu_name"],
         "num_gpus": settings["num_gpus"],
-        "pcie_bw": _gb_to_bytes(settings["pcie_bw_gbps"]),
-        "nvlink_bw": _gb_to_bytes(settings["nvlink_bw_gbps"]),
-        "cpu_ram": _gb_to_bytes(settings["ram_mem_gb"]),
-        "nvme_mem": _gb_to_bytes(settings["ssd_mem_gb"]),
+        "pcie_bw": _GB_to_bytes(settings["pcie_bw_gbps"]),
+        "nvlink_bw": _GB_to_bytes(settings["nvlink_bw_gbps"]),
+        "cpu_ram": _GB_to_bytes(settings["ram_mem_gb"]),
+        "nvme_mem": _GB_to_bytes(settings["ssd_mem_gb"]),
         "nvme_bw": _derive_nvme_bw_from_capacity(settings["ssd_mem_gb"]),
-        "network_inet_up": _gb_to_bytes(inet_up_gbps),
-        "network_inet_down": _gb_to_bytes(inet_down_gbps),
+        "network_inet_up": _Gb_to_bytes(inet_up_gbps),
+        "network_inet_down": _Gb_to_bytes(inet_down_gbps),
         "network_inter_node_up": _resolve_inter_node_bw(
             str(settings["inter_node_up_gbps"])
         ),

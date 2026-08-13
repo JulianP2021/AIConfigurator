@@ -225,6 +225,17 @@ def simulate_run_distributed(
         else scenario.nodes[0].decode_instances[0].model
     )
 
+    max_request_length = (
+        scenario.requests.token_distribution.max_input_tokens
+        + scenario.requests.token_distribution.max_output_tokens
+    ) * scenario.requests.max_session_turns
+    assert max_request_length < model.max_context_size, (
+        f"Request scenario max length {max_request_length} tokens "
+        f"(= (max input + max output) * session turns) exceeds model context "
+        f"size {model.max_context_size} tokens for model {model.name}; "
+        "reduce the token distribution or session turns."
+    )
+
     scheduler = BandwidthScheduler(scenario.nodes, s3_spec=s3_spec)
     cache = Cache(
         layers={},

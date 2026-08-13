@@ -15,6 +15,23 @@ class Model:
         # print(f"Model {self.name} config: {self.config}")
 
     @cached_property
+    def max_context_size(self) -> int:
+        for key in (
+            "max_position_embeddings",
+            "max_sequence_length",
+            "n_positions",
+            "seq_length",
+        ):
+            value = self.config.get(key)
+            if value is not None:
+                return int(value)
+        raise ValueError(
+            f"Cannot determine context size for model {self.name} from config "
+            "(looked for max_position_embeddings, max_sequence_length, "
+            "n_positions, seq_length)"
+        )
+
+    @cached_property
     def dtype_size(self) -> float:
         dtype = self.config.get("dtype", "float32")
         if dtype == "float16" or dtype == "bfloat16":

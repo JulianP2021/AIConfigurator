@@ -214,10 +214,10 @@ def build_schedule(args: argparse.Namespace) -> list[dict]:
 def _auto_time_unit(max_time_s: float) -> tuple[float, str]:
     """Return a divisor and label for the x-axis based on the total span."""
     if max_time_s < 120:
-        return round(max_time_s, 1), "s"
+        return round(max_time_s, 3), "s"
     if max_time_s < 7200:
-        return round(max_time_s / 60.0, 1), "min"
-    return round(max_time_s / 3600, 1), "h"
+        return round(max_time_s / 60.0, 3), "min"
+    return round(max_time_s / 3600, 3), "h"
 
 
 def plot_schedule(schedule: list[dict], args: argparse.Namespace) -> None:

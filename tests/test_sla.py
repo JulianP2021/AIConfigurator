@@ -49,6 +49,7 @@ def _fake_model() -> Model:
     model.kv_size_per_token = 100
     model.name = "fake"
     model.dtype_size = 2
+    model.max_context_size = 10_000_000
     model.config = {
         "num_key_value_heads": 4,
         "num_hidden_layers": 2,
@@ -155,6 +156,19 @@ def test_tpot_sla_violation_raises():
             sla={"ttft_ms": 10000.0, "tpot_ms": 0.1},
         )
     assert "TPOT SLA violated" in str(exc_info.value)
+
+
+def test_max_length_exceeding_context_raises():
+    # (isl + osl) * max_session_turns must be < model.max_context_size
+    # (10_000_000 for the fake model). 2_000_000 * 5 == 10_000_000 is not.
+    scenario = _separate_scenario(isl=2_000_000, osl=0, sessions_per_user=1)
+    with pytest.raises(AssertionError) as exc_info:
+        simulate_run_distributed(
+            scenario,
+            should_print=False,
+            sla={"ttft_ms": 10000.0, "tpot_ms": 100.0},
+        )
+    assert "exceeds model context size" in str(exc_info.value)
 
 
 def test_prefill_latency_error_is_picklable():

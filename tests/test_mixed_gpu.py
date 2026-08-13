@@ -20,6 +20,7 @@ def _fake_model() -> Model:
     model.kv_size_per_token = 100
     model.name = "fake"
     model.dtype_size = 2
+    model.max_context_size = 10_000_000
     model.config = {
         "num_key_value_heads": 4,
         "num_hidden_layers": 2,

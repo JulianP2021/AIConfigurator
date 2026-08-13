@@ -54,10 +54,10 @@ class BandwidthScheduler:
                 f"PCIe {node.hardware.spec.pcie_bw / 1e6:.2f} MB/s, "
                 f"NVLink {node.hardware.spec.nvlink_bw / 1e6:.2f} MB/s, "
                 f"SSD {node.hardware.spec.nvme_bw / 1e6:.2f} MB/s, "
-                f"Inter-node Up {node.hardware.spec.network_inter_node_up / 1e6:.2f} Mb/s, "
-                f"Inter-node Down {node.hardware.spec.network_inter_node_down / 1e6:.2f} Mb/s, "
-                f"Internet Up {node.hardware.spec.network_inet_up / 1e6:.2f} Mb/s, "
-                f"Internet Down {node.hardware.spec.network_inet_down / 1e6:.2f} Mb/s",
+                f"Inter-node Up {node.hardware.spec.network_inter_node_up / 1e6:.2f} MB/s, "
+                f"Inter-node Down {node.hardware.spec.network_inter_node_down / 1e6:.2f} MB/s, "
+                f"Internet Up {node.hardware.spec.network_inet_up / 1e6:.2f} MB/s, "
+                f"Internet Down {node.hardware.spec.network_inet_down / 1e6:.2f} MB/s",
             )
         self.s3_spec = s3_spec or S3Spec.from_gbps(enabled=False)
         if self.s3_spec.enabled:
@@ -149,21 +149,21 @@ class BandwidthScheduler:
                         self.node_specs[leg.dest_node_id].network_inter_node_down
                         / remote_down_counts[leg.dest_node_id]
                     )
-                    leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 8000.0
+                    leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 1000.0
                 elif leg.bottleneck == "S3_UPLOAD":
                     s3_bw = self.s3_spec.up_bw_bytes_per_s / s3_upload_count
                     node_bw = (
                         self.node_specs[leg.source_node_id].network_inet_up
                         / s3_upload_node_counts[leg.source_node_id]
                     )
-                    leg.bandwidth_bytes_per_ms = min(s3_bw, node_bw) / 8000.0
+                    leg.bandwidth_bytes_per_ms = min(s3_bw, node_bw) / 1000.0
                 elif leg.bottleneck == "S3_DOWNLOAD":
                     s3_bw = self.s3_spec.down_bw_bytes_per_s / s3_download_count
                     node_bw = (
                         self.node_specs[leg.dest_node_id].network_inet_down
                         / s3_download_node_counts[leg.dest_node_id]
                     )
-                    leg.bandwidth_bytes_per_ms = min(s3_bw, node_bw) / 8000.0
+                    leg.bandwidth_bytes_per_ms = min(s3_bw, node_bw) / 1000.0
 
     def next_event_ms(self) -> float:
         """Return the earliest time at which any active transfer leg finishes.

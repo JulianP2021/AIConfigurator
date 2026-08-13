@@ -68,7 +68,7 @@ class TestBandwidthScheduler:
         scheduler.register(dr)
 
         # NETWORK has 0 ms latency. Source inter-node up = 100 Mb/s, dest inter-node down = 200 Mb/s => bottleneck is up.
-        expected_ms = 100_000_000 / (tiny_hardware.spec.network_inter_node_up / 8000.0)
+        expected_ms = 100_000_000 / (tiny_hardware.spec.network_inter_node_up / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_ssd_local_uses_nvme_bw(self, tiny_hardware: Hardware):
@@ -261,7 +261,7 @@ class TestBandwidthScheduler:
         expected_bw = min(
             s3_spec.down_bw_bytes_per_s, tiny_hardware.spec.network_inet_down
         )
-        expected_ms = 1_000_000_000 / (expected_bw / 8000.0)
+        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_s3_upload_shared(self, tiny_hardware: Hardware):
@@ -294,7 +294,7 @@ class TestBandwidthScheduler:
             s3_spec.up_bw_bytes_per_s,
             tiny_hardware.spec.network_inet_up / 2,
         )
-        expected_ms = 1_000_000_000 / (expected_bw / 8000.0)
+        expected_ms = 1_000_000_000 / (expected_bw / 1000.0)
         assert scheduler.next_event_ms() == pytest.approx(expected_ms, rel=1e-3)
 
     def test_s3_and_network_are_independent(self, tiny_hardware: Hardware):
@@ -321,7 +321,7 @@ class TestBandwidthScheduler:
         scheduler.update_shares()
         # The NETWORK leg must get the full inter-node up bandwidth of node 0,
         # unthrottled by the coexisting S3 upload.
-        expected_network_bw = tiny_hardware.spec.network_inter_node_up / 8000.0
+        expected_network_bw = tiny_hardware.spec.network_inter_node_up / 1000.0
         assert net_dr.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
             expected_network_bw, rel=1e-3
         )
@@ -339,5 +339,5 @@ class TestBandwidthScheduler:
             tiny_hardware.spec.network_inet_up,
         )
         assert s3_ur.active_legs[0].bandwidth_bytes_per_ms == pytest.approx(
-            expected_s3_bw / 8000.0, rel=1e-3
+            expected_s3_bw / 1000.0, rel=1e-3
         )

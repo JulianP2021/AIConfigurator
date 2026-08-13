@@ -719,8 +719,14 @@ def _build_results_page_hardware_economics(
             border-radius: 6px;
             padding: 0.5rem 0.75rem;
             font-size: 0.95rem;
-            margin-bottom: 1rem;
         }
+        .selector-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2rem;
+        }
+        .selector-row > div { flex: 1 1 200px; }
+        .selector-row select { width: 100%; }
         .plot-group { display: none; }
         .plot-group.active { display: block; }
         .legend-color {
@@ -750,18 +756,16 @@ def _build_results_page_hardware_economics(
             if dk not in delay_keys:
                 delay_keys.append(dk)
 
-    selector = '<div class="card"><h2>Select TTFT</h2><select id="ttftSelector" onchange="updatePlots()">'
+    selector = '<div class="card"><div class="selector-row"><div><h2>Select TTFT</h2><select id="ttftSelector" onchange="updatePlots()">'
     for key in ttft_keys:
         selector += f'<option value="{key}">{key}</option>'
     selector += "</select></div>\n"
 
-    delay_selector = (
-        '<div class="card"><h2>Select user delay</h2>'
-        '<select id="delaySelector" onchange="updatePlots()">'
-    )
+    delay_selector = "<div><h2>Select user delay</h2>"
+    delay_selector += '<select id="delaySelector" onchange="updatePlots()">'
     for dk in delay_keys:
         delay_selector += f'<option value="{dk}">{dk}</option>'
-    delay_selector += "</select></div>\n"
+    delay_selector += "</select></div></div></div>\n"
 
     body = selector + delay_selector
     body += '<div id="plotContainer">\n'
@@ -1578,15 +1582,12 @@ def _build_users_cost_plot(
         # colocated labels always go below; mixed alternates above/below.
         for i, (x, y, (_, row)) in enumerate(zip(xs, ys, series, strict=False)):
             label_text = _abbreviate_label(str(row.get("label", "")))
-            if mode == "separate":
+            if mode == "separate" or mode == "colocated":
                 offset_y = 12
                 va = "bottom"
-            elif mode == "colocated":
-                offset_y = -12
-                va = "top"
             else:
-                offset_y = 10 if i % 2 == 0 else -10
-                va = "bottom" if i % 2 == 0 else "top"
+                offset_y = -15 if i == 0 else 0
+                va = "top"
             ax.annotate(
                 label_text,
                 (x, y),
@@ -1608,7 +1609,15 @@ def _build_users_cost_plot(
     ax.set_xlabel("Users")
     ax.set_ylabel("Total cost ($/hour)")
     ax.set_title("Cost vs Users (top-5 per mode per user count)")
-    ax.set_ylim(bottom=0)
+    # Scale the y-axis to the worst performing best-config across modes, so
+    # expensive non-best configurations are clipped out of view.
+    best_costs = [
+        row["total_cost_usd_per_hour"]
+        for by_users_ in best_per_mode.values()
+        for row in by_users_.values()
+    ]
+    y_cap = max(best_costs) if best_costs else 0.0
+    ax.set_ylim(bottom=0, top=y_cap * 1.1 if y_cap > 0 else None)
     ax.grid(True, alpha=0.3, which="both", linestyle="--")
     ax.legend(loc="upper left")
     # Leave extra room on the right so long annotations are not clipped.

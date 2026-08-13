@@ -903,7 +903,7 @@ def _run_separate_configs(
                     f"Prefill-side TTFT exceeded SLA for prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
             else:
-                raise e
+                continue
         else:
             # remove every prefill config with more prefill nodes
             separate_batches = [
@@ -1102,7 +1102,7 @@ def _run_mixed_configs(
                     f"Prefill-side TTFT exceeded SLA for mixed prefill_hardware: {prefill_hw}, {prefill_nodes} nodes. Skipping all mixed configs with this prefill hardware and fewer or equal prefill nodes.",
                 )
             else:
-                raise e
+                continue
         else:
             # remove every mixed config with more prefill nodes
             mixed_batches = [
