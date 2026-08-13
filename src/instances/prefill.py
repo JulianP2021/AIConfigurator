@@ -187,39 +187,6 @@ class PrefillInstance:
 
         finished_requests: list[Request] = []
 
-        # Drain completed prefill downloads. Only the data tracks (not the
-        # background eviction tracks) gate prefill start; evictions are kept in
-        # the scheduler and finish asynchronously.
-        while self.download_queue and self.download_queue[0][0].is_download_done():
-            download_request, _ = self.download_queue.pop(0)
-            request = download_request.request
-            request.prefill_download_end_ms = now
-            request.prefill_download_active_ms = (
-                download_request.download_active_duration_ms()
-            )
-            request.prefill_queue_start_ms = now
-            if request.initial_prefilled_tokens is None:
-                # Capture the cached prefix length after the download has merged
-                # available KV into local RAM. For fresh requests this is zero;
-                # for cache hits it equals the effective downloaded prefix.
-                request.initial_prefilled_tokens = request.prefilled_tokens
-            self.queue.append((request, 0))
-            # Keep the DownloadRequest around so the full background eviction
-            # duration can be captured once every track is exhausted.
-            self.background_download_queue.append(download_request)
-
-        # Drain completed background downloads and record their eviction duration.
-        still_running: list[DownloadRequest] = []
-        for download_request in self.background_download_queue:
-            if download_request.is_complete():
-                request = download_request.request
-                request.prefill_download_background_active_ms = (
-                    download_request.download_background_active_duration_ms()
-                )
-            else:
-                still_running.append(download_request)
-        self.background_download_queue = still_running
-
         # Drain completed prefill uploads.  The actual upload is the last track;
         # once it finishes the request is considered uploaded and can move on,
         # while any eviction tracks keep running in the background.
@@ -286,6 +253,39 @@ class PrefillInstance:
                 # The next request in line (if any) starts prefill service now.
                 if self.queue:
                     self.queue[0][0].prefill_start_ms = now
+
+        # Drain completed prefill downloads. Only the data tracks (not the
+        # background eviction tracks) gate prefill start; evictions are kept in
+        # the scheduler and finish asynchronously.
+        while self.download_queue and self.download_queue[0][0].is_download_done():
+            download_request, _ = self.download_queue.pop(0)
+            request = download_request.request
+            request.prefill_download_end_ms = now
+            request.prefill_download_active_ms = (
+                download_request.download_active_duration_ms()
+            )
+            request.prefill_queue_start_ms = now
+            if request.initial_prefilled_tokens is None:
+                # Capture the cached prefix length after the download has merged
+                # available KV into local RAM. For fresh requests this is zero;
+                # for cache hits it equals the effective downloaded prefix.
+                request.initial_prefilled_tokens = request.prefilled_tokens
+            self.queue.append((request, 0))
+            # Keep the DownloadRequest around so the full background eviction
+            # duration can be captured once every track is exhausted.
+            self.background_download_queue.append(download_request)
+
+        # Drain completed background downloads and record their eviction duration.
+        still_running: list[DownloadRequest] = []
+        for download_request in self.background_download_queue:
+            if download_request.is_complete():
+                request = download_request.request
+                request.prefill_download_background_active_ms = (
+                    download_request.download_background_active_duration_ms()
+                )
+            else:
+                still_running.append(download_request)
+        self.background_download_queue = still_running
 
         return finished_requests
 

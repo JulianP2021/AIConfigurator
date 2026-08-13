@@ -1185,31 +1185,23 @@ def _render_economics_plot(
                     zorder=3,
                 )
 
-    # Highlight the base machine with a distinct star marker.
+    # Highlight the base machine with a subtle marker just below the x-axis.
     base_color = "#8b5cf6"
     base_indices = [i for i, flag in enumerate(is_base_flags) if flag]
+    ymin, ymax = ax_users.get_ylim()
+    marker_y = ymin - 0.04 * (ymax - ymin)
     for j, i in enumerate(base_indices):
         base_legend_label = "Base machine" if j == 0 else None
-        ax_users.scatter(
+        ax_users.plot(
             x[i],
-            users_means[i],
-            marker="*",
-            s=340,
+            marker_y,
+            marker="v",
+            markersize=6,
             color=base_color,
-            edgecolors="white",
-            linewidths=0.6,
+            linestyle="None",
+            clip_on=False,
             zorder=8,
             label=base_legend_label,
-        )
-        ax_price.scatter(
-            x[i],
-            price_means[i],
-            marker="*",
-            s=340,
-            color=base_color,
-            edgecolors="white",
-            linewidths=0.6,
-            zorder=9,
         )
 
     # Combined legend.
@@ -1241,9 +1233,9 @@ def _render_economics_plot(
                 [],
                 [],
                 color=base_color,
-                marker="*",
+                marker="v",
                 linestyle="None",
-                markersize=14,
+                markersize=8,
                 label="Base machine",
             )
         )
@@ -1259,7 +1251,7 @@ def _render_economics_plot(
                 label="Individual seed results",
             )
         )
-    ax_users.legend(handles=legend_handles, loc="upper left")
+    ax_users.legend(handles=legend_handles, loc="lower left")
 
     plt.tight_layout()
     buf = io.BytesIO()

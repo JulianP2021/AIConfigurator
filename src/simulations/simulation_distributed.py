@@ -298,26 +298,6 @@ def simulate_run_distributed(
     num_reqs = 0
     time_to_next_completion = 0
 
-    # Generate initial requests for all ready users.
-    while num_reqs < scenario.requests.total_requests:
-        new_request = request_generator.generate_request(
-            scenario.requests, scheduler.time_ms
-        )
-        if new_request is None:
-            break
-        current_requests.append(new_request)
-        router.queue.append(new_request)
-        num_reqs += 1
-
-        if should_log(LOG_SIMULATION):
-            log(
-                LOG_SIMULATION,
-                f"Generated new request with id: {new_request.id} at "
-                f"{scheduler.time_ms / 1000:.3f} seconds, user_id: {new_request.user_id}, "
-                f"isl: {new_request.isl}, osl: {new_request.osl}, "
-                f"cached: {new_request.prefilled_tokens}",
-            )
-
     max_iterations = max(1000, scenario.requests.total_requests * 100)
     iterations = 0
     heartbeat_every = max(100, scenario.requests.total_requests // 10)
@@ -355,56 +335,58 @@ def simulate_run_distributed(
             + [instance.time_to_next_completion() for instance in decode_instances]
             + [float("inf")]
         )
-        time_to_next_completion = min(compute_event_ms, transfer_event_ms)
+        # A user becoming ready to send its next request is itself an event.
+        # Include it in the min so requests are generated exactly when the
+        # user's think time elapses, instead of being deferred to the next
+        # compute/transfer boundary.
+        next_ready_ms = request_generator.next_ready_time_ms(scheduler.time_ms)
+        request_event_ms = (
+            next_ready_ms - scheduler.time_ms
+            if next_ready_ms != float("inf")
+            else float("inf")
+        )
+        time_to_next_completion = min(
+            compute_event_ms, transfer_event_ms, request_event_ms
+        )
 
-        # If nothing else is happening, jump to the next moment a user becomes
-        # ready to send its next request.
+        # No compute, transfer, or request event exists, so the loop is stuck.
         if time_to_next_completion == float("inf"):
-            next_ready_ms = request_generator.next_ready_time_ms(scheduler.time_ms)
-            if next_ready_ms != float("inf") and next_ready_ms > scheduler.time_ms:
-                scheduler.advance_time(next_ready_ms - scheduler.time_ms)
-                # Routing newly-ready requests may create compute/transfer work,
-                # so recompute instead of forcing a zero-length step.
-                continue
-            if next_ready_ms == float("inf"):
-                # Diagnostic print before raising.
+            # Diagnostic print before raising.
+            print(
+                "[DEADLOCK DIAGNOSTIC] global_time=",
+                scheduler.time_ms,
+                "finished=",
+                len(finished_requests),
+                "total=",
+                scenario.requests.total_requests,
+                "current_requests=",
+                len(current_requests),
+                "router_queue=",
+                len(router.queue),
+                "active_users=",
+                len(request_generator._active_users),
+                "idle_users=",
+                len(request_generator._idle_users),
+                "prefill_instances=",
+                len(prefill_instances),
+                "decode_instances=",
+                len(decode_instances),
+                file=__import__("sys").stderr,
+            )
+            for inst in prefill_instances + decode_instances:
                 print(
-                    "[DEADLOCK DIAGNOSTIC] global_time=",
-                    scheduler.time_ms,
-                    "finished=",
-                    len(finished_requests),
-                    "total=",
-                    scenario.requests.total_requests,
-                    "current_requests=",
-                    len(current_requests),
-                    "router_queue=",
-                    len(router.queue),
-                    "active_users=",
-                    len(request_generator._active_users),
-                    "idle_users=",
-                    len(request_generator._idle_users),
-                    "prefill_instances=",
-                    len(prefill_instances),
-                    "decode_instances=",
-                    len(decode_instances),
+                    f"  instance node={inst.node_id} queue={len(inst.queue)} download={len(inst.download_queue)} upload={len(inst.upload_queue)} time_to_next={inst.time_to_next_completion()}",
                     file=__import__("sys").stderr,
                 )
-                for inst in prefill_instances + decode_instances:
-                    print(
-                        f"  instance node={inst.node_id} queue={len(inst.queue)} download={len(inst.download_queue)} upload={len(inst.upload_queue)} time_to_next={inst.time_to_next_completion()}",
-                        file=__import__("sys").stderr,
-                    )
-                for r in current_requests[:10]:
-                    print(
-                        f"  req id={r.id} user={r.user_id} session={r.session_id} stage={r.stage} isl={r.isl} osl={r.osl} decoded={r.decoded_tokens} prefilled={r.prefilled_tokens}",
-                        file=__import__("sys").stderr,
-                    )
-                raise RuntimeError(
-                    "No compute/transfer events and no user will become ready, "
-                    "but not all requests are finished."
+            for r in current_requests[:10]:
+                print(
+                    f"  req id={r.id} user={r.user_id} session={r.session_id} stage={r.stage} isl={r.isl} osl={r.osl} decoded={r.decoded_tokens} prefilled={r.prefilled_tokens}",
+                    file=__import__("sys").stderr,
                 )
-            # next_ready_ms <= scheduler.time_ms: users are already ready now.
-            time_to_next_completion = 0
+            raise RuntimeError(
+                "No compute/transfer events and no user will become ready, "
+                "but not all requests are finished."
+            )
 
         # Track which requests finished in this iteration so we can remove them
         # from current_requests in O(finished) instead of O(active * finished).
