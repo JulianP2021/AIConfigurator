@@ -15,6 +15,7 @@ Use ``--dry-run`` to print the computed data without writing the file.
 
 import argparse
 import json
+import re
 import sys
 
 from pathlib import Path
@@ -107,6 +108,26 @@ _GPU_MODEL_MAP: dict[str, str] = {
 _GB = 1e9
 _GIB = 1024**3
 _IOPS_PAGE_BYTES = 4096
+
+
+def _parse_network_performance_gbps(value: str | None) -> float:
+    """Return the network bandwidth in Gbps from a Vantage ``network_performance`` string.
+
+    Handles formats like ``"25 Gigabit"``, ``"Up to 25 Gigabit"``,
+    ``"4x 100 Gigabit"`` (aggregate 400) and ``"3200 Gigabit"``.
+    Returns ``0.0`` when the value cannot be parsed.
+    """
+    if not value:
+        return 0.0
+    text = value.lower()
+    # Match either "Nx M Gigabit" (aggregate product) or "N Gigabit".
+    multi = re.search(r"(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*gigabit", text)
+    if multi:
+        return float(multi.group(1)) * float(multi.group(2))
+    single = re.search(r"(\d+(?:\.\d+)?)\s*gigabit", text)
+    if single:
+        return float(single.group(1))
+    return 0.0
 
 
 def _load_gpu_db() -> dict[str, dict[str, Any]]:
@@ -207,14 +228,30 @@ def _compute_machine_config(
     linux = region_pricing.get("linux", region_pricing.get("ubuntu", {}))
     dph_base = float(linux.get("ondemand", 0.0))
 
+    # Internet up/down bandwidth.  EC2 ``network_performance`` describes the
+    # instance's maximum aggregate network bandwidth, symmetric in both
+    # directions, so inet up and down share the same value.
+    inet_gbps = _parse_network_performance_gbps(api_inst.network_performance)
+    network_inet_up = int(inet_gbps * _GB / 8)
+    network_inet_down = int(inet_gbps * _GB / 8)
+
+    # Inter-node (datacenter NIC) bandwidth for node-to-node KV transfers.
+    # AWS does not publish a separate inter-node figure, so it inherits the
+    # instance's network bandwidth (the same symmetric ENA/EFA aggregate),
+    # doubled to reflect the typically higher datacenter-internal throughput.
+    network_inter_node_up = network_inet_up * 2
+    network_inter_node_down = network_inet_down * 2
+
     config: dict[str, Any] = {
         "name": f"AWS {itype} ({gpu_name} x{num_gpus})",
         "gpu_name": gpu_name,
         "num_gpus": num_gpus,
         "nvme_mem": nvme_mem_bytes,
         "nvme_bw": nvme_bw_bytes,
-        "network_inet_up": 0,
-        "network_inet_down": 0,
+        "network_inet_up": network_inet_up,
+        "network_inet_down": network_inet_down,
+        "network_inter_node_up": network_inter_node_up,
+        "network_inter_node_down": network_inter_node_down,
         "pcie_bw": pcie_bw_bytes,
         "cpu_ram": cpu_ram_bytes,
         "dph_base": dph_base,
@@ -223,6 +260,14 @@ def _compute_machine_config(
         config["nvlink_bw"] = nvlink_bw_bytes
 
     return config
+
+
+def _backfill_inter_node(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Ensure an entry carries inter-node bandwidth fields (2x its inet)."""
+    cfg = {**cfg}
+    cfg["network_inter_node_up"] = cfg.get("network_inet_up", 0) * 2
+    cfg["network_inter_node_down"] = cfg.get("network_inet_down", 0) * 2
+    return cfg
 
 
 def _build_aws_hardware(
@@ -257,7 +302,7 @@ def _build_aws_hardware(
                 f"API lookup failed for {name} ({itype}): {exc}; keeping old entry",
                 file=sys.stderr,
             )
-            machines[name] = old_cfg
+            machines[name] = _backfill_inter_node(old_cfg)
             missing.append(itype)
             continue
 
@@ -268,7 +313,7 @@ def _build_aws_hardware(
                 f"Config computation failed for {name} ({itype}): {exc}; keeping old entry",
                 file=sys.stderr,
             )
-            machines[name] = old_cfg
+            machines[name] = _backfill_inter_node(old_cfg)
             continue
 
         # Preserve the original key so downstream consumers stay stable.

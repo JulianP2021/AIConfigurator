@@ -47,8 +47,8 @@ from src.utils.utils import parse_float_list
 
 _DEFAULT_FOCUS_VALUES: dict[str, list[float]] = {
     "ssd_mem": [16000.0, 32000.0],
-    "inter_node_bw": [50.0, 200.0],
-    "inet_bw": [10.0, 40.0],
+    "inter_node_bw": [200.0, 1000.0],
+    "inet_bw": [0.0, 400.0],
 }
 
 
@@ -223,14 +223,14 @@ def main() -> int:
     parser.add_argument(
         "--inter-node-bw-gbps",
         type=float,
-        default=100.0,
-        help="Baseline INTER NODE bandwidth in Gbps (default: 100.0).",
+        default=400.0,
+        help="Baseline INTER NODE bandwidth in Gbps (default: 400.0).",
     )
     parser.add_argument(
         "--inet-bw-gbps",
         type=float,
-        default=25.0,
-        help="Symmetric internet up/down bandwidth in Gbps (default: 25).",
+        default=200.0,
+        help="Symmetric internet up/down bandwidth in Gbps (default: 200).",
     )
     parser.add_argument(
         "--focus",
@@ -328,10 +328,10 @@ def main() -> int:
         if dim in focus_dimensions and dim not in focus_values:
             if dim == "nvlink":
                 pcie = args.pcie_bw_gbps
-                focus_values[dim] = [pcie * 2, pcie * 4]
+                focus_values[dim] = [pcie * 2]
             elif dim == "ram":
                 ram = args.ram_mem_gb
-                focus_values[dim] = [ram, ram * 2, ram * 4]
+                focus_values[dim] = [ram / 2, ram]
             else:
                 focus_values[dim] = _DEFAULT_FOCUS_VALUES[dim]
 

@@ -112,7 +112,7 @@ class DecodeInstance:
         )
         return remaining
 
-    def _ensure_batch(self, refresh: bool) -> None:
+    def _ensure_batch(self, refresh: bool, time_ms: float = 0) -> None:
         """Freeze a new batch from the head of the queue when none is active."""
         if refresh:
             self.refresh_batch = False
@@ -124,9 +124,9 @@ class DecodeInstance:
             now = self._global_time_ms()
             for req in self.current_batch:
                 if req.decode_start_ms is None:
-                    req.decode_start_ms = now
+                    req.decode_start_ms = now - time_ms
                 if req.decode_queue_start_ms is None:
-                    req.decode_queue_start_ms = now
+                    req.decode_queue_start_ms = now - time_ms
 
     def _calculate_batch_time(self):
         if not self.current_batch:
@@ -352,7 +352,7 @@ class DecodeInstance:
                 still_running.append(upload_request)
         self.background_upload_queue = still_running
 
-        self._ensure_batch(False)
+        self._ensure_batch(False, time_ms=time_ms)
 
         self._advance_batch(tokens=None, time_ms=time_ms)
 
@@ -455,13 +455,13 @@ class DecodeInstance:
             )
             * 1000
         )
-        if should_log(LOG_INSTANCE):
-            log(
-                LOG_INSTANCE,
-                f"[Decode {self.instance_id}] Calculated decode time for batch"
-                f"{[req.prefilled_tokens + req.decoded_tokens + token_offset for req, _ in batch]} "
-                f"of size {len(batch)}: {time_ms} ms: BATCH: {[r.id for r, _ in batch]}",
-            )
+        # if should_log(LOG_INSTANCE):
+        #     log(
+        #         LOG_INSTANCE,
+        #         f"[Decode {self.instance_id}] Calculated decode time for batch"
+        #         f"{[req.prefilled_tokens + req.decoded_tokens + token_offset for req, _ in batch]} "
+        #         f"of size {len(batch)}: {time_ms} ms: BATCH: {[r.id for r, _ in batch]}",
+        #     )
         return time_ms
 
     # def calculate_decode_time(self, batch: list[tuple[Request, float]]) -> float:

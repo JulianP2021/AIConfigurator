@@ -1,7 +1,7 @@
 {
   "machines": {
-    "Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet200.0/200.0": {
+      "name": "Focused H200 x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -9,14 +9,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 70.78295295009613
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 61.132952950096126
     },
-    "Focused H200 RAM 4400GB x8 r4400 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 RAM 4400GB x8 r4400 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 RAM 4400GB x8 r4400 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet200.0/200.0": {
+      "name": "Focused H200 RAM 4400GB x8 r4400 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -24,29 +24,14 @@
       "cpu_ram": 4400000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 81.0275012708664
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 71.37750127086639
     },
-    "Focused H200 RAM 8800GB x8 r8800 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 RAM 8800GB x8 r8800 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet25.0/25.0",
-      "gpu_name": "H200",
-      "num_gpus": 8,
-      "pcie_bw": 504000000000,
-      "nvlink_bw": 450000000000,
-      "cpu_ram": 8800000000000,
-      "nvme_mem": 4080000000000,
-      "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 101.51659791240692
-    },
-    "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in400.0/400.0 inet200.0/200.0": {
+      "name": "Focused H200 NVLink 1008GBps x8 r2200 s4080 p504 nvl1008 sbw8.0 in400.0/400.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -54,29 +39,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 83.25522486934662
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 73.60522486934661
     },
-    "Focused H200 NVLink 2016GBps x8 r2200 s4080 p504 nvl2016 sbw8.0 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 NVLink 2016GBps x8 r2200 s4080 p504 nvl2016 sbw8.0 in100.0/100.0 inet25.0/25.0",
-      "gpu_name": "H200",
-      "num_gpus": 8,
-      "pcie_bw": 504000000000,
-      "nvlink_bw": 2016000000000,
-      "cpu_ram": 2200000000000,
-      "nvme_mem": 4080000000000,
-      "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 105.78578059444428
-    },
-    "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in400.0/400.0 inet200.0/200.0": {
+      "name": "Focused H200 SSD 16000GB x8 r2200 s16000 p504 nvl450 sbw31.2 in400.0/400.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -84,14 +54,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 16000000000000,
       "nvme_bw": 31250000000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 72.1706235862732
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 62.52062358627319
     },
-    "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in100.0/100.0 inet25.0/25.0": {
-      "name": "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in100.0/100.0 inet25.0/25.0",
+    "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in400.0/400.0 inet200.0/200.0": {
+      "name": "Focused H200 SSD 32000GB x8 r2200 s32000 p504 nvl450 sbw62.5 in400.0/400.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -99,14 +69,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 32000000000000,
       "nvme_bw": 62500000000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 74.03326873550415
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 64.38326873550415
     },
-    "Focused H200 INTER NODE BW 50.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in50.0/50.0 inet25.0/25.0": {
-      "name": "Focused H200 INTER NODE BW 50.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in50.0/50.0 inet25.0/25.0",
+    "Focused H200 INTER NODE BW 200.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in200.0/200.0 inet200.0/200.0": {
+      "name": "Focused H200 INTER NODE BW 200.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in200.0/200.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -114,29 +84,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
-      "network_inter_node_up": 6250000000,
-      "network_inter_node_down": 6250000000,
-      "dph_base": 70.70795295009613
-    },
-    "Focused H200 INTER NODE BW 200.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in200.0/200.0 inet25.0/25.0": {
-      "name": "Focused H200 INTER NODE BW 200.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in200.0/200.0 inet25.0/25.0",
-      "gpu_name": "H200",
-      "num_gpus": 8,
-      "pcie_bw": 504000000000,
-      "nvlink_bw": 450000000000,
-      "cpu_ram": 2200000000000,
-      "nvme_mem": 4080000000000,
-      "nvme_bw": 7968750000,
-      "network_inet_up": 25000000000,
-      "network_inet_down": 25000000000,
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
       "network_inter_node_up": 25000000000,
       "network_inter_node_down": 25000000000,
-      "dph_base": 70.93295295009612
+      "dph_base": 61.08295295009613
     },
-    "Focused H200 INET BW 10.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet10.0/10.0": {
-      "name": "Focused H200 INET BW 10.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet10.0/10.0",
+    "Focused H200 INTER NODE BW 1000.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in1000.0/1000.0 inet200.0/200.0": {
+      "name": "Focused H200 INTER NODE BW 1000.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in1000.0/1000.0 inet200.0/200.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -144,14 +99,14 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 10000000000,
-      "network_inet_down": 10000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 64.78295295009613
+      "network_inet_up": 200000000000,
+      "network_inet_down": 200000000000,
+      "network_inter_node_up": 125000000000,
+      "network_inter_node_down": 125000000000,
+      "dph_base": 61.28295295009613
     },
-    "Focused H200 INET BW 40.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet40.0/40.0": {
-      "name": "Focused H200 INET BW 40.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in100.0/100.0 inet40.0/40.0",
+    "Focused H200 INET BW 0.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet0.0/0.0": {
+      "name": "Focused H200 INET BW 0.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet0.0/0.0",
       "gpu_name": "H200",
       "num_gpus": 8,
       "pcie_bw": 504000000000,
@@ -159,11 +114,26 @@
       "cpu_ram": 2200000000000,
       "nvme_mem": 4080000000000,
       "nvme_bw": 7968750000,
-      "network_inet_up": 40000000000,
-      "network_inet_down": 40000000000,
-      "network_inter_node_up": 12500000000,
-      "network_inter_node_down": 12500000000,
-      "dph_base": 76.78295295009613
+      "network_inet_up": 0,
+      "network_inet_down": 0,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 60.73295295009612
+    },
+    "Focused H200 INET BW 400.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet400.0/400.0": {
+      "name": "Focused H200 INET BW 400.0Gbps x8 r2200 s4080 p504 nvl450 sbw8.0 in400.0/400.0 inet400.0/400.0",
+      "gpu_name": "H200",
+      "num_gpus": 8,
+      "pcie_bw": 504000000000,
+      "nvlink_bw": 450000000000,
+      "cpu_ram": 2200000000000,
+      "nvme_mem": 4080000000000,
+      "nvme_bw": 7968750000,
+      "network_inet_up": 400000000000,
+      "network_inet_down": 400000000000,
+      "network_inter_node_up": 50000000000,
+      "network_inter_node_down": 50000000000,
+      "dph_base": 61.53295295009612
     }
   }
 }

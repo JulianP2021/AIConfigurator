@@ -42,6 +42,13 @@ def _finish_request(
     Computes the wait-inclusive TTFT from the request's phase timestamps and
     raises a latency-specific exception if any configured SLA is exceeded.
     """
+    # print(f"Request : {(request.user_id, request.session_id, request.id)} has following metrics: ")
+    # print("Prefill: ",_duration(request.prefill_start_ms, request.prefill_end_ms))
+    # print("Queue:", _duration(request.prefill_queue_start_ms, request.prefill_start_ms))
+    # print("Download", _duration(request.prefill_download_start_ms, request.prefill_download_end_ms), request.prefill_download_active_ms)
+    # print("Upload:", _duration(request.prefill_upload_start_ms, request.prefill_upload_end_ms), request.prefill_upload_active_ms)
+    # print()
+
     request.prefill_time_ms = _duration(
         request.prefill_start_ms, request.prefill_end_ms
     )
@@ -143,6 +150,7 @@ def _finish_request(
             f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
             f"prefill upload wait: {request.prefill_upload_end_ms - request.prefill_upload_start_ms - request.prefill_upload_active_ms:.2f} ms, "
             f"decode download wait: {request.decode_download_end_ms - request.decode_download_start_ms - request.decode_download_active_ms:.2f} ms, "
+            f"decode wait: {request.decode_wait_ms:.2f} ms, "
             f"{delay_msg}",
             prefill_only_ttft_ms=prefill_only_ttft_ms,
             ttft_sla_ms=ttft_sla,
@@ -229,12 +237,13 @@ def simulate_run_distributed(
         scenario.requests.token_distribution.max_input_tokens
         + scenario.requests.token_distribution.max_output_tokens
     ) * scenario.requests.max_session_turns
-    assert max_request_length < model.max_context_size, (
-        f"Request scenario max length {max_request_length} tokens "
-        f"(= (max input + max output) * session turns) exceeds model context "
-        f"size {model.max_context_size} tokens for model {model.name}; "
-        "reduce the token distribution or session turns."
-    )
+    if max_request_length >= model.max_context_size:
+        print(
+            f"WARNING: Request scenario max length {max_request_length} tokens "
+            f"(= (max input + max output) * session turns) exceeds model context "
+            f"size {model.max_context_size} tokens for model {model.name}; "
+            "reduce the token distribution or session turns."
+        )
 
     scheduler = BandwidthScheduler(scenario.nodes, s3_spec=s3_spec)
     cache = Cache(

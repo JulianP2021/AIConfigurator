@@ -158,17 +158,18 @@ def test_tpot_sla_violation_raises():
     assert "TPOT SLA violated" in str(exc_info.value)
 
 
-def test_max_length_exceeding_context_raises():
+def test_max_length_exceeding_context_raises(capsys):
     # (isl + osl) * max_session_turns must be < model.max_context_size
     # (10_000_000 for the fake model). 2_000_000 * 5 == 10_000_000 is not.
-    scenario = _separate_scenario(isl=2_000_000, osl=0, sessions_per_user=1)
-    with pytest.raises(AssertionError) as exc_info:
+    scenario = _separate_scenario(isl=2_000_000, osl=1, sessions_per_user=1)
+    with pytest.raises(PrefillLatencyError):
         simulate_run_distributed(
             scenario,
             should_print=False,
             sla={"ttft_ms": 10000.0, "tpot_ms": 100.0},
         )
-    assert "exceeds model context size" in str(exc_info.value)
+    captured = capsys.readouterr()
+    assert "WARNING: Request scenario max length" in captured.out
 
 
 def test_prefill_latency_error_is_picklable():

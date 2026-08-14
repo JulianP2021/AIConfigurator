@@ -2,12 +2,12 @@
   "_pricing": {
     "cpu_ram_usd_per_gb_hour": 0.005,
     "ssd_usd_per_gb_hour": 0.000125,
-    "inter_node_up_usd_per_gbps_hour": 0.006,
-    "inter_node_down_usd_per_gbps_hour": 0.006,
+    "inter_node_up_usd_per_gbps_hour": 0.001,
+    "inter_node_down_usd_per_gbps_hour": 0.001,
     "pcie_bw_usd_per_gb_s_hour": 0.004,
     "nvlink_bw_usd_per_gb_s_hour": 0.003,
-    "inet_up_usd_per_gbps_hour": 0.2,
-    "inet_down_usd_per_gbps_hour": 0.2,
+    "inet_up_usd_per_gbps_hour": 0.001,
+    "inet_down_usd_per_gbps_hour": 0.001,
     "gpu_family_pricing": {
       "A100_40GB": {
         "compute_usd_per_gpu_hour": 1.64682315,

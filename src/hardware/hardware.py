@@ -51,10 +51,10 @@ class HardwareSpec:
     num_gpus: int
     nvme_mem: int
     nvme_bw: int
-    network_inet_up: int  # in bits per second (internet / S3)
-    network_inet_down: int  # in bits per second (internet / S3)
-    network_inter_node_up: int  # in bits per second (datacenter NIC)
-    network_inter_node_down: int  # in bits per second (datacenter NIC)
+    network_inet_up: int  # in bytes per second (internet / S3)
+    network_inet_down: int  # in bytes per second (internet / S3)
+    network_inter_node_up: int  # in bytes per second (datacenter NIC)
+    network_inter_node_down: int  # in bytes per second (datacenter NIC)
     cpu_ram: int
     dph_base: float
     pcie_bw: float

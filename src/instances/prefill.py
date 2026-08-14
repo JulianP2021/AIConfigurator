@@ -181,7 +181,7 @@ class PrefillInstance:
         if should_log(LOG_INSTANCE):
             log(
                 LOG_INSTANCE,
-                f"[t={now:.3f} ms] Processing prefill queue for node {self.node_id} "
+                f"[t={self._global_time_ms():.3f} ms] Processing prefill queue for node {self.node_id} "
                 f"with time_ms: {time_ms}",
             )
 
@@ -218,7 +218,7 @@ class PrefillInstance:
         if self.queue:
             request, _ = self.queue[0]
             if request.prefill_start_ms is None:
-                request.prefill_start_ms = now
+                request.prefill_start_ms = self._global_time_ms() - time_ms
             if request.remaining_prefill_time_ms == -1:
                 request.remaining_prefill_time_ms = self.calculate_prefill_time(request)
             request.remaining_prefill_time_ms -= time_ms
@@ -300,11 +300,11 @@ class PrefillInstance:
             )
             * 1000
         )
-        if should_log(LOG_INSTANCE):
-            log(
-                LOG_INSTANCE,
-                f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
-            )
+        # if should_log(LOG_INSTANCE):
+        #     log(
+        #         LOG_INSTANCE,
+        #         f"Calculated prefill time for request with id: {request.id} : {time_ms} ms",
+        #     )
         return time_ms
 
     # def calculate_prefill_time(self, request: Request) -> float:

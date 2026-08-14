@@ -310,15 +310,34 @@ class Cache:
 
         Called after every upload to S3 so peak S3 memory reflects only recently
         accessed ("hot") objects.
+
+        Walks the S3 layer's LRU heap in access order and stops at the first
+        fresh item.  ``_touch`` stamps ``last_access_ms`` at the same moment it
+        increments the access tick, so heap order (by tick) equals age order and
+        everything after the first fresh item is fresh too.  Lazy-deleted heap
+        entries are skipped, and the first fresh item is re-pushed so the LRU
+        index keeps covering it.
         """
         if not self.s3_spec.enabled or self.s3_spec.eviction_time_ms <= 0:
             return
         s3_layer = self._s3_layer()
         now_ms = self._clock.time_ms
         cutoff_ms = now_ms - self.s3_spec.eviction_time_ms
-        for session_id, items in list(s3_layer.content.items()):
-            for item in list(items.values()):
-                if item.last_access_ms < cutoff_ms:
+        while s3_layer._lru_heap:
+            tick, item_id, session_id, key = heappop(s3_layer._lru_heap)
+            current_tick = s3_layer._lru_tick.get(item_id)
+            if current_tick is None or current_tick != tick:
+                # Stale heap entry; the item was removed or re-touched.
+                continue
+            item_dict = s3_layer.content.get(session_id)
+            if item_dict is not None:
+                item = item_dict.get(key)
+                if item is not None and id(item) == item_id:
+                    if item.last_access_ms >= cutoff_ms:
+                        # Oldest live item is fresh, so everything newer is too.
+                        # Restore the heap entry before stopping.
+                        heappush(s3_layer._lru_heap, (tick, item_id, session_id, key))
+                        break
                     victim_size = self._item_size(item)
                     self.s3_usage_bytes -= victim_size
                     s3_layer._remove_item(item)
@@ -330,10 +349,9 @@ class Cache:
                             f"({(item.token_start, item.token_end)} tokens, {victim_size} bytes), "
                             f"last_access_ms={item.last_access_ms:.3f}, cutoff_ms={cutoff_ms:.3f}",
                         )
-            if session_id in s3_layer.content and not s3_layer.content[session_id]:
-                s3_layer.content.pop(session_id, None)
-        if self.s3_usage_bytes > self.s3_peak_usage_bytes:
-            self.s3_peak_usage_bytes = self.s3_usage_bytes
+                    continue
+            # Item is no longer in content; clean up the tick entry.
+            s3_layer._lru_tick.pop(item_id, None)
 
     def upload_to_s3(self, victim: CacheItem, node_id: int) -> TransferLeg | None:
         s3_leg: TransferLeg | None = None

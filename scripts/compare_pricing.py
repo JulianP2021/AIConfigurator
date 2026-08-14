@@ -12,7 +12,7 @@ machine presets to scale component by component under the same coefficients.
 
 Usage:
 
-    .venv/bin/python scripts/derive_family_pricing.py
+    .venv/bin/python scripts/compare_pricing.py
 
 This updates ``src/hardware/data/pricing.json`` in place.
 """
@@ -35,12 +35,12 @@ _G = 1e9
 # Fixed component prices considered ground truth.
 _RAM_PRICE = 0.005
 _SSD_PRICE = 0.000125
-_INTER_NODE_UP_PRICE = 0.006
-_INTER_NODE_DOWN_PRICE = 0.006
+_INTER_NODE_UP_PRICE = 0.001
+_INTER_NODE_DOWN_PRICE = 0.001
 _NVLINK_BW_PRICE = 0.003
 _PCIE_BW_PRICE = 0.004
-_INET_UP_PRICE = 0.2
-_INET_DOWN_PRICE = 0.2
+_INET_UP_PRICE = 0.001
+_INET_DOWN_PRICE = 0.001
 
 
 def _fixed_cost(cfg: dict) -> float:
