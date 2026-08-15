@@ -102,16 +102,6 @@ class DecodeInstance:
             return 0.0
         return float(self.scheduler.time_ms)
 
-    def _min_token_in_batch(self, tokens: int) -> int:
-        if not self.current_batch:
-            return 0
-        r = min(self.current_batch, key=lambda x: x.osl - x.decoded_tokens)
-        remaining = r.osl - r.decoded_tokens - tokens
-        assert remaining >= 0, (
-            f"_min_token_in_batch called with too many tokens: {tokens} but max {r.osl - r.decoded_tokens}"
-        )
-        return remaining
-
     def _ensure_batch(self, refresh: bool, time_ms: float = 0) -> None:
         """Freeze a new batch from the head of the queue when none is active."""
         if refresh:
@@ -136,9 +126,10 @@ class DecodeInstance:
             self.remaining_batch_time_ms == 0.0 or self.remaining_batch_time_ms is None
         ), "calculate batch time called with frozen batch"
         self.current_batch_decode_time_ms = 0.0
+        min_remaining = min(r.osl - r.decoded_tokens for r in self.current_batch)
         tokens_done = 0
         while True:
-            tokens = min(16, self._min_token_in_batch(tokens_done))
+            tokens = min(16, min_remaining - tokens_done)
             if tokens <= 0:
                 break
             decode_time = self.calculate_decode_time(
@@ -159,7 +150,7 @@ class DecodeInstance:
                 batch=[(r, 0) for r in self.current_batch],
                 token_offset=tokens_done,
             )
-            tokens = min(16, self._min_token_in_batch(tokens_done))
+            tokens = min(16, min_remaining - tokens_done)
             if tokens <= 0:
                 break
             token_chunk_time = decode_time * tokens
@@ -253,7 +244,9 @@ class DecodeInstance:
         """
         if self.download_queue and self.download_queue[0][0].is_download_done():
             return 0.0
-        if self.remaining_batch_time_ms == 0.0 or self.remaining_batch_time_ms is None:
+        if (
+            self.remaining_batch_time_ms == 0.0 or self.remaining_batch_time_ms is None
+        ) and (self.current_batch_decode_time_ms == 0.0 or self.refresh_batch):
             self._ensure_batch(True)
         if (
             self.current_batch_decode_time_ms is None

@@ -1,5 +1,5 @@
 from functools import cached_property, lru_cache
-from typing import Any, cast
+from typing import Any, ClassVar, Self, cast
 
 # Third Party
 from transformers import AutoConfig, PretrainedConfig
@@ -9,11 +9,22 @@ class Model:
     name: str
     config: dict[str, Any]
 
+    _instances: ClassVar[dict[str, Self]] = {}
+
+    def __new__(cls, name: str | None = None) -> Self:
+        if name is None:
+            return super().__new__(cls)
+        instance = cls._instances.get(name)
+        if instance is None:
+            instance = super().__new__(cls)
+            instance.name = name
+            cls._instances[name] = instance
+        return instance
+
     def __init__(self, name: str):
-        self.name = name
-        config = fetch_architecture(self.name)
-        self.config = config.get("text_config") or config
-        print(f"Model {self.name} config: {self.config}")
+        if not hasattr(self, "config"):
+            config = fetch_architecture(name)
+            self.config = config.get("text_config") or config
 
     @cached_property
     def max_context_size(self) -> int:
@@ -60,11 +71,7 @@ class Model:
         )
         size += total_elements * self.dtype_size("dtype")
 
-        print("KV size full attn: ", size)
-
         state_matrix = 1 * cc["ld_v"] * cc["head_dim"] * linear_attn_layers
-
-        print("rec elements: ", state_matrix)
 
         conv_matrix = (
             1
@@ -107,6 +114,6 @@ class Model:
 def fetch_architecture(model_name: str) -> dict[str, Any]:
     config = cast(
         PretrainedConfig,
-        cast(Any, AutoConfig).from_pretrained(model_name, local_files_only=False),
+        cast(Any, AutoConfig).from_pretrained(model_name, local_files_only=True),
     )
     return config.to_dict()

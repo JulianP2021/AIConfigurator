@@ -4,7 +4,7 @@ from src.model.model import Model
 from src.request.request import Request
 
 
-@lru_cache(maxsize=1280)
+@lru_cache(maxsize=65536)
 def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
     embedding = tokens_to_process
@@ -39,7 +39,6 @@ def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> in
         return per_layer_flops * c["linear_attn_layers"]
 
     flops += full_attn_flops() + linear_attn_flops()
-    print(f"Flops for {tokens_to_process}/{cache_len} tokens: {flops}")
     return int(flops)
 
 
@@ -78,7 +77,7 @@ def _mem_model(model: Model) -> int:
     return int(memory * model.dtype_size("dtype"))
 
 
-@lru_cache(maxsize=1280)
+@lru_cache(maxsize=65536)
 def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
     memory = 0
@@ -99,30 +98,20 @@ def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> i
             * model.config["num_key_value_heads"]
             * c["head_dim"]
         )
-        lmemory = (qo_proj + kv_proj + kv_entries) * c["full_attn_layers"]
-        print(
-            f"Full memory for {tokens_to_process}/{cache_len} tokens: {lmemory / 1e9}",
-            c["full_attn_layers"],
-        )
-        return lmemory
+        return (qo_proj + kv_proj + kv_entries) * c["full_attn_layers"]
 
     def linear_attn_memory():
         q_proj = tokens_to_process * c["ld_q"]
         k_proj = tokens_to_process * c["ld_k"]
         voz_proj = tokens_to_process * c["ld_v"] * 3
-        lmemory = (
+        return (
             (q_proj + k_proj + voz_proj)
             * c["linear_attn_layers"]
             * model.dtype_size("mamba_ssm_dtype")
         )
-        print(
-            f"Linear memory for {tokens_to_process}/{cache_len} tokens: {lmemory / 1e9}"
-        )
-        return lmemory
 
     memory += full_attn_memory() + linear_attn_memory()
 
-    print(f"Memory for {tokens_to_process}/{cache_len} tokens: {memory / 1e9}")
     return memory
 
 
