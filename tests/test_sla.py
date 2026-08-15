@@ -43,32 +43,9 @@ def _tiny_hardware() -> Hardware:
 
 
 def _fake_model() -> Model:
-    from unittest.mock import MagicMock
+    from tests.fakes import make_fake_model
 
-    model = MagicMock(spec=Model)
-    model.kv_size_per_token = 100
-    model.name = "fake"
-    model.dtype_size = 2
-    model.max_context_size = 10_000_000
-    model.config = {
-        "num_key_value_heads": 4,
-        "num_hidden_layers": 2,
-        "head_dim": 64,
-        "head_size": 64,
-    }
-    model.cost_constants = {
-        "hidden_size": 256,
-        "intermediate_size": 1024,
-        "num_hidden_layers": 2,
-        "num_key_value_heads": 4,
-        "vocab_size": 1000,
-        "d_kv": 64,
-        "dtype_size": 2.0,
-        "output_flops": 512_000,
-        "matrices": 1_000_000,
-        "embedding_memory": 2_000_000,
-    }
-    return model
+    return make_fake_model()
 
 
 def _separate_scenario(
@@ -158,18 +135,17 @@ def test_tpot_sla_violation_raises():
     assert "TPOT SLA violated" in str(exc_info.value)
 
 
-def test_max_length_exceeding_context_raises(capsys):
+def test_max_length_exceeding_context_raises():
     # (isl + osl) * max_session_turns must be < model.max_context_size
     # (10_000_000 for the fake model). 2_000_000 * 5 == 10_000_000 is not.
-    scenario = _separate_scenario(isl=2_000_000, osl=1, sessions_per_user=1)
-    with pytest.raises(PrefillLatencyError):
+    scenario = _separate_scenario(isl=2_000_000, osl=0, sessions_per_user=1)
+    with pytest.raises(AssertionError) as exc_info:
         simulate_run_distributed(
             scenario,
             should_print=False,
             sla={"ttft_ms": 10000.0, "tpot_ms": 100.0},
         )
-    captured = capsys.readouterr()
-    assert "WARNING: Request scenario max length" in captured.out
+    assert "exceeds model context size" in str(exc_info.value)
 
 
 def test_prefill_latency_error_is_picklable():

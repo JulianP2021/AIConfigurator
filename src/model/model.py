@@ -1,4 +1,4 @@
-from functools import cached_property
+from functools import cached_property, lru_cache
 from typing import Any, cast
 
 # Third Party
@@ -11,8 +11,9 @@ class Model:
 
     def __init__(self, name: str):
         self.name = name
-        self.config = fetch_architecture(self.name)
-        # print(f"Model {self.name} config: {self.config}")
+        config = fetch_architecture(self.name)
+        self.config = config.get("text_config") or config
+        print(f"Model {self.name} config: {self.config}")
 
     @cached_property
     def max_context_size(self) -> int:
@@ -31,114 +32,81 @@ class Model:
             "n_positions, seq_length)"
         )
 
-    @cached_property
-    def dtype_size(self) -> float:
-        dtype = self.config.get("dtype", "float32")
+    @lru_cache(maxsize=100)  # noqa: B019
+    def dtype_size(self, key: str) -> int:
+        dtype = self.config.get(key, "float32")
         if dtype == "float16" or dtype == "bfloat16":
-            return 2.0
+            return 2
         if dtype == "float32":
-            return 4.0
+            return 4
+        if dtype == "float8":
+            return 1
         raise ValueError(f"Unsupported data type: {dtype}")
 
-    @cached_property
-    def kv_size_per_token(self) -> int:
-        # KV Calculation based on lmcache kv calculator:
-        dtype = self.config.get("dtype", "float32")
-        if dtype == "float32":
-            dtype_size = 4
-        elif dtype == "float16" or dtype == "bfloat16":
-            dtype_size = 2
-        else:
-            dtype_size = 1
+    @lru_cache(maxsize=1000)  # noqa: B019
+    def kv_size_tokens(self, tokens: int) -> int:
+        cfg = self.config
+        cc = self.cost_constants
+        size = 0
 
-        is_deep_seek_model = (
-            self.name.startswith("deepseek-ai/DeepSeek-V3")
-            or self.name == "deepseek-ai/DeepSeek-R1"
+        linear_attn_layers = cc["linear_attn_layers"]
+
+        total_elements = (
+            2
+            * cc["full_attn_layers"]
+            * tokens
+            * int(cfg["num_key_value_heads"])
+            * int(cfg["head_dim"])
         )
-        is_qwen3_model = self.name.lower().startswith("qwen/qwen3-")
+        size += total_elements * self.dtype_size("dtype")
 
-        is_glm4_model = self.name.startswith("zai-org/GLM-4.")
+        print("KV size full attn: ", size)
 
-        is_hunyuan_dense_model = (
-            self.name.lower().startswith("tencent/hunyuan-")
-            and self.name.lower() != "tencent/hunyuan-large"
+        state_matrix = 1 * cc["ld_v"] * cc["head_dim"] * linear_attn_layers
+
+        print("rec elements: ", state_matrix)
+
+        conv_matrix = (
+            1
+            * (2 * cc["ld_k"] + cc["ld_v"])
+            * cc["linear_conv_kernel_dim"]
+            * linear_attn_layers
         )
-
-        is_hunyuan_large_model = self.name.lower() == "tencent/hunyuan-large"
-
-        is_gqa_with_head_dim_model = (
-            is_qwen3_model or is_glm4_model or is_hunyuan_dense_model
-        )
-        tokens = 1
-        total_elements = 0
-        if is_deep_seek_model:
-            total_elements = (
-                self.config["num_hidden_layers"]
-                * tokens
-                * (self.config["kv_lora_rank"] + self.config["qk_rope_head_dim"])
-            )
-        elif is_hunyuan_large_model:
-            cla_share_factor = self.config["cla_share_factor"]
-            effective_layers = self.config["num_hidden_layers"] / cla_share_factor
-            total_elements = (
-                2
-                * effective_layers
-                * tokens
-                * self.config["num_key_value_heads"]
-                * self.config["head_size"]
-            )
-        elif is_gqa_with_head_dim_model:
-            total_elements = (
-                2
-                * self.config["num_hidden_layers"]
-                * tokens
-                * self.config["num_key_value_heads"]
-                * self.config["head_dim"]
-            )
-        else:
-            total_elements = (
-                2
-                * self.config["num_hidden_layers"]
-                * tokens
-                * self.config["num_key_value_heads"]
-                * self.config["head_size"]
-            )
-
-        return total_elements * dtype_size
+        size += state_matrix * self.dtype_size(
+            "mamba_ssm_dtype"
+        ) + conv_matrix * self.dtype_size("dtype")
+        return int(size)
 
     @cached_property
     def cost_constants(self) -> dict[str, float | int]:
-        cfg = self.config
+        c = self.config
 
-        d_kv = cfg.get(
-            "head_dim",
-            cfg["hidden_size"] // cfg["num_attention_heads"],
+        full_attn_layers = int(c.get("num_hidden_layers", 0)) / int(
+            c.get("full_attention_interval", 4)
         )
 
         return {
-            "hidden_size": int(cfg["hidden_size"]),
-            "intermediate_size": int(cfg["intermediate_size"]),
-            "num_hidden_layers": int(cfg["num_hidden_layers"]),
-            "num_key_value_heads": int(cfg["num_key_value_heads"]),
-            "vocab_size": int(cfg["vocab_size"]),
-            "d_kv": int(d_kv),
-            "dtype_size": float(self.dtype_size),
-            # FLOPs
-            "output_flops": int(2 * cfg["hidden_size"] * cfg["vocab_size"]),
-            # Memory
-            "matrices": int(
-                2 * self.dtype_size * cfg["hidden_size"] ** 2
-                + 3 * self.dtype_size * cfg["intermediate_size"] * cfg["hidden_size"]
-            ),
-            "embedding_memory": int(
-                2 * self.dtype_size * cfg["hidden_size"] * cfg["vocab_size"]
-            ),
+            "hidden_size": int(c["hidden_size"]),
+            "intermediate_size": int(c["intermediate_size"]),
+            "num_hidden_layers": int(c["num_hidden_layers"]),
+            "num_key_value_heads": int(c["num_key_value_heads"]),
+            "vocab_size": int(c["vocab_size"]),
+            "head_dim": int(c.get("head_dim", 0)),
+            "ld_q": int(c.get("linear_num_key_heads", 0))
+            * int(c.get("linear_key_head_dim", 0)),
+            "ld_k": int(c.get("linear_num_key_heads", 0))
+            * int(c.get("linear_key_head_dim", 0)),
+            "ld_v": int(c.get("linear_num_value_heads", 0))
+            * int(c.get("linear_value_head_dim", 0)),
+            "full_attn_layers": full_attn_layers,
+            "linear_attn_layers": int(c.get("num_hidden_layers", 0)) - full_attn_layers,
+            "linear_conv_kernel_dim": int(c.get("linear_conv_kernel_dim", 0)),
         }
 
 
 def fetch_architecture(model_name: str) -> dict[str, Any]:
     config = cast(
         PretrainedConfig,
-        cast(Any, AutoConfig).from_pretrained(model_name, local_files_only=True),
+        cast(Any, AutoConfig).from_pretrained(model_name, local_files_only=False),
     )
     return config.to_dict()

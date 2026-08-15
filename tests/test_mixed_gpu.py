@@ -14,32 +14,9 @@ from src.simulations.simulation_distributed import (
 
 
 def _fake_model() -> Model:
-    from unittest.mock import MagicMock
+    from tests.fakes import make_fake_model
 
-    model = MagicMock(spec=Model)
-    model.kv_size_per_token = 100
-    model.name = "fake"
-    model.dtype_size = 2
-    model.max_context_size = 10_000_000
-    model.config = {
-        "num_key_value_heads": 4,
-        "num_hidden_layers": 2,
-        "head_dim": 64,
-        "head_size": 64,
-    }
-    model.cost_constants = {
-        "hidden_size": 256,
-        "intermediate_size": 1024,
-        "num_hidden_layers": 2,
-        "num_key_value_heads": 4,
-        "vocab_size": 1000,
-        "d_kv": 64,
-        "dtype_size": 2.0,
-        "output_flops": 512_000,
-        "matrices": 1_000_000,
-        "embedding_memory": 2_000_000,
-    }
-    return model
+    return make_fake_model()
 
 
 def _make_hardware(

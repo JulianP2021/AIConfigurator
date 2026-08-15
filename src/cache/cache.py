@@ -1383,4 +1383,4 @@ class Cache:
         )
 
     def kv_size(self, model: Model, tokens: int) -> int:
-        return model.kv_size_per_token * tokens
+        return model.kv_size_tokens(tokens)

@@ -57,21 +57,32 @@ def _make_test_model() -> Model:
         "num_hidden_layers": 32,
         "vocab_size": 32000,
         "dtype": "bfloat16",
+        "head_dim": 128,
         "head_size": 128,
+        "full_attention_interval": 4,
+        "linear_num_key_heads": 16,
+        "linear_key_head_dim": 128,
+        "linear_num_value_heads": 16,
+        "linear_value_head_dim": 128,
+        "linear_conv_kernel_dim": 4,
+        "mamba_ssm_dtype": "float32",
     }
-    model.dtype_size = 2.0
+    model.dtype_size = lambda _: 2
     model.cost_constants = {
         "hidden_size": 4096,
         "intermediate_size": 11008,
         "num_hidden_layers": 32,
         "num_key_value_heads": 32,
         "vocab_size": 32000,
-        "d_kv": 128,
-        "dtype_size": 2.0,
-        "output_flops": 1,
-        "matrices": 1,
-        "embedding_memory": 1,
+        "head_dim": 128,
+        "ld_q": 2048,
+        "ld_k": 2048,
+        "ld_v": 2048,
+        "full_attn_layers": 8.0,
+        "linear_attn_layers": 24.0,
+        "linear_conv_kernel_dim": 4,
     }
+    model.kv_size_tokens = lambda tokens: tokens * 128
     return model
 
 
@@ -115,30 +126,9 @@ def _make_decode_instance(node_id: int, instance_id: int) -> DecodeInstance:
 
 def _make_cache() -> Cache:
     """Return a tiny cache with two nodes (0 and 1)."""
-    model = MagicMock()
-    model.kv_size_per_token = 1
-    model.config = {
-        "hidden_size": 4096,
-        "intermediate_size": 11008,
-        "num_attention_heads": 32,
-        "num_key_value_heads": 32,
-        "num_hidden_layers": 32,
-        "vocab_size": 32000,
-        "dtype": "bfloat16",
-    }
-    model.dtype_size = 2.0
-    model.cost_constants = {
-        "hidden_size": 4096,
-        "intermediate_size": 11008,
-        "num_hidden_layers": 32,
-        "num_key_value_heads": 32,
-        "vocab_size": 32000,
-        "d_kv": 128,
-        "dtype_size": 2.0,
-        "output_flops": 1,
-        "matrices": 1,
-        "embedding_memory": 1,
-    }
+    from tests.fakes import make_fake_model
+
+    model = make_fake_model()
     hw0 = MagicMock()
     hw0.spec.cpu_ram = 1_000_000
     hw0.spec.nvme_mem = 1_000_000

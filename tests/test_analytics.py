@@ -35,6 +35,7 @@ class FakeScheduler:
 def fake_prefill_instance():
     model = MagicMock()
     model.name = "test-model"
+    model.kv_size_tokens = lambda tokens: tokens
     hardware = MagicMock()
     hardware.gpu_mem = 1_000_000
     hardware.gpu_bw = 1_000_000_000
@@ -67,6 +68,7 @@ def fake_decode_instance():
     model = MagicMock()
     model.name = "test-model"
     model.kv_size_per_token = 1
+    model.kv_size_tokens = lambda tokens: tokens
     hardware = MagicMock()
     hardware.gpu_mem = 1_000_000
     hardware.gpu_bw = 1_000_000_000

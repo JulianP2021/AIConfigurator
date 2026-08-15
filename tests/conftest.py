@@ -1,7 +1,6 @@
 """Shared test fixtures for the simulator test suite."""
 
 from collections.abc import Generator
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -27,10 +26,10 @@ def qwen_model() -> Model:
 
 @pytest.fixture
 def fake_model() -> Model:
-    """A lightweight model stub with kv_size_per_token = 100 bytes."""
-    model = MagicMock(spec=Model)
-    model.kv_size_per_token = 100
-    return model
+    """A lightweight model stub with 100 bytes per token."""
+    from tests.fakes import make_fake_model
+
+    return make_fake_model()
 
 
 def _make_spec(

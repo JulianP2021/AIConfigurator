@@ -68,8 +68,10 @@ def kv_storage_break_even_seconds(
     per_gpu_hourly_price = hardware.spec.dph_base / max(1, hardware.spec.num_gpus)
     recompute_cost_usd = per_gpu_hourly_price * (recompute_time_s / 3600.0)
 
-    kv_size_bytes = model.kv_size_per_token * isl
+    kv_size_bytes = model.kv_size_tokens(isl)
     kv_size_gb = kv_size_bytes / (1024**3)
+
+    print("KV size: ", kv_size_bytes, " in GB: ", kv_size_gb)
 
     pricing = get_pricing()
     if ram_price_usd_per_gb_hour is None:

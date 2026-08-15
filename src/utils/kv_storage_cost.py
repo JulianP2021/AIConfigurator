@@ -28,7 +28,7 @@ def kv_storage_cost_per_hour_usd(
     tokens:
         Number of KV tokens to store.
     model:
-        Model object providing ``kv_size_per_token``. Used only when
+        Model object providing ``kv_size_tokens``. Used only when
         ``kv_size_gb_per_token`` is not provided.
     ram_price_usd_per_gb_hour:
         Optional RAM storage price. If ``None``, loaded from the AWS pricing
@@ -40,7 +40,7 @@ def kv_storage_cost_per_hour_usd(
         S3 storage cost in USD per GB per month. Defaults to $0.022.
     kv_size_gb_per_token:
         Optional KV size in GB per token. If provided, overrides the model's
-        ``kv_size_per_token``.
+        KV size.
 
     Returns:
     -------
@@ -51,7 +51,7 @@ def kv_storage_cost_per_hour_usd(
         return {"ram": 0.0, "ssd": 0.0, "s3": 0.0}
 
     if kv_size_gb_per_token is None:
-        kv_size_bytes = model.kv_size_per_token * tokens
+        kv_size_bytes = model.kv_size_tokens(tokens)
         kv_size_gb = kv_size_bytes / (1024**3)
     else:
         kv_size_gb = kv_size_gb_per_token * tokens

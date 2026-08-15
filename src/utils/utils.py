@@ -8,15 +8,39 @@ from src.request.request import Request
 def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
     embedding = tokens_to_process
-    qo_proj = tokens_to_process * 4 * c["hidden_size"] ** 2
-    kv_proj = (
-        tokens_to_process * 4 * c["hidden_size"] * c["num_key_value_heads"] * c["d_kv"]
-    )
-    attn = 2 * ((tokens_to_process + cache_len) ** 2 - cache_len**2) * c["hidden_size"]
-    ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
-    per_layer_flops = qo_proj + kv_proj + attn + ffn
     output_proj = 2 * c["hidden_size"] * c["vocab_size"]
-    return int(embedding + per_layer_flops * c["num_hidden_layers"] + output_proj)
+    flops = embedding + output_proj
+
+    def full_attn_flops():
+        qo_proj = tokens_to_process * 4 * c["hidden_size"] ** 2
+        kv_proj = (
+            tokens_to_process
+            * 4
+            * c["hidden_size"]
+            * c["num_key_value_heads"]
+            * c["head_dim"]
+        )
+        attn = (
+            2 * ((tokens_to_process + cache_len) ** 2 - cache_len**2) * c["hidden_size"]
+        )
+        ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
+        per_layer_flops = qo_proj + kv_proj + attn + ffn
+        return per_layer_flops * c["full_attn_layers"]
+
+    def linear_attn_flops():
+        q_proj = 2 * tokens_to_process * c["ld_q"] * c["hidden_size"]
+        k_proj = 2 * tokens_to_process * c["ld_k"] * c["hidden_size"]
+        voz_proj = 6 * tokens_to_process * c["ld_v"] * c["hidden_size"]
+        ab_proj = 4 * tokens_to_process * (c["ld_k"] / c["head_dim"])
+        attn = 2 * tokens_to_process * c["ld_q"] * c["ld_v"]
+        ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
+
+        per_layer_flops = q_proj + k_proj + voz_proj + +ab_proj + attn + ffn
+        return per_layer_flops * c["linear_attn_layers"]
+
+    flops += full_attn_flops() + linear_attn_flops()
+    print(f"Flops for {tokens_to_process}/{cache_len} tokens: {flops}")
+    return int(flops)
 
 
 def calculate_flops(
@@ -33,35 +57,73 @@ def calculate_flops(
 
 @lru_cache(maxsize=1280)
 def _mem_model(model: Model) -> int:
-    c = model.cost_constants
-    matrices = (
-        2 * model.dtype_size * (c["hidden_size"] ** 2)
-        + 3 * model.dtype_size * c["intermediate_size"] * c["hidden_size"]
-    )
+    c = model.config
+    cc = model.cost_constants
+    ffn: float = 3 * int(c.get("intermediate_size", 0)) * cc["hidden_size"]
+    memory = 2 * cc["hidden_size"] * cc["vocab_size"]
 
-    return int(
-        matrices * c["num_hidden_layers"]
-        + 2 * model.dtype_size * c["hidden_size"] * c["vocab_size"]
-    )
+    def full_attn_memory():
+        full_attn_projection_matrices: float = 4 * cc["hidden_size"] ** 2
+        return (full_attn_projection_matrices + ffn) * cc["full_attn_layers"]
+
+    def linear_attn_memory():
+        linear_attn_projection_matrices: float = cc["hidden_size"] * (
+            cc["ld_q"] + cc["ld_k"] + cc["ld_v"] * 3
+        )
+        return (linear_attn_projection_matrices + ffn) * cc["linear_attn_layers"]
+
+    memory += full_attn_memory() + linear_attn_memory()
+    memory += 2 * cc["hidden_size"] * cc["vocab_size"]  # embedding + output projection
+
+    return int(memory * model.dtype_size("dtype"))
 
 
 @lru_cache(maxsize=1280)
 def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> int:
     c = model.cost_constants
-    embedding = model.dtype_size * c["hidden_size"] * c["vocab_size"]
-    qo_proj = tokens_to_process * 2 * model.dtype_size * c["hidden_size"]
-    kv_proj = (
-        tokens_to_process
-        * 2
-        * model.dtype_size
-        * model.config["num_key_value_heads"]
-        * c["d_kv"]
-    )
-    kv_entries = 2 * model.dtype_size * (cache_len) * c["hidden_size"]
-    layer_norm = 2 * model.dtype_size * c["hidden_size"]
-    per_layer_memory = qo_proj + kv_proj + kv_entries + layer_norm
-    output_proj = model.dtype_size * c["hidden_size"] * c["vocab_size"]
-    return embedding + per_layer_memory * c["num_hidden_layers"] + output_proj
+    memory = 0
+
+    def full_attn_memory():
+        qo_proj = tokens_to_process * 2 * model.dtype_size("dtype") * c["hidden_size"]
+        kv_proj = (
+            tokens_to_process
+            * 2
+            * model.dtype_size("dtype")
+            * model.config["num_key_value_heads"]
+            * c["head_dim"]
+        )
+        kv_entries = (
+            2
+            * model.dtype_size("dtype")
+            * (cache_len)
+            * model.config["num_key_value_heads"]
+            * c["head_dim"]
+        )
+        lmemory = (qo_proj + kv_proj + kv_entries) * c["full_attn_layers"]
+        print(
+            f"Full memory for {tokens_to_process}/{cache_len} tokens: {lmemory / 1e9}",
+            c["full_attn_layers"],
+        )
+        return lmemory
+
+    def linear_attn_memory():
+        q_proj = tokens_to_process * c["ld_q"]
+        k_proj = tokens_to_process * c["ld_k"]
+        voz_proj = tokens_to_process * c["ld_v"] * 3
+        lmemory = (
+            (q_proj + k_proj + voz_proj)
+            * c["linear_attn_layers"]
+            * model.dtype_size("mamba_ssm_dtype")
+        )
+        print(
+            f"Linear memory for {tokens_to_process}/{cache_len} tokens: {lmemory / 1e9}"
+        )
+        return lmemory
+
+    memory += full_attn_memory() + linear_attn_memory()
+
+    print(f"Memory for {tokens_to_process}/{cache_len} tokens: {memory / 1e9}")
+    return memory
 
 
 def calculate_memory(

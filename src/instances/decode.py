@@ -231,7 +231,7 @@ class DecodeInstance:
             if not self.queue and not self.current_batch:
                 request.decode_start_ms = now
             self.queue.append((request, -1))
-            self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
+            self._kv_cache_bytes += self.model.kv_size_tokens(request.cache_length)
             self.refresh_batch = True
         if self.active_decode_tokens is not None:
             self.active_decode_tokens += float(request.isl) + float(request.osl)
@@ -334,7 +334,7 @@ class DecodeInstance:
             self._kv_cache_bytes = max(
                 0,
                 int(self._kv_cache_bytes)
-                - int(self.model.kv_size_per_token) * int(request.cache_length),
+                - int(self.model.kv_size_tokens(int(request.cache_length))),
             )
             # Keep the UploadRequest around so the full background eviction
             # duration can be captured once every track is exhausted.
@@ -369,7 +369,7 @@ class DecodeInstance:
             request.decode_queue_start_ms = now
             self.queue.append((request, 0))
             self.current_batch = None
-            self._kv_cache_bytes += self.model.kv_size_per_token * request.cache_length
+            self._kv_cache_bytes += self.model.kv_size_tokens(request.cache_length)
             # Keep the DownloadRequest around so the full background eviction
             # duration can be captured once every track is exhausted.
             self.background_download_queue.append(download_request)
@@ -434,7 +434,7 @@ class DecodeInstance:
                             LOG_INSTANCE,
                             f"[t={now:.3f} ms] [Decode {self.instance_id}] Removing finished request {(r.user_id, r.session_id)}",
                         )
-                    removed_cache_bytes += self.model.kv_size_per_token * r.cache_length
+                    removed_cache_bytes += self.model.kv_size_tokens(r.cache_length)
                 else:
                     new_queue.append((r, t))
             self.queue = new_queue
