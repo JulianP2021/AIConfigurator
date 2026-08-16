@@ -24,6 +24,7 @@ class Model:
     def __init__(self, name: str):
         if not hasattr(self, "config"):
             config = fetch_architecture(name)
+            print(config)
             self.config = config.get("text_config") or config
 
     @cached_property

@@ -222,7 +222,7 @@ class DecodeInstance:
             if not self.queue and not self.current_batch:
                 request.decode_start_ms = now
             self.queue.append((request, -1))
-            self._kv_cache_bytes += self.model.kv_size_tokens(request.cache_length)
+            self._kv_cache_bytes += self.model.kv_size_tokens(request.isl + request.osl)
             self.refresh_batch = True
         if self.active_decode_tokens is not None:
             self.active_decode_tokens += float(request.isl) + float(request.osl)
@@ -323,12 +323,6 @@ class DecodeInstance:
             request.decode_upload_end_ms = now
             request.decode_upload_active_ms = upload_request.upload_active_duration_ms()
             finished_requests.append(request)
-            # Remove the request's KV from the decode instance working set.
-            self._kv_cache_bytes = max(
-                0,
-                int(self._kv_cache_bytes)
-                - int(self.model.kv_size_tokens(int(request.cache_length))),
-            )
             # Keep the UploadRequest around so the full background eviction
             # duration can be captured once every track is exhausted.
             self.background_upload_queue.append(upload_request)

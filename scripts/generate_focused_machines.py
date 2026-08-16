@@ -331,7 +331,7 @@ def main() -> int:
                 focus_values[dim] = [pcie * 2]
             elif dim == "ram":
                 ram = args.ram_mem_gb
-                focus_values[dim] = [ram / 2, ram]
+                focus_values[dim] = [ram / 1.5, ram, ram * 1.5]
             else:
                 focus_values[dim] = _DEFAULT_FOCUS_VALUES[dim]
 

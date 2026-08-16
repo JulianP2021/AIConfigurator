@@ -339,17 +339,6 @@ def get_main_parser(env: EnvConfig) -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--machine-hardware",
-        type=str,
-        default=env.machine_hardware,
-        help=(
-            f"Hardware preset key from the machine database (default: {env.machine_hardware}). "
-            "Used when --prefill-hardware/--decode-hardware are not set (for colocated mode). "
-            "Quote values containing spaces/hash, e.g. "
-            '"H200 x8 #692c33bd"'
-        ),
-    )
-    parser.add_argument(
         "--mixed-gpu-donor",
         type=str,
         default=env.mixed_gpu_donor,

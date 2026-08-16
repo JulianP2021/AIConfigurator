@@ -16,7 +16,7 @@ from src.scheduler.bandwidth_scheduler import BandwidthScheduler
 from src.utils.utils import calculate_flops, calculate_memory
 
 
-decode_id_counter: int = 0
+prefill_id_counter: int = 0
 
 
 class PrefillInstance:
@@ -63,9 +63,9 @@ class PrefillInstance:
         self.max_batch_size = max_batch_size
         self.active_prefill_tokens = 0.0
 
-        global decode_id_counter
-        self.instance_id = decode_id_counter
-        decode_id_counter += 1
+        global prefill_id_counter
+        self.instance_id = prefill_id_counter
+        prefill_id_counter += 1
 
         # system_name, backend_version = get_meta(
         #     backend_version="",

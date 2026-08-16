@@ -83,7 +83,6 @@ class EnvConfig:
     debug: bool = False
 
     # Hardware preset
-    machine_hardware: str = "AWS p5en.48xlarge (H200 x8)"
     prefill_hardware: str = ""
     decode_hardware: str = ""
 
@@ -121,14 +120,13 @@ _DEFAULTS = {
     "INTER_NODE_NETWORK_UP_GBPS": "100.0",
     "INTER_NODE_NETWORK_DOWN_GBPS": "100.0",
     "ROUTER_PREFILL_LOAD_SCALE": "1.0",
-    "ROUTER_ACTIVE_WORK_SCALE": "0.001",
+    "ROUTER_ACTIVE_WORK_SCALE": "0.05",
     "ROUTER_DEVICE_CREDIT": "0.8",
     "ROUTER_REMOTE_RAM_CREDIT": "0.0",
     "ROUTER_REMOTE_SSD_CREDIT": "0.3",
     "ROUTER_S3_CREDIT": "0.1",
     "LOG_MASK": "15",
     "DEBUG": "false",
-    "MACHINE_HARDWARE": "AWS p5en.48xlarge (H200 x8)",
     "PREFILL_HARDWARE": "",
     "DECODE_HARDWARE": "",
 }
@@ -270,7 +268,6 @@ def load_env(project_root: Path | None = None) -> EnvConfig:
         router_s3_credit=float(merged["ROUTER_S3_CREDIT"]),
         log_mask=int(merged["LOG_MASK"], 0),
         debug=_parse_bool(merged["DEBUG"]),
-        machine_hardware=str(merged["MACHINE_HARDWARE"]),
         prefill_hardware=str(merged["PREFILL_HARDWARE"]),
         decode_hardware=str(merged["DECODE_HARDWARE"]),
     )
