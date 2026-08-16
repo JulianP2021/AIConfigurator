@@ -80,7 +80,7 @@ def _derive_nvme_bw_from_capacity(ssd_mem_gb: float) -> int:
 
 
 def _Gb_to_bytes(gb: float) -> int:
-    return int(gb * _GB)
+    return int(gb * _GB / 8.0)
 
 
 def _build_machine_config(settings: dict[str, Any]) -> dict:

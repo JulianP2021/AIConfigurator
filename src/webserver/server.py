@@ -1458,11 +1458,14 @@ def _build_users_cost_plot(
 
     fig, ax = plt.subplots(figsize=(12, 7))
 
+    # Draw order for scatter points.  Mixed points are drawn before colocated
+    # ones so that when they overlap, the colocated marker is always on top.
+    scatter_mode_order = ("separate", "mixed", "colocated")
     for users in sorted(by_users):
         grouped_by_mode: dict[str, list[dict[str, Any]]] = {}
         for row in by_users[users]:
             grouped_by_mode.setdefault(_mode_for_row(row), []).append(row)
-        for mode in MODE_COLORS:
+        for mode in scatter_mode_order:
             mode_rows = sorted(
                 grouped_by_mode.get(mode, []),
                 key=lambda r: r.get("total_cost_usd_per_hour", float("inf")),
@@ -1548,7 +1551,8 @@ def _build_users_cost_plot(
                 )
         return label
 
-    for mode, best_by_users in best_per_mode.items():
+    for mode in scatter_mode_order:
+        best_by_users = best_per_mode.get(mode, {})
         if not best_by_users:
             continue
         series = sorted(best_by_users.items(), key=lambda item: item[0])
@@ -2170,4 +2174,4 @@ async def plot_users_cost(results_dir: str = Form(...)):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")

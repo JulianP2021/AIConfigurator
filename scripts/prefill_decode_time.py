@@ -90,6 +90,13 @@ def _parse_args() -> argparse.Namespace:
         default="Qwen/Qwen3-8B",
         help="HuggingFace model name (default: Qwen/Qwen3-8B).",
     )
+    parser.add_argument(
+        "--chunked",
+        type=int,
+        default=0,
+        help="Chunk size. No chunked prefill if chunk size = 0 (default 0)",
+    )
+
     return parser.parse_args()
 
 
@@ -103,10 +110,34 @@ def main() -> None:
         sys.exit(1)
 
     model = Model(args.model)
-    p_flops, p_mem = prefill_flops_mem(model, args.isl, args.cached)
-    d_flops, d_mem = decode_flops_mem(model, args.isl)
 
-    prefill_ms, prefill_bound = time_ms(p_flops, p_mem, args.flops, args.mem_bw)
+    p_flops = 0
+    p_mem = 0
+
+    prefill_ms = 0
+
+    prefill_bound = ""
+
+    length = args.cached
+    while length < args.isl:
+        l_p_flops, l_p_mem = prefill_flops_mem(model, args.isl, length)
+        p_flops += l_p_flops
+        p_mem += l_p_mem
+
+        l_prefill_ms, l_prefill_bound = time_ms(
+            l_p_flops, l_p_mem, args.flops, args.mem_bw
+        )
+
+        prefill_ms += l_prefill_ms
+
+        prefill_bound = l_prefill_bound
+
+        if args.chunked == 0:
+            length = args.isl
+        else:
+            length += args.chunked
+
+    d_flops, d_mem = decode_flops_mem(model, args.isl)
     decode_ms, decode_bound = time_ms(d_flops, d_mem, args.flops, args.mem_bw)
 
     print(
