@@ -221,7 +221,6 @@ __marimo__/
 comparison.json
 results.json
 config.json
-results/
 saved_results/
 src/hardware/custom_hardware.json
 timeline.png

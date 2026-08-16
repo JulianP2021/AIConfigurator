@@ -1,5 +1,50 @@
 {
   "machines": {
+    "Focused A100_80GB x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 30.97382619665146
+    },
+    "Focused A100_80GB RAM 800GB x8 r800 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB RAM 800GB x8 r800 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 800000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 29.1111810474205
+    },
+    "Focused A100_80GB RAM 1800GB x8 r1800 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB RAM 1800GB x8 r1800 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1800000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 33.767793920497894
+    },
     "Focused A100_80GB RAM 3000GB x8 r3000 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0": {
       "name": "Focused A100_80GB RAM 3000GB x8 r3000 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet50.0/50.0",
       "gpu_name": "A100_80GB",
@@ -9,11 +54,26 @@
       "cpu_ram": 3000000000000,
       "nvme_mem": 1080000000000,
       "nvme_bw": 2109375000,
-      "network_inet_up": 50000000000,
-      "network_inet_down": 50000000000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
       "network_inter_node_up": 12500000000,
       "network_inter_node_down": 12500000000,
-      "dph_base": 39.443229368190764
+      "dph_base": 39.355729368190765
+    },
+    "Focused A100_80GB NVLink 500GBps x8 r1200 s1080 p250 nvl500 sbw2.1 in100.0/100.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB NVLink 500GBps x8 r1200 s1080 p250 nvl500 sbw2.1 in100.0/100.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 500000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 34.32658746526718
     },
     "Focused A100_80GB SSD 4000GB x8 r1200 s4000 p250 nvl350 sbw7.8 in100.0/100.0 inet50.0/50.0": {
       "name": "Focused A100_80GB SSD 4000GB x8 r1200 s4000 p250 nvl350 sbw7.8 in100.0/100.0 inet50.0/50.0",
@@ -24,11 +84,11 @@
       "cpu_ram": 1200000000000,
       "nvme_mem": 4000000000000,
       "nvme_bw": 7812500000,
-      "network_inet_up": 50000000000,
-      "network_inet_down": 50000000000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
       "network_inter_node_up": 12500000000,
       "network_inter_node_down": 12500000000,
-      "dph_base": 31.401258936386107
+      "dph_base": 31.313758936386108
     },
     "Focused A100_80GB SSD 8000GB x8 r1200 s8000 p250 nvl350 sbw15.6 in100.0/100.0 inet50.0/50.0": {
       "name": "Focused A100_80GB SSD 8000GB x8 r1200 s8000 p250 nvl350 sbw15.6 in100.0/100.0 inet50.0/50.0",
@@ -39,11 +99,71 @@
       "cpu_ram": 1200000000000,
       "nvme_mem": 8000000000000,
       "nvme_bw": 15625000000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 31.779420223693847
+    },
+    "Focused A100_80GB INTER NODE BW 200.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in200.0/200.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB INTER NODE BW 200.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in200.0/200.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 25000000000,
+      "network_inter_node_down": 25000000000,
+      "dph_base": 30.998826196651457
+    },
+    "Focused A100_80GB INTER NODE BW 1000.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in1000.0/1000.0 inet50.0/50.0": {
+      "name": "Focused A100_80GB INTER NODE BW 1000.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in1000.0/1000.0 inet50.0/50.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 6250000000,
+      "network_inet_down": 6250000000,
+      "network_inter_node_up": 125000000000,
+      "network_inter_node_down": 125000000000,
+      "dph_base": 31.19882619665146
+    },
+    "Focused A100_80GB INET BW 0.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet0.0/0.0": {
+      "name": "Focused A100_80GB INET BW 0.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet0.0/0.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
+      "network_inet_up": 0,
+      "network_inet_down": 0,
+      "network_inter_node_up": 12500000000,
+      "network_inter_node_down": 12500000000,
+      "dph_base": 30.961326196651456
+    },
+    "Focused A100_80GB INET BW 400.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet400.0/400.0": {
+      "name": "Focused A100_80GB INET BW 400.0Gbps x8 r1200 s1080 p250 nvl350 sbw2.1 in100.0/100.0 inet400.0/400.0",
+      "gpu_name": "A100_80GB",
+      "num_gpus": 8,
+      "pcie_bw": 250000000000,
+      "nvlink_bw": 350000000000,
+      "cpu_ram": 1200000000000,
+      "nvme_mem": 1080000000000,
+      "nvme_bw": 2109375000,
       "network_inet_up": 50000000000,
       "network_inet_down": 50000000000,
       "network_inter_node_up": 12500000000,
       "network_inter_node_down": 12500000000,
-      "dph_base": 31.866920223693846
+      "dph_base": 31.061326196651457
     }
   }
 }

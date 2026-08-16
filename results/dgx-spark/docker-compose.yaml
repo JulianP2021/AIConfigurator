@@ -1,0 +1,124 @@
+services:
+  lmcache:
+    image: ${IMAGE_TAG:-vllm-node}
+    container_name: lmcache-server
+    privileged: true
+    ipc: host
+    entrypoint: [""]
+    command:
+      - bash
+      - -c
+      - |
+        export LMCACHE_DISABLE_BANNER=1
+        mkdir -p /data/lmcache
+        exec lmcache server \
+          --l1-size-gb 5 \
+          --eviction-policy LRU \
+          --chunk-size ${LMCACHE_CHUNK_SIZE:-1024} \
+          --host 0.0.0.0 \
+          --l1-align-bytes 16384 \
+          --max-gpu-workers 1 \
+          --max-cpu-workers 8 \
+          --port ${LMCACHE_ZMQ_PORT:-5555} \
+          --http-host 0.0.0.0 \
+          --http-port ${LMCACHE_HTTP_PORT:-8080} \
+          --l2-adapter '{"type":"fs","base_path":"/data/lmcache"}'
+          --supported-transfer-mode lmcache_driven
+          --eviction-trigger-watermark 0.85 \
+          --eviction-ratio 0.10 \
+          --eviction-policy LRU
+    ports:
+      - "${LMCACHE_ZMQ_PORT:-5555}:${LMCACHE_ZMQ_PORT:-5555}"
+      - "${LMCACHE_HTTP_PORT:-8080}:${LMCACHE_HTTP_PORT:-8080}"
+    volumes:
+      - ${HF_HOME:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+      - ${HOME}/.cache/vllm:/root/.cache/vllm
+      - ${HOME}/.cache/flashinfer:/root/.cache/flashinfer
+      - ${HOME}/.triton:/root/.triton
+      - ${HOME}/.cache/lmcache-disk:/data/lmcache
+    environment:
+      - LMCACHE_DISABLE_BANNER=1
+      - LMCACHE_LOG_LEVEL=${LMCACHE_LOG_LEVEL:-INFO}
+      - LMCACHE_DEBUG=${LMCACHE_DEBUG:-0}
+      - NIXL_CUDA_VERSION=13
+      - LMCACHE_CHUNK_SIZE=${LMCACHE_CHUNK_SIZE:-8432}
+      - HF_HOME=/root/.cache/huggingface
+      - NCCL_IGNORE_CPU_AFFINITY=1
+      - CUDA_VISIBLE_DEVICES
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true
+    tty: true
+
+  vllm:
+    image: ${IMAGE_TAG:-vllm-node}
+    container_name: vllm-solo
+    privileged: true
+    ipc: host
+    entrypoint: [""]
+    ports:
+      - "${VLLM_PORT:-8000}:${VLLM_PORT:-8000}"
+    command:
+      - bash
+      - -c
+      - |
+        exec vllm serve ${MODEL:-Qwen/Qwen3.8-27B} \
+          --host 0.0.0.0 \
+          --port ${VLLM_PORT:-8000} \
+          --trust-remote-code \
+          --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.7} \
+          --tensor-parallel-size 1 \
+          --enable-auto-tool-choice \
+          --tool-call-parser qwen3_coder \
+          --reasoning-parser qwen3 \
+          --mm-encoder-tp-mode data
+          --language-model-only
+          --no-enable-chunked-prefill
+          --enable-chunked-prefill=False
+    volumes:
+      - ${HF_HOME:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+      - ${HOME}/.cache/vllm:/root/.cache/vllm
+      - ${HOME}/.cache/flashinfer:/root/.cache/flashinfer
+      - ${HOME}/.triton:/root/.triton
+      - ${HOME}/logs:/logs
+      - ./gpu_polling_logger.py:/workspace/gpu_polling_logger.py:ro
+    environment:
+      - NCCL_IGNORE_CPU_AFFINITY=1
+      - HF_HOME=/root/.cache/huggingface
+      - VLLM_BASE_DIR=/workspace/vllm
+      - TIKTOKEN_ENCODINGS_BASE=/workspace/vllm/tiktoken_encodings
+      - VLLM_LOGGING_LEVEL=DEBUG
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_ENABLE_V1_MULTIPROCESSING=1
+      - VLLM_FLASHINFER_ALLREDUCE_BACKEND=trtllm
+      - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+      - NCCL_DEBUG=INFO
+      - TORCH_DISTRIBUTED_DEBUG=DETAIL
+      - HF_TOKEN
+      - HF_HUB_ENABLE_HF_TRANSFER
+      - CUDA_VISIBLE_DEVICES
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_PORT:-8000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      lmcache:
+        condition: service_started
+
