@@ -151,14 +151,14 @@ class BandwidthScheduler:
                     )
                     leg.bandwidth_bytes_per_ms = min(source_bw, dest_bw) / 1000.0
                 elif leg.bottleneck == "S3_UPLOAD":
-                    s3_bw = self.s3_spec.up_bw_bytes_per_s / s3_upload_count
+                    s3_bw = self.s3_spec.up_bw_bytes_per_s
                     node_bw = (
                         self.node_specs[leg.source_node_id].network_inet_up
                         / s3_upload_node_counts[leg.source_node_id]
                     )
                     leg.bandwidth_bytes_per_ms = min(s3_bw, node_bw) / 1000.0
                 elif leg.bottleneck == "S3_DOWNLOAD":
-                    s3_bw = self.s3_spec.down_bw_bytes_per_s / s3_download_count
+                    s3_bw = self.s3_spec.down_bw_bytes_per_s
                     node_bw = (
                         self.node_specs[leg.dest_node_id].network_inet_down
                         / s3_download_node_counts[leg.dest_node_id]

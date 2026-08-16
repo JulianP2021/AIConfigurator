@@ -78,7 +78,7 @@ def main() -> None:
 
     intensities: dict[str, float] = {}
     for name, spec in gpu_db.items():
-        mem_bytes = spec["gpu_mem"]
+        mem_bytes = spec["gpu_bw"]
         if mem_bytes <= 0:
             raise ValueError(f"{name}: gpu_mem must be > 0, got {mem_bytes}")
         intensities[name] = spec["flops"] / mem_bytes

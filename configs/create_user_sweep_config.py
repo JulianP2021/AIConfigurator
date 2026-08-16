@@ -151,8 +151,6 @@ if __name__ == "__main__":
                             int(prefill_machine["num_gpus"]) - prefill_gpus_per_node
                         )
                         for donor_name in mixed_gpu_donor_pool:
-                            if donor_name == machine_name:
-                                continue
                             donor_total_gpus = parse_gpu_count(donor_name)
                             if donor_total_gpus < decode_gpus_per_node:
                                 continue

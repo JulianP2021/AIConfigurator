@@ -46,7 +46,7 @@ from src.utils.utils import parse_float_list
 
 
 _DEFAULT_FOCUS_VALUES: dict[str, list[float]] = {
-    "ssd_mem": [16000.0, 32000.0],
+    "ssd_mem": [4000.0, 8000.0],
     "inter_node_bw": [200.0, 1000.0],
     "inet_bw": [0.0, 400.0],
 }
@@ -331,7 +331,7 @@ def main() -> int:
                 focus_values[dim] = [pcie * 2]
             elif dim == "ram":
                 ram = args.ram_mem_gb
-                focus_values[dim] = [ram / 1.5, ram, ram * 1.5]
+                focus_values[dim] = [ram / 1.5, ram, ram * 1.5, ram * 2.5]
             else:
                 focus_values[dim] = _DEFAULT_FOCUS_VALUES[dim]
 
