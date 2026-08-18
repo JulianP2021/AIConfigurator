@@ -12,7 +12,13 @@ def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> in
     flops = embedding + output_proj
 
     def full_attn_flops():
-        qo_proj = tokens_to_process * 4 * c["hidden_size"] ** 2
+        qo_proj = (
+            tokens_to_process
+            * 4
+            * c["hidden_size"]
+            * c["num_attention_heads"]
+            * c["head_dim"]
+        )
         kv_proj = (
             tokens_to_process
             * 4
@@ -21,7 +27,10 @@ def _calculate_flops(model: Model, tokens_to_process: int, cache_len: int) -> in
             * c["head_dim"]
         )
         attn = (
-            2 * ((tokens_to_process + cache_len) ** 2 - cache_len**2) * c["hidden_size"]
+            2
+            * ((tokens_to_process + cache_len) ** 2 - cache_len**2)
+            * c["num_attention_heads"]
+            * c["head_dim"]
         )
         ffn = tokens_to_process * 6 * c["intermediate_size"] * c["hidden_size"]
         per_layer_flops = qo_proj + kv_proj + attn + ffn
@@ -59,10 +68,13 @@ def _mem_model(model: Model) -> int:
     c = model.config
     cc = model.cost_constants
     ffn: float = 3 * int(c.get("intermediate_size", 0)) * cc["hidden_size"]
-    memory = 2 * cc["hidden_size"] * cc["vocab_size"]
+    memory = 0
 
     def full_attn_memory():
-        full_attn_projection_matrices: float = 4 * cc["hidden_size"] ** 2
+        full_attn_projection_matrices: float = cc["hidden_size"] * (
+            2 * cc["num_attention_heads"] * cc["head_dim"]
+            + 2 * c["num_key_value_heads"] * c["head_dim"]
+        )
         return (full_attn_projection_matrices + ffn) * cc["full_attn_layers"]
 
     def linear_attn_memory():
@@ -104,8 +116,10 @@ def _calculate_memory(model: Model, tokens_to_process: int, cache_len: int) -> i
         q_proj = tokens_to_process * c["ld_q"]
         k_proj = tokens_to_process * c["ld_k"]
         voz_proj = tokens_to_process * c["ld_v"] * 3
+        conv = 4 * (c["ld_q"] + c["ld_k"] + c["ld_v"])
+        state = c["ld_k"] * c["ld_v"]
         return (
-            (q_proj + k_proj + voz_proj)
+            (q_proj + k_proj + voz_proj + conv + state)
             * c["linear_attn_layers"]
             * model.dtype_size("mamba_ssm_dtype")
         )

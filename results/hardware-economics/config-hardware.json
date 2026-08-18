@@ -24,8 +24,8 @@
         "tpot_ms": "70.0"
     },
     "user_delay_fraction": 0.01,
-    "user_delay_min_ms": 36000000.0,
-    "user_delay_max_ms": 36000000.0,
+    "user_delay_min_ms": 3600000.0,
+    "user_delay_max_ms": 3600000.0,
     "startup_arrival_mean_ms": 3600000.0,
     "random_seed": 42,
     "config_type": "colocated",

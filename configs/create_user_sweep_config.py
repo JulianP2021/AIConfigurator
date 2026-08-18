@@ -37,7 +37,6 @@ if __name__ == "__main__":
 
     # High-end training GPUs to keep when --high-end-only is set.
     HIGH_END_GPUS = {
-        "A100_40GB",
         "A100_80GB",
         "H100 NVL",
         "H200",
@@ -85,10 +84,9 @@ if __name__ == "__main__":
     mixed_configs: list[dict[str, str]] = []
     separate_configs: list[dict[str, str]] = []
 
-    colocated_nodes_values = [1, 2, 4, 8, 12, 16]
+    colocated_nodes_values = [1, 2, 4, 8, 12]
     max_num_nodes = max(colocated_nodes_values)
-    prefill_node_values = [1, 2, 4, 8, 12, 14]
-    decode_node_values = [1, 2, 4, 8]
+    prefill_node_values = [1, 2, 4, 6, 8]
     batch_size_values = [64]
 
     mixed_gpu_donor_pool = sorted({name for name, _ in sorted_possible_machines})
@@ -103,11 +101,11 @@ if __name__ == "__main__":
                     if prefill_machine["num_gpus"] == 2:
                         prefill_gpus_per_node_values = [1]
                     if prefill_machine["num_gpus"] == 4:
-                        prefill_gpus_per_node_values = [2, 3]
+                        prefill_gpus_per_node_values = [1, 2, 3]
                     if prefill_machine["num_gpus"] == 6:
-                        prefill_gpus_per_node_values = [3, 4]
+                        prefill_gpus_per_node_values = [2, 3, 4]
                     if prefill_machine["num_gpus"] == 8:
-                        prefill_gpus_per_node_values = [4, 6]
+                        prefill_gpus_per_node_values = [2, 4, 6]
 
                     for prefill_gpus_per_node in prefill_gpus_per_node_values:
                         decode_gpus_per_node = (
@@ -138,11 +136,11 @@ if __name__ == "__main__":
             if prefill_machine["num_gpus"] == 2:
                 prefill_gpus_per_node_values = [1]
             if prefill_machine["num_gpus"] == 4:
-                prefill_gpus_per_node_values = [2, 3]
+                prefill_gpus_per_node_values = [1, 2, 3]
             if prefill_machine["num_gpus"] == 6:
-                prefill_gpus_per_node_values = [3, 4]
+                prefill_gpus_per_node_values = [2, 3, 4]
             if prefill_machine["num_gpus"] == 8:
-                prefill_gpus_per_node_values = [4, 6]
+                prefill_gpus_per_node_values = [2, 4, 6]
 
             for nodes in colocated_nodes_values:
                 for batch_size in batch_size_values:
@@ -173,6 +171,18 @@ if __name__ == "__main__":
         for prefill_machine_name, _ in sorted_possible_machines:
             for decode_machine_name, _ in sorted_possible_machines:
                 for prefill_nodes in prefill_node_values:
+                    decode_node_values = []
+                    if prefill_nodes == 1:
+                        decode_node_values = [1, 3, 7, 11]
+                    if prefill_nodes == 2:
+                        decode_node_values = [2, 6, 10]
+                    if prefill_nodes == 4:
+                        decode_node_values = [4, 8]
+                    if prefill_nodes == 6:
+                        decode_node_values = [2, 6]
+                    if prefill_nodes == 8:
+                        decode_node_values = [4]
+
                     for decode_nodes in decode_node_values:
                         if prefill_nodes + decode_nodes > max_num_nodes:
                             continue

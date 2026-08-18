@@ -43,6 +43,7 @@ def make_fake_model(*, kv_bytes_per_token: int = 100) -> MagicMock:
         "intermediate_size": 1024,
         "num_hidden_layers": 2,
         "num_key_value_heads": 4,
+        "num_attention_heads": 4,
         "vocab_size": 1000,
         "head_dim": 64,
         "ld_q": 256,

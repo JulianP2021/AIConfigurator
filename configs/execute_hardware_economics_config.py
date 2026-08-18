@@ -426,7 +426,7 @@ def _run_sweep(
         # "#39c5cf",
     }
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(
                 _run_spec_worker,

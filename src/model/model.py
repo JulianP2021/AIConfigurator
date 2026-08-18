@@ -96,6 +96,7 @@ class Model:
             "hidden_size": int(c["hidden_size"]),
             "intermediate_size": int(c["intermediate_size"]),
             "num_hidden_layers": int(c["num_hidden_layers"]),
+            "num_attention_heads": int(c["num_attention_heads"]),
             "num_key_value_heads": int(c["num_key_value_heads"]),
             "vocab_size": int(c["vocab_size"]),
             "head_dim": int(c.get("head_dim", 0)),

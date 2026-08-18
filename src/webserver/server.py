@@ -1459,8 +1459,8 @@ def _build_users_cost_plot(
     fig, ax = plt.subplots(figsize=(12, 7))
 
     # Draw order for scatter points.  Mixed points are drawn before colocated
-    # ones so that when they overlap, the colocated marker is always on top.
-    scatter_mode_order = ("separate", "mixed", "colocated")
+    # ones so that when they overlap, the separate marker is always on top.
+    scatter_mode_order = ("mixed", "colocated", "separate")
     for users in sorted(by_users):
         grouped_by_mode: dict[str, list[dict[str, Any]]] = {}
         for row in by_users[users]:

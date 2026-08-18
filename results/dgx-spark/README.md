@@ -1,13 +1,18 @@
+# Time calculation
+uv run scripts/prefill_decode_time.py --isl 25000 --chunked 2048 --flops 213e12 --mem-bw 273e9
+
+
+# DGX SPARK
 The Dockerfile is from the cloned repo https://github.com/eugr/spark-vllm-docker, with the addition of a LMCache download(unnecessary for this benchmark):
 
 
-# Install LMCache for CUDA 13. Avoids pulling the wrong nixl-cu12 variant.
+## Install LMCache for CUDA 13. Avoids pulling the wrong nixl-cu12 variant.
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install lmcache && \
     uv pip uninstall -y nixl-cu12 || true
 
 
-# vLLM bench command
+## vLLM bench command
 vllm bench serve \
     --backend vllm \
     --base-url http://127.0.0.1:8000 \
