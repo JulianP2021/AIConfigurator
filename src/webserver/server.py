@@ -489,26 +489,6 @@ def _results_inner_html(
         html += f'<div class="error">{escape(str(error))}</div>\n'
 
     if results:
-        # ---- Best config metric card ----
-        valid_results = [r for r in results if not r.get("has_error")]
-        best = min(valid_results or results, key=lambda r: r["request_latency"])
-        html += (
-            '<div class="card"><h2>Best Config (by Latency)</h2><div class="metrics">\n'
-        )
-        html += _metric_card(best["label"], "Configuration")
-        html += _metric_card(f"{best['ttft']:.2f}", "TTFT (ms)")
-        html += _metric_card(f"{best['tpot']:.2f}", "TPOT (ms)")
-        html += _metric_card(
-            f"${best['total_cost_usd_per_hour']:.2f}", "Total cost / hour"
-        )
-        html += _metric_card(f"${best['s3_cost_usd_per_hour']:.2f}", "S3 cost / hour")
-        if "users" in best:
-            html += _metric_card(f"{best['users']:,}", "Max users")
-        if "price_per_user" in best:
-            html += _metric_card(f"${best['price_per_user']:.4f}", "Price / user / h")
-        html += _metric_card(f"{best['max_request_latency']:.2f}", "max Latency (ms)")
-        html += "</div></div>\n"
-
         # ---- Users-based ordered legend (only when results have users and section enabled) ----
         if show_users_section and any("users" in row for row in results):
             html += '<div class="card"><h2>Configurations by Users</h2>'
@@ -1591,7 +1571,7 @@ def _build_users_cost_plot(
                 xytext=(6, offset_y),
                 ha="left",
                 va=va,
-                fontsize=6,
+                fontsize=10,
                 color=color,
                 zorder=10,
                 bbox={
