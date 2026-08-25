@@ -95,17 +95,6 @@ def _finish_request(
         + request.decode_wait_ms
     )
 
-    # Compute the gap from the previous request in the same (user, session).
-    # This helps diagnose whether a user was unusually delayed before sending
-    # the offending request.
-    inter_request_delay_ms = None
-    if request_generator is not None:
-        prev_generated_ms = request_generator.get_last_request_generated_ms(
-            request.user_id, request.session_id
-        )
-        if prev_generated_ms is not None and request.generated_ms is not None:
-            inter_request_delay_ms = request.generated_ms - prev_generated_ms
-
     if sla is None:
         raise ValueError("SLA must be provided; ttft_ms and tpot_ms must be finite")
 
@@ -115,12 +104,6 @@ def _finish_request(
             f"ttft_sla_ms must be a finite positive number, got {ttft_sla}"
         )
     if wait_inclusive_ttft_ms > ttft_sla:
-        delay_msg = (
-            f"inter-request delay: {inter_request_delay_ms:.2f} ms"
-            if inter_request_delay_ms is not None
-            else "inter-request delay: n/a"
-        )
-
         assert request.prefill_end_ms is not None
         assert request.prefill_start_ms is not None
         assert request.prefill_download_end_ms is not None
@@ -150,8 +133,7 @@ def _finish_request(
             f"prefill wait: {request.prefill_wait_ms:.2f} ms, "
             f"prefill upload wait: {request.prefill_upload_end_ms - request.prefill_upload_start_ms - request.prefill_upload_active_ms:.2f} ms, "
             f"decode download wait: {request.decode_download_end_ms - request.decode_download_start_ms - request.decode_download_active_ms:.2f} ms, "
-            f"decode wait: {request.decode_wait_ms:.2f} ms, "
-            f"{delay_msg}",
+            f"decode wait: {request.decode_wait_ms:.2f} ms, ",
             prefill_only_ttft_ms=prefill_only_ttft_ms,
             ttft_sla_ms=ttft_sla,
         )
@@ -487,6 +469,16 @@ def simulate_run_distributed(
             current_requests,
             num_reqs,
         )
+
+    print("Prefill")
+
+    for instance in prefill_instances:
+        print(instance.requests_served, instance.node_id)
+
+    print("Decode")
+
+    for instance in decode_instances:
+        print(instance.requests_served, instance.node_id)
 
     if should_log(LOG_SIMULATION):
         log(LOG_SIMULATION, f"Finished requests: {finished_requests}")

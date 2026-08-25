@@ -43,6 +43,8 @@ class PrefillInstance:
     # router falls back to scanning.
     active_prefill_tokens: float | None = None
 
+    requests_served: int = 0
+
     def __init__(
         self,
         node_id: int,
@@ -94,6 +96,7 @@ class PrefillInstance:
         return float(self.scheduler.time_ms)
 
     def add_request(self, request: Request):
+        self.requests_served += 1
         assert self.cache is not None, "Cache must be set before adding requests"
         assert self.scheduler is not None, (
             "Scheduler must be set before adding requests"

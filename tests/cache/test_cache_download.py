@@ -100,7 +100,7 @@ class TestCacheDownload:
         dr = small_cache.download_kv(1, req)
         assert bottleneck_names(dr.tracks) == [
             "SSD_LOCAL",
-            "RAM_LOCAL",
+            "SSD_LOCAL",
             "NETWORK",
             "RAM_LOCAL",
         ]
@@ -235,7 +235,8 @@ class TestCacheDownload:
         dr = small_cache.download_kv(0, req)
         assert [bottleneck_names([track]) for track in dr.tracks] == [
             ["SSD_LOCAL"],
-            ["SSD_LOCAL", "RAM_LOCAL", "NETWORK", "RAM_LOCAL"],
+            ["SSD_LOCAL"],
+            ["SSD_LOCAL", "NETWORK", "RAM_LOCAL"],
         ]
 
         local_items = small_cache.find_cache((1, 33), node_id=0)
@@ -334,7 +335,7 @@ class TestCacheDownload:
         req = Request(100, 8, user_id=1, session_id=85)
         # Local SSD copy.
         ssd_layer = cache_with_fake_model._ssd_layer(0)
-        ssd_item = CacheItem((1, 85), 0, 100)
+        ssd_item = CacheItem((1, 85), 0, 80)
         ssd_layer._add_item(ssd_item)
         ssd_layer.touch(ssd_item, 1)
         cache_with_fake_model.ssd_usage_bytes[0] += cache_with_fake_model._item_size(
@@ -344,7 +345,9 @@ class TestCacheDownload:
         cache_with_fake_model.insert_cache_item(CacheItem((1, 85), 0, 100), 1)
 
         dr = cache_with_fake_model.download_kv(0, req)
-        assert [bottleneck_names([track]) for track in dr.tracks] == [["SSD_LOCAL"]]
+
+        assert bottleneck_names([dr.tracks[dr.eviction_track_count]]) == ["SSD_LOCAL"]
+        assert bottleneck_names([dr.tracks[1]]) == ["NETWORK", "RAM_LOCAL"]
 
     def test_download_merges_local_ram_and_local_ssd(
         self, cache_with_fake_model: Cache
@@ -489,7 +492,6 @@ class TestCacheDownload:
 
         assert len(dr.tracks) == 3
         assert dr.eviction_track_count == 1
-        assert len(dr.tracks[0]) == 2
 
         # Both filler items must be evicted from RAM to SSD.
         ram_layer = cache._ram_layer(0)

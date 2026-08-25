@@ -666,7 +666,7 @@ def _run_colocated_configs(
                 )
         successful: list[tuple[int, dict[str, Any]]] = []
         failed: list[tuple[int, dict[str, Any], Exception]] = []
-        with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=6) as executor:
             futures = {
                 executor.submit(
                     _run_single_config,
@@ -796,7 +796,7 @@ def _run_separate_configs(
                         )
                 successful: list[tuple[int, dict[str, Any]]] = []
                 failed: list[tuple[int, dict[str, Any], Exception]] = []
-                with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=6) as executor:
                     futures = {
                         executor.submit(
                             _run_single_config,
@@ -948,7 +948,7 @@ def _run_separate_configs(
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
+                    and int(prefill_batch[0][0][1]["prefill_nodes"]) > prefill_nodes
                 )
             ]
 
@@ -998,7 +998,7 @@ def _run_mixed_configs(
                         )
                 successful: list[tuple[int, dict[str, Any]]] = []
                 failed: list[tuple[int, dict[str, Any], Exception]] = []
-                with concurrent.futures.ProcessPoolExecutor(max_workers=10) as executor:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=6) as executor:
                     futures = {
                         executor.submit(
                             _run_single_config,
@@ -1150,7 +1150,7 @@ def _run_mixed_configs(
                 if len(prefill_batch) > 0
                 and not (
                     prefill_batch[0][0][1]["prefill_hardware"] == prefill_hw
-                    and int(prefill_batch[0][0][1]["prefill_nodes"]) >= prefill_nodes
+                    and int(prefill_batch[0][0][1]["prefill_nodes"]) > prefill_nodes
                 )
             ]
 

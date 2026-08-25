@@ -1066,7 +1066,7 @@ class Cache:
 
     def _find_download_segments(
         self, session_id: tuple[int, int], dest_node_id: int, required_end: int
-    ) -> tuple[int, list[tuple[int, int, int, str]]]:
+    ) -> tuple[int, list[tuple[int, int, int, str]], list[TransferLeg]]:
         """Find source segments needed to assemble [0, required_end) on ``dest_node_id``.
 
         Returns ``(effective_end, segments)`` where each segment is
@@ -1085,6 +1085,7 @@ class Cache:
         )
 
         # Ensure layer back-pointers are populated for touching below.
+        eviction_legs = []
         s3_layer = self._s3_layer()
         for start, end, source_node_id, source_layer_name in segments:
             if source_layer_name == "S3":
@@ -1121,10 +1122,17 @@ class Cache:
                     continue
                 for item in item_dict.values():
                     if item.token_start <= start and item.token_end >= end:
+                        if source_layer_name == "SSD":
+                            layer._remove_item(item)
+                            self.ssd_usage_bytes[source_node_id] -= self._item_size(
+                                item
+                            )
+                            eviction_legs = self.insert_cache_item(item, source_node_id)
+                            break
                         self._touch(item, layer)
                         break
 
-        return effective_end, segments
+        return effective_end, segments, eviction_legs
 
     def insert_cache_item(self, item: CacheItem, node_id: int) -> list[TransferLeg]:
         """Insert an item into a node's RAM layer, evicting to SSD if needed.
@@ -1188,16 +1196,6 @@ class Cache:
                 )
             )
         if source_node_id != dest_node_id:
-            if source_layer_name == "SSD":
-                # SSD -> source RAM before network egress.
-                legs.append(
-                    TransferLeg(
-                        bytes_to_transfer,
-                        source_node_id,
-                        source_node_id,
-                        "RAM_LOCAL",
-                    )
-                )
             # Inter-node transfer and destination-side placement.
             legs.append(
                 TransferLeg(bytes_to_transfer, source_node_id, dest_node_id, "NETWORK")
@@ -1296,11 +1294,17 @@ class Cache:
         cached prefix that can be satisfied.  Source copies on other nodes are
         retained; local SSD sources are promoted (removed from SSD).
         """
+        eviction_track_count = 0
+        tracks: list[list[TransferLeg]] = []
+
         cache_key = (request.user_id, request.session_id)
         required_end = request.isl
-        effective_end, segments = self._find_download_segments(
+        effective_end, segments, eviction_legs = self._find_download_segments(
             cache_key, node_id, required_end
         )
+        if eviction_legs:
+            tracks.append(eviction_legs)
+            eviction_track_count += 1
         if effective_end == 0:
             if should_log(LOG_CACHE):
                 log(
@@ -1308,27 +1312,6 @@ class Cache:
                     f"No cache found for request {request.id} (user {request.user_id}, session {request.session_id})",
                 )
             return DownloadRequest(request, [])
-
-        # Verify source segments still exist before we optimistically mutate
-        # state.  A segment that disappeared (e.g. evicted by a concurrent upload)
-        # would make the computed transfer legs stale and corrupt the cache.
-        for start, end, source_node_id, source_layer_name in segments:
-            if source_layer_name == "S3":
-                layer = self._s3_layer()
-            else:
-                layer = self.get_layer(source_node_id, source_layer_name)
-            item_dict = layer.content.get(cache_key)
-            covering_item = None
-            if item_dict is not None:
-                for item in item_dict.values():
-                    if item.token_start <= start and item.token_end >= end:
-                        covering_item = item
-                        break
-            assert covering_item is not None, (
-                f"Download source segment [{start},{end}) for request {request.id} "
-                f"(user {request.user_id}, session {request.session_id}) no longer "
-                f"present on {source_layer_name} node {source_node_id}"
-            )
 
         # Optimistically update cache state: merge everything into one RAM item.
         merged_item, eviction_legs = self._merge_into_ram(
@@ -1341,12 +1324,9 @@ class Cache:
                 f"request.prefilled_tokens {request.prefilled_tokens} for request {request.id}; "
                 f"segments={segments}, all_item={[(i.token_start, i.token_end, i.layer.name, i.layer.node_id) for i in self._find_all_items(cache_key)]}"
             )
-
-        tracks: list[list[TransferLeg]] = []
-        eviction_track_count = 0
         if eviction_legs:
             tracks.append(eviction_legs)
-            eviction_track_count = 1
+            eviction_track_count += 1
         for start, end, source_node_id, source_layer_name in segments:
             if source_layer_name == "RAM":
                 self.ram_download_requests += 1

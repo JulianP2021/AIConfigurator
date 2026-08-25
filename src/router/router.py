@@ -220,7 +220,7 @@ class Router:
         capacity = self.cache.ram_capacity_bytes.get(node_id, 0)
         if capacity <= 0:
             return 0.0
-        return self.cache.ram_usage_bytes.get(node_id, 0) / capacity
+        return float(self.cache.ram_usage_bytes.get(node_id, 0)) / float(capacity)
 
     def _has_decode_on_node(self, node_id: int) -> bool:
         """Return True if ``node_id`` also hosts decode instances."""
@@ -250,6 +250,10 @@ class Router:
         lowest_fill = self._ram_fill_factor(by_fill[0])
         # Include every node that shares the lowest fill factor.
         tied = [nid for nid in by_fill if self._ram_fill_factor(nid) == lowest_fill]
+        log(
+            LOG_ROUTER,
+            f"Tied fill decision: {tied}",
+        )
         tied = sorted(
             tied,
             key=lambda nid: self._has_decode_on_node(nid),

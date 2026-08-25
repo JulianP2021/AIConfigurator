@@ -51,6 +51,8 @@ class DecodeInstance:
     # via __new__), in which case the router falls back to scanning.
     active_decode_tokens: float | None = None
 
+    requests_served: int = 0
+
     def __init__(
         self, node_id: int, hardware: GPUHardwareSpec, max_batch_size: int, model: Model
     ):
@@ -200,6 +202,7 @@ class DecodeInstance:
             self._tokens_in_time(time_ms)
 
     def add_request(self, request: Request):
+        self.requests_served += 1
         assert self.cache is not None, "Cache must be set before adding requests"
         assert self.scheduler is not None, (
             "Scheduler must be set before adding requests"

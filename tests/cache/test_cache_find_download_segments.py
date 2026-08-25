@@ -57,7 +57,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 12, "SSD", 0, 192_000)
         self._add_item(cache, session, 12, "RAM", 192_000, 222_001)
 
-        effective_end, segments = cache._find_download_segments(session, 2, 222_000)
+        effective_end, segments, _ = cache._find_download_segments(session, 2, 222_000)
 
         # The destination already holds a prefix starting at 0, so the download
         # extends to the end of the globally contiguous cached prefix.
@@ -82,7 +82,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 13, "SSD", 0, 30_001)
         self._add_item(cache, session, 12, "RAM", 30_000, 32_000)
 
-        effective_end, segments = cache._find_download_segments(session, 11, 94_000)
+        effective_end, segments, _ = cache._find_download_segments(session, 11, 94_000)
 
         # The destination already holds a prefix starting at 0, so the download
         # extends to the end of the globally contiguous cached prefix.
@@ -100,7 +100,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 0, "RAM", 0, 100)
         self._add_item(cache, session, 1, "RAM", 0, 50)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 200)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 200)
 
         assert effective_end == 100
         assert segments == [(0, 100, 0, "RAM")]
@@ -121,7 +121,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 1, "RAM", 100, 150)
         self._add_item(cache, session, -1, "S3", 150, 200)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 200)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 200)
 
         assert effective_end == 200
         assert segments == [
@@ -138,7 +138,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 0, "RAM", 0, 100)
         self._add_item(cache, session, 1, "RAM", 200, 300)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 300)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 300)
 
         assert effective_end == 100
         assert segments == [(0, 100, 0, "RAM")]
@@ -185,7 +185,7 @@ class TestFindDownloadSegments:
         layer.touch(item, 1)
         cache.s3_usage_bytes += cache._item_size(item)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 222_000)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 222_000)
 
         assert effective_end == 222_000
         assert segments == [
@@ -240,7 +240,7 @@ class TestFindDownloadSegments:
         layer.touch(item, 1)
         cache.s3_usage_bytes += cache._item_size(item)
 
-        effective_end, segments = cache._find_download_segments(session, 5, 222_000)
+        effective_end, segments, _ = cache._find_download_segments(session, 5, 222_000)
 
         assert effective_end == 222_000
         assert segments == [
@@ -266,7 +266,7 @@ class TestFindDownloadSegments:
         layer.touch(item, 1)
         cache.ram_usage_bytes[0] += cache._item_size(item)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 100)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 100)
         assert effective_end == 100
         assert segments == [(0, 100, 0, "RAM")]
 
@@ -288,7 +288,7 @@ class TestFindDownloadSegments:
         layer.touch(item, 1)
         cache.s3_usage_bytes += cache._item_size(item)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 100)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 100)
         assert effective_end == 100
         assert segments == [(0, 100, S3_NODE_ID, "S3")]
 
@@ -309,7 +309,7 @@ class TestFindDownloadSegments:
         layer.touch(item, 1)
         cache.ram_usage_bytes[0] += cache._item_size(item)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 500)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 500)
         assert effective_end == 100
         assert segments == [(0, 100, 0, "RAM")]
 
@@ -327,7 +327,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 0, "RAM", 0, 100)
         self._add_item(cache, session, 1, "RAM", 0, 100)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 100)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 100)
         assert effective_end == 100
         # Local RAM wins over identical remote copy.
         assert segments == [(0, 100, 0, "RAM")]
@@ -346,7 +346,7 @@ class TestFindDownloadSegments:
         self._add_item(cache, session, 0, "RAM", 0, 100)
         self._add_item(cache, session, 1, "RAM", 150, 200)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 200)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 200)
         assert effective_end == 100
         assert segments == [(0, 100, 0, "RAM")]
 
@@ -369,7 +369,7 @@ class TestFindDownloadSegments:
         # S3 [100, 150)
         self._add_item(cache, session, S3_NODE_ID, "S3", 100, 150)
 
-        effective_end, segments = cache._find_download_segments(session, 0, 150)
+        effective_end, segments, _ = cache._find_download_segments(session, 0, 150)
         assert effective_end == 150
         assert segments == [
             (0, 50, 0, "SSD"),
