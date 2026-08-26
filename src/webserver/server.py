@@ -1556,13 +1556,15 @@ def _build_users_cost_plot(
         # Label every point on the best-per-mode line with an abbreviated
         # configuration label.  Separate labels always go above the point;
         # colocated labels always go below; mixed alternates above/below.
-        for i, (x, y, (_, row)) in enumerate(zip(xs, ys, series, strict=False)):
+        for _, (x, y, (_, row)) in enumerate(zip(xs, ys, series, strict=False)):
             label_text = _abbreviate_label(str(row.get("label", "")))
-            if mode == "separate" or mode == "colocated":
+            if mode == "separate":
                 offset_y = 12
                 va = "bottom"
+            elif mode == "colocated":
+                offset_y = 0
             else:
-                offset_y = -15 if i == 0 else 0
+                offset_y = -15
                 va = "top"
             ax.annotate(
                 label_text,

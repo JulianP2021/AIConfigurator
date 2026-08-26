@@ -105,7 +105,7 @@ if __name__ == "__main__":
                     if prefill_machine["num_gpus"] == 6:
                         prefill_gpus_per_node_values = [2, 3, 4]
                     if prefill_machine["num_gpus"] == 8:
-                        prefill_gpus_per_node_values = [2, 4, 6]
+                        prefill_gpus_per_node_values = [2, 3, 4, 6]
 
                     for prefill_gpus_per_node in prefill_gpus_per_node_values:
                         decode_gpus_per_node = (
@@ -140,7 +140,7 @@ if __name__ == "__main__":
             if prefill_machine["num_gpus"] == 6:
                 prefill_gpus_per_node_values = [2, 3, 4]
             if prefill_machine["num_gpus"] == 8:
-                prefill_gpus_per_node_values = [2, 4, 6]
+                prefill_gpus_per_node_values = [2, 3, 4, 6]
 
             for nodes in colocated_nodes_values:
                 for batch_size in batch_size_values:
